@@ -11,17 +11,12 @@ const STREET_Y = 0.1; // lift above ground to avoid z-fighting
 const BUILDING_TINTS = [0x707786, 0x7d8290, 0x8a8578];
 
 // Tile size for chunked meshes — one merged mesh per tile so the GPU
-// frustum-culls off-screen chunks. FAR keeps only landmark-height buildings
-// when zoomed way out.
+// frustum-culls off-screen chunks. Every building renders at every zoom.
 const TILE = 1000; // meters
-const FAR_MIN_HEIGHT = 15; // meters
 
 export interface WorldLayers {
   group: THREE.Group;
-  /**
-   * Cross-fade detail with zoom: 0 = full building detail, 1 = landmark
-   * buildings only. No sudden pop — the near set fades out over the band.
-   */
+  /** Zoom-driven cosmetics (street tint brightens from altitude). */
   setBlend(f: number): void;
 }
 
@@ -36,14 +31,8 @@ export function buildWorld(map: GameMap): WorldLayers {
   applyCurvature(streetMat);
   for (const mesh of buildStreetTiles(map.edges, streetMat)) group.add(mesh);
 
-  const near = new THREE.Group();
-  const far = new THREE.Group();
-  const nearBuilt = buildBuildingTiles(map.buildings, () => true);
-  const farBuilt = buildBuildingTiles(map.buildings, (b) => b.height >= FAR_MIN_HEIGHT);
-  for (const mesh of nearBuilt.meshes) near.add(mesh);
-  for (const mesh of farBuilt.meshes) far.add(mesh);
-  far.visible = false;
-  group.add(near, far);
+  const built = buildBuildingTiles(map.buildings, () => true);
+  for (const mesh of built.meshes) group.add(mesh);
 
   const streetNear = new THREE.Color(STREET_COLOR);
   const streetFar = new THREE.Color(0x5a6478); // brighter so the grid reads from altitude
@@ -51,11 +40,6 @@ export function buildWorld(map: GameMap): WorldLayers {
     group,
     setBlend(f: number): void {
       const t = Math.min(1, Math.max(0, f));
-      near.visible = t < 1;
-      far.visible = t > 0;
-      nearBuilt.material.transparent = t > 0;
-      nearBuilt.material.opacity = 1 - t;
-      nearBuilt.material.depthWrite = t < 0.6; // fade without z-artifacts late in the band
       streetMat.color.lerpColors(streetNear, streetFar, t);
     },
   };

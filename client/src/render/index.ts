@@ -10,12 +10,10 @@ import { UnitLayer } from "./units.js";
 import { buildWorld, type WorldLayers } from "./world.js";
 
 // Zoom thresholds (meters of vertical view).
-const BLEND_START = 2200; // building detail starts cross-fading out
-const BLEND_END = 3200; // only landmark buildings remain
+const BLEND_START = 2200; // street tint starts brightening
+const BLEND_END = 3200;
 const PROPS_VIEW = 3000; // above: hide trees/signs/signals (subpixel anyway)
 const STRATEGIC_VIEW = 4500; // above: read-only map navigation, no orders
-const BLUR_START = 4500; // gentle blur ramps in with the strategic view
-const BLUR_MAX_PX = 2.2;
 
 const TACTICAL_HINT =
   "left click/drag select · right click move · WASD pan · wheel zoom · Q/E rotate · R/F tilt · N north";
@@ -218,9 +216,7 @@ export class Renderer {
     this.sky.update(dt, vh);
     updateCurvature(this.rig.target.x, this.rig.target.y, vh);
 
-    // Strategic-view dressing: gentle blur, mode hint.
-    const blur = Math.min(1, Math.max(0, (vh - BLUR_START) / 9000)) * BLUR_MAX_PX;
-    this.canvas.style.filter = blur > 0.05 ? `blur(${blur.toFixed(2)}px)` : "";
+    // Strategic-view mode hint.
     const strategic = vh > STRATEGIC_VIEW;
     if (strategic !== this.lastHintStrategic && this.hintEl) {
       this.hintEl.textContent = strategic ? STRATEGIC_HINT : TACTICAL_HINT;
