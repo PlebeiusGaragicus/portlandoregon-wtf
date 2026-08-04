@@ -3,3 +3,7 @@ dist/
 .env
 .DS_Store
 *.log
+
+# Raw/intermediate GIS extracts (MANIFEST.json and endpoints.json stay committed)
+data/raw/
+data/processed/

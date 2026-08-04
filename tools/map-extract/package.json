@@ -1,0 +1,22 @@
+{
+  "name": "@battle-juice/map-extract",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "discover": "tsx discover.ts",
+    "verify": "tsx verify.ts",
+    "extract": "tsx extract.ts",
+    "validate": "tsx validate.ts",
+    "transform": "tsx transform.ts",
+    "build-map": "tsx build.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/proj4": "^2.5.6",
+    "proj4": "^2.15.0",
+    "tsx": "^4.19.2"
+  }
+}

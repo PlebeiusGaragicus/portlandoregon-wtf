@@ -48,8 +48,8 @@ zones, then finishing them with superior movement and firepower.
 
 - TypeScript everywhere; shared types/sim constants in a common package.
 - Server: Node.js + `ws`, fixed-tick simulation, rooms/lobbies.
-- Client: browser, Canvas 2D or PixiJS for top-down rendering; plain DOM/HTML
-  for lobby and HUD.
+- Client: browser, Three.js (orthographic low-poly 3D — tilted camera,
+  extruded buildings, real depth occlusion); plain DOM/HTML for lobby and HUD.
 - Deploy: Docker Compose on the app host, reverse proxy route for
   `game.internal.invalid` on the VPS (config lives in the `infra` repo).
 

@@ -1,5 +1,6 @@
 import type { WebSocket } from "ws";
 import {
+  activeMap,
   createWorld,
   removeEntitiesOwnedBy,
   snapshot,
@@ -18,7 +19,7 @@ interface Player {
 }
 
 export class Room {
-  private world = createWorld();
+  private world = createWorld({ width: activeMap.meta.width, height: activeMap.meta.height });
   private players = new Map<string, Player>();
   private pendingInputs: PlayerInput[] = [];
   private nextPlayerNum = 1;

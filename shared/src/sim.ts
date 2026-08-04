@@ -1,5 +1,5 @@
 // Pure deterministic simulation. No I/O, no DOM, no network imports.
-import { MAP_HEIGHT, MAP_WIDTH, MOVE_SPEED, TICK_MS } from "./constants.js";
+import { MOVE_SPEED, TICK_MS } from "./constants.js";
 
 export interface Entity {
   id: string;
@@ -10,8 +10,14 @@ export interface Entity {
   target: { x: number; y: number } | null;
 }
 
+export interface WorldBounds {
+  width: number;
+  height: number;
+}
+
 export interface World {
   tick: number;
+  bounds: WorldBounds;
   entities: Entity[];
 }
 
@@ -25,8 +31,8 @@ export interface PlayerInput {
   target: { x: number; y: number };
 }
 
-export function createWorld(): World {
-  return { tick: 0, entities: [] };
+export function createWorld(bounds: WorldBounds): World {
+  return { tick: 0, bounds, entities: [] };
 }
 
 export function spawnEntity(world: World, ownerId: string, name: string): Entity {
@@ -34,8 +40,8 @@ export function spawnEntity(world: World, ownerId: string, name: string): Entity
     id: `e${world.tick}-${ownerId}`,
     ownerId,
     name,
-    x: MAP_WIDTH * (0.25 + 0.5 * ((world.entities.length % 2))),
-    y: MAP_HEIGHT / 2,
+    x: world.bounds.width * (0.25 + 0.5 * (world.entities.length % 2)),
+    y: world.bounds.height / 2,
     target: null,
   };
   world.entities.push(entity);
@@ -55,8 +61,8 @@ export function tick(world: World, inputs: PlayerInput[]): void {
     for (const entity of world.entities) {
       if (entity.ownerId === input.ownerId) {
         entity.target = {
-          x: clamp(input.target.x, 0, MAP_WIDTH),
-          y: clamp(input.target.y, 0, MAP_HEIGHT),
+          x: clamp(input.target.x, 0, world.bounds.width),
+          y: clamp(input.target.y, 0, world.bounds.height),
         };
       }
     }

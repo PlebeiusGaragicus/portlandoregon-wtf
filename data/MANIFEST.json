@@ -1,0 +1,88 @@
+{
+  "extractDate": "2026-08-04",
+  "district": {
+    "xmin": -122.685,
+    "ymin": 45.515,
+    "xmax": -122.665,
+    "ymax": 45.527
+  },
+  "bufferedEnvelope": {
+    "xmin": -122.687,
+    "ymin": 45.513,
+    "xmax": -122.66300000000001,
+    "ymax": 45.529
+  },
+  "layers": {
+    "streets": {
+      "endpoint": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/68",
+      "layerName": "Streets",
+      "features": 1075,
+      "sha256": "adc1eec190d465ad51d2dcf6d996f495f29d472402522b0d2b9651d2f0cab4ab"
+    },
+    "buildings": {
+      "endpoint": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Property/MapServer/184",
+      "layerName": "Buildings",
+      "features": 2872,
+      "sha256": "dae41956038ceea24326fe069ab495b980595e55d827d73688b57a007250eeb3"
+    },
+    "trees": {
+      "endpoint": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/1415",
+      "layerName": "Street Tree Inventory - Active Records",
+      "features": 4373,
+      "sha256": "3fe367814b9d60bf3a3a085ab4a463bae9ceb8c466626077148f99f5bcf908fb"
+    },
+    "signs": {
+      "endpoint": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/223",
+      "layerName": "Signs",
+      "features": 1758,
+      "sha256": "7288433e0abc34fd23d511f5dcdac9819469e78e4eb3da57e7edff1dba986bb2"
+    },
+    "signals": {
+      "endpoint": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/54",
+      "layerName": "Traffic Signals",
+      "features": 214,
+      "sha256": "128ee3d980f850c9d646dbc1e2f9f7016f8d7d8fb96a2971c2b404c6c37ae908"
+    }
+  },
+  "transform": {
+    "origin": {
+      "lat": 45.515,
+      "lon": -122.685
+    },
+    "playAreaMeters": {
+      "width": 1557,
+      "height": 1339
+    },
+    "heightUnit": "feet (converted x0.3048)",
+    "streetEpsilonM": 1,
+    "footprintEpsilonM": 0.5,
+    "counts": {
+      "nodes": 403,
+      "edges": 653,
+      "buildings": 1952,
+      "props": 4295
+    }
+  },
+  "bakedMap": {
+    "file": "shared/src/maps/pearl.ts",
+    "meta": {
+      "name": "pearl",
+      "sourceDate": "2026-08-04",
+      "origin": {
+        "lat": 45.515,
+        "lon": -122.685
+      },
+      "width": 1557,
+      "height": 1339
+    },
+    "nodes": 403,
+    "edges": 653,
+    "buildings": 1952,
+    "props": 4295
+  },
+  "signKeep": {
+    "R1010": "stop",
+    "G5500": "street-name",
+    "G5501": "street-name"
+  }
+}

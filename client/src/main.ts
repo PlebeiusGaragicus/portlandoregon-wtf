@@ -1,5 +1,6 @@
+import { activeMap } from "@battle-juice/shared";
 import { Net } from "./net.js";
-import { Renderer } from "./render.js";
+import { Renderer } from "./render/index.js";
 
 const joinForm = document.getElementById("join") as HTMLFormElement;
 const nameInput = document.getElementById("name") as HTMLInputElement;
@@ -21,12 +22,10 @@ joinForm.addEventListener("submit", (ev) => {
     onWelcome(msg) {
       joinForm.style.display = "none";
       gameEl.style.display = "block";
-      renderer = new Renderer(canvas, msg.playerId);
-      renderer.pushSnapshot(msg.snapshot);
-
-      canvas.addEventListener("click", (e) => {
-        net.send({ type: "input", target: renderer!.toWorld(e.clientX, e.clientY) });
+      renderer = new Renderer(canvas, msg.playerId, activeMap, {
+        onGroundClick: (target) => net.send({ type: "input", target }),
       });
+      renderer.pushSnapshot(msg.snapshot);
     },
     onSnapshot(msg) {
       renderer?.pushSnapshot(msg.snapshot);
@@ -40,6 +39,8 @@ joinForm.addEventListener("submit", (ev) => {
         joinForm.style.display = "flex";
         errorEl.textContent = "disconnected";
       }
+      renderer?.dispose();
+      renderer = null;
     },
   });
 

@@ -36,8 +36,10 @@ can later power bots, replays, and headless tests).
 **The map becomes real.** Everything later (combat, supply, encirclement)
 operates on the street graph, so this is the foundational gameplay phase.
 
-- One hand-authored city map in `shared/`: intersections as **nodes**, street
-  segments as **edges**, building blocks as impassable visual filler.
+- ~~One hand-authored city map in `shared/`~~ **Done via `MAP-PLAN.md`:** the
+  baked Portland map (`shared/src/maps/pearl.ts`) ships real nodes/edges/
+  entries plus buildings and props, rendered in 3D (Three.js). This phase is
+  now graph-constrained movement only.
 - Movement is constrained to the graph: click a destination and the squad
   A*-pathfinds along streets instead of walking through walls.
 - Replace the single dot per player with a handful of **squads**. Design call

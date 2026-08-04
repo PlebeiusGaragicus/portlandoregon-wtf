@@ -1,0 +1,61 @@
+{
+  "resolvedAt": "2026-08-04T19:26:13.996Z",
+  "layers": {
+    "streets": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/68",
+      "id": 68,
+      "name": "Streets",
+      "maxRecordCount": 200,
+      "citywideCount": 112385
+    },
+    "buildings": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Property/MapServer/184",
+      "id": 184,
+      "name": "Buildings",
+      "maxRecordCount": 500,
+      "citywideCount": 249102
+    },
+    "signs": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/223",
+      "id": 223,
+      "name": "Signs",
+      "maxRecordCount": 200,
+      "citywideCount": 195252
+    },
+    "signals": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/54",
+      "id": 54,
+      "name": "Traffic Signals",
+      "maxRecordCount": 200,
+      "citywideCount": 1171
+    },
+    "trees": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/1415",
+      "id": 1415,
+      "name": "Street Tree Inventory - Active Records",
+      "maxRecordCount": 200,
+      "citywideCount": 252205
+    }
+  },
+  "trees": {
+    "status": "resolved",
+    "candidates": [
+      {
+        "title": "Parks Tree Inventory",
+        "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/220"
+      },
+      {
+        "title": "Vegetation",
+        "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/31"
+      },
+      {
+        "title": "Heritage Trees",
+        "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/26"
+      },
+      {
+        "title": "Street Tree Inventory - Active Records",
+        "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/1415"
+      }
+    ]
+  }
+}

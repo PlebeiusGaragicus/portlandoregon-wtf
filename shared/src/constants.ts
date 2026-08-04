@@ -1,8 +1,7 @@
 export const TICK_RATE = 12; // sim ticks per second
 export const TICK_MS = 1000 / TICK_RATE;
 
-export const MAP_WIDTH = 1600;
-export const MAP_HEIGHT = 1000;
-
-export const MOVE_SPEED = 180; // world units per second
-export const ENTITY_RADIUS = 14;
+// World units are meters (map bounds come from the active map's meta).
+// Both values below are gameplay tuning knobs, not physical truth.
+export const MOVE_SPEED = 60; // m/s
+export const ENTITY_RADIUS = 4; // m

@@ -43,10 +43,24 @@
       #game { display: none; }
       #game canvas {
         display: block;
-        max-width: 100vw;
-        max-height: 100vh;
+        width: 100vw;
+        height: 100vh;
         background: #1d222b;
         cursor: crosshair;
+        touch-action: none;
+      }
+      #hint {
+        position: fixed;
+        left: 50%;
+        bottom: 0.75rem;
+        transform: translateX(-50%);
+        padding: 0.3rem 0.8rem;
+        border-radius: 999px;
+        background: rgba(20, 23, 28, 0.75);
+        color: #9aa4b5;
+        font-size: 0.8rem;
+        pointer-events: none;
+        white-space: nowrap;
       }
     </style>
   </head>
@@ -58,7 +72,10 @@
       <button type="submit">Join</button>
       <p class="error" id="error"></p>
     </form>
-    <div id="game"><canvas id="canvas"></canvas></div>
+    <div id="game">
+      <canvas id="canvas"></canvas>
+      <div id="hint">drag/WASD pan &middot; wheel zoom &middot; Q/E rotate &middot; click to move</div>
+    </div>
     <script type="module" src="./main.ts"></script>
   </body>
 </html>

@@ -9,9 +9,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@battle-juice/shared": "*"
+    "@battle-juice/shared": "*",
+    "three": "^0.185.1"
   },
   "devDependencies": {
+    "@types/three": "^0.185.3",
     "typescript": "^5.7.3",
     "vite": "^6.1.0"
   }
