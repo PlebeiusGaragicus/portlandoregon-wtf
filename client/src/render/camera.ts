@@ -26,12 +26,38 @@ export class CameraRig {
   tilt = (55 * Math.PI) / 180; // elevation angle above the ground (variable)
   static readonly MIN_TILT = (25 * Math.PI) / 180;
   static readonly MAX_TILT = (80 * Math.PI) / 180;
-  private maxViewHeight: number;
+  private mapW: number;
+  private mapH: number;
+  private lastAspect = 16 / 9;
 
   constructor(map: GameMap) {
     this.target = { x: map.meta.width / 2, y: map.meta.height / 2 };
-    // Zoom out far enough to frame the whole map, whatever its size.
-    this.maxViewHeight = Math.max(1800, Math.max(map.meta.width, map.meta.height) * 1.15);
+    this.mapW = map.meta.width;
+    this.mapH = map.meta.height;
+  }
+
+  /**
+   * Radius of the circle covering the view's ground footprint — with this
+   * circle kept inside the map, no blank space shows at any rotation.
+   */
+  private viewRadius(vh = this.viewHeight): number {
+    return 0.5 * Math.hypot(vh * this.lastAspect, vh / Math.sin(this.tilt));
+  }
+
+  /** Largest viewHeight whose footprint circle still fits inside the map. */
+  private maxViewHeightFit(): number {
+    const minDim = Math.min(this.mapW, this.mapH);
+    return minDim / Math.hypot(this.lastAspect, 1 / Math.sin(this.tilt));
+  }
+
+  /** Keep zoom and target such that the view never leaves the map. */
+  private constrain(): void {
+    this.viewHeight = Math.min(this.maxViewHeightFit(), Math.max(MIN_VIEW_HEIGHT, this.viewHeight));
+    const r = this.viewRadius();
+    const clampAxis = (v: number, dim: number): number =>
+      2 * r >= dim ? dim / 2 : Math.min(dim - r, Math.max(r, v));
+    this.target.x = clampAxis(this.target.x, this.mapW);
+    this.target.y = clampAxis(this.target.y, this.mapH);
   }
 
   /** Ground direction from camera toward target ("screen up" on the ground). */
@@ -45,6 +71,8 @@ export class CameraRig {
   }
 
   apply(cam: THREE.OrthographicCamera, aspect: number): void {
+    this.lastAspect = aspect;
+    this.constrain(); // every frame: zoom, tilt, pan can all push out of fit
     const f = this.forward();
     const horiz = CAMERA_DIST * Math.cos(this.tilt);
     const camX = this.target.x - f.x * horiz;
@@ -87,15 +115,15 @@ export class CameraRig {
   }
 
   zoomBy(factor: number): void {
-    this.viewHeight = Math.min(this.maxViewHeight, Math.max(MIN_VIEW_HEIGHT, this.viewHeight * factor));
+    this.viewHeight = Math.min(this.maxViewHeightFit(), Math.max(MIN_VIEW_HEIGHT, this.viewHeight * factor));
   }
 
   tiltBy(delta: number): void {
     this.tilt = Math.min(CameraRig.MAX_TILT, Math.max(CameraRig.MIN_TILT, this.tilt + delta));
+    this.constrain();
   }
 
-  clampToMap(map: GameMap): void {
-    this.target.x = Math.min(map.meta.width, Math.max(0, this.target.x));
-    this.target.y = Math.min(map.meta.height, Math.max(0, this.target.y));
+  clampToMap(_map?: GameMap): void {
+    this.constrain();
   }
 }

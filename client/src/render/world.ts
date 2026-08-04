@@ -1,7 +1,6 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import type { Building, GameMap, StreetEdge, WaterBody } from "@battle-juice/shared";
-import { applyCurvature } from "./curvature.js";
 
 const GROUND_COLOR = 0x262c36; // city-block base
 const WATER_COLOR = 0x1b2f42; // deep river blue
@@ -28,7 +27,6 @@ export function buildWorld(map: GameMap): WorldLayers {
   if (water) group.add(water);
 
   const streetMat = new THREE.MeshLambertMaterial({ color: STREET_COLOR, side: THREE.DoubleSide });
-  applyCurvature(streetMat);
   for (const mesh of buildStreetTiles(map.edges, streetMat)) group.add(mesh);
 
   const built = buildBuildingTiles(map.buildings, () => true);
@@ -50,13 +48,10 @@ function tileKey(x: number, y: number): number {
 }
 
 function buildGround(map: GameMap): THREE.Mesh {
-  // Segmented so the curvature vertex shader has vertices to bend.
-  const geo = new THREE.PlaneGeometry(map.meta.width, map.meta.height, 64, 64);
+  const geo = new THREE.PlaneGeometry(map.meta.width, map.meta.height);
   geo.rotateX(-Math.PI / 2);
   const mat = new THREE.MeshLambertMaterial({ color: GROUND_COLOR });
-  applyCurvature(mat);
   const mesh = new THREE.Mesh(geo, mat);
-  mesh.frustumCulled = false; // curvature moves it below its bounding box
   mesh.position.set(map.meta.width / 2, 0, -map.meta.height / 2);
   return mesh;
 }
@@ -80,7 +75,6 @@ function buildWater(bodies: WaterBody[]): THREE.Mesh | null {
   const merged = mergeGeometries(parts);
   for (const p of parts) p.dispose();
   const mat = new THREE.MeshLambertMaterial({ color: WATER_COLOR });
-  applyCurvature(mat);
   return new THREE.Mesh(merged, mat);
 }
 
@@ -162,7 +156,6 @@ function buildBuildingTiles(
     else tiles.set(key, [geo]);
   }
   const material = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
-  applyCurvature(material);
   const meshes: THREE.Mesh[] = [];
   for (const parts of tiles.values()) {
     const merged = mergeGeometries(parts);

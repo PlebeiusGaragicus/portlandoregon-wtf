@@ -2,10 +2,8 @@ import * as THREE from "three";
 import { ENTITY_RADIUS, TICK_MS, type GameMap, type Snapshot } from "@battle-juice/shared";
 import { CameraRig, toWorldXY } from "./camera.js";
 import { Controls, type ControlDelegate } from "./controls.js";
-import { updateCurvature } from "./curvature.js";
 import { Minimap } from "./minimap.js";
 import { buildProps } from "./props.js";
-import { Sky } from "./sky.js";
 import { UnitLayer } from "./units.js";
 import { buildWorld, type WorldLayers } from "./world.js";
 
@@ -39,7 +37,6 @@ export class Renderer {
   private units: UnitLayer;
   private world: WorldLayers;
   private props: THREE.Group;
-  private sky: Sky;
   private minimap: Minimap;
   private compass: HTMLDivElement;
   private hintEl: HTMLElement | null;
@@ -76,8 +73,6 @@ export class Renderer {
     this.scene.add(this.props);
     this.units = new UnitLayer(myPlayerId);
     this.scene.add(this.units.group);
-    this.sky = new Sky(map);
-    this.scene.add(this.sky.group);
 
     this.rig = new CameraRig(map);
 
@@ -213,8 +208,6 @@ export class Renderer {
     this.world.setBlend((vh - BLEND_START) / (BLEND_END - BLEND_START));
     this.props.visible = vh < PROPS_VIEW;
     this.units.setViewScale(Math.max(1, vh / 800));
-    this.sky.update(dt, vh);
-    updateCurvature(this.rig.target.x, this.rig.target.y, vh);
 
     // Strategic-view mode hint.
     const strategic = vh > STRATEGIC_VIEW;

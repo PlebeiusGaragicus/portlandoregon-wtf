@@ -6,8 +6,8 @@ const TRUNK_COLOR = 0x5c4a36;
 const CANOPY_BASE = new THREE.Color(0x3e7c4f);
 const SIGN_POLE_COLOR = 0x9aa0ab;
 const SIGN_FACE: Record<Extract<Prop, { kind: "sign" }>["sign"], number> = {
-  stop: 0xc0392b,
-  "street-name": 0x27713f,
+  stop: 0xe74c3c, // bright — signs are deliberately oversized RTS icons
+  "street-name": 0x2ecc71,
   other: 0x8a8f99,
 };
 const CANOPY_RADIUS: Record<1 | 2 | 3, number> = { 1: 1.5, 2: 2.5, 3: 3.5 };
@@ -40,8 +40,9 @@ export function buildProps(map: GameMap): THREE.Group {
   const canopyGeo = new THREE.IcosahedronGeometry(1, 0);
   const trunkMat = new THREE.MeshLambertMaterial({ color: TRUNK_COLOR, ...flat });
   const canopyMat = new THREE.MeshLambertMaterial({ ...flat });
-  const poleGeo = new THREE.CylinderGeometry(0.06, 0.06, 2.5, 5);
-  const faceGeo = new THREE.BoxGeometry(0.7, 0.7, 0.08);
+  // Deliberately oversized (RTS icon scale) — real-size signs are invisible.
+  const poleGeo = new THREE.CylinderGeometry(0.18, 0.18, 5, 5);
+  const faceGeo = new THREE.BoxGeometry(2.2, 2.2, 0.25);
   const poleMat = new THREE.MeshLambertMaterial({ color: SIGN_POLE_COLOR });
   const faceMat = new THREE.MeshLambertMaterial({ ...flat });
   const sigPoleGeo = new THREE.CylinderGeometry(0.1, 0.12, 4.5, 5);
@@ -74,10 +75,10 @@ export function buildProps(map: GameMap): THREE.Group {
       const poles = new THREE.InstancedMesh(poleGeo, poleMat, bucket.signs.length);
       const faces = new THREE.InstancedMesh(faceGeo, faceMat, bucket.signs.length);
       bucket.signs.forEach((s, i) => {
-        m.makeTranslation(toScene(s.x, s.y, 1.25));
+        m.makeTranslation(toScene(s.x, s.y, 2.5));
         poles.setMatrixAt(i, m);
         q.setFromAxisAngle(up, s.rot);
-        m.compose(toScene(s.x, s.y, 2.3), q, one);
+        m.compose(toScene(s.x, s.y, 4.6), q, one);
         faces.setMatrixAt(i, m);
         faces.setColorAt(i, color.setHex(SIGN_FACE[s.sign]));
       });
