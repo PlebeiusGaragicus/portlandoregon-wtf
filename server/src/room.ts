@@ -4,7 +4,8 @@ import {
   createWorld,
   removeEntitiesOwnedBy,
   snapshot,
-  spawnEntity,
+  spawnSquads,
+  SQUADS_PER_PLAYER,
   tick,
   TICK_MS,
   type PlayerInput,
@@ -19,16 +20,18 @@ interface Player {
 }
 
 export class Room {
-  private world = createWorld({ width: activeMap.meta.width, height: activeMap.meta.height });
+  private world = createWorld(activeMap);
   private players = new Map<string, Player>();
   private pendingInputs: PlayerInput[] = [];
   private nextPlayerNum = 1;
   private timer: NodeJS.Timeout | null = null;
 
   addPlayer(name: string, token: string, socket: WebSocket): { playerId: string } {
-    const id = `p${this.nextPlayerNum++}`;
+    const num = this.nextPlayerNum++;
+    const id = `p${num}`;
     this.players.set(id, { id, name, token, socket });
-    spawnEntity(this.world, id, name);
+    // Odd players deploy from the south edge, even from the north.
+    spawnSquads(this.world, id, name, num % 2 === 1 ? "south" : "north", SQUADS_PER_PLAYER);
     this.ensureTicking();
     return { playerId: id };
   }
@@ -39,9 +42,9 @@ export class Room {
     if (this.players.size === 0) this.stopTicking();
   }
 
-  queueInput(playerId: string, target: { x: number; y: number }): void {
+  queueInput(playerId: string, entityId: string, target: { x: number; y: number }): void {
     if (!this.players.has(playerId)) return;
-    this.pendingInputs.push({ ownerId: playerId, target });
+    this.pendingInputs.push({ ownerId: playerId, entityId, target });
   }
 
   currentSnapshot() {

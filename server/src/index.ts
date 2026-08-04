@@ -72,7 +72,7 @@ wss.on("connection", (socket) => {
     }
 
     if (msg.type === "input" && playerId) {
-      room.queueInput(playerId, msg.target);
+      room.queueInput(playerId, msg.entityId, msg.target);
     }
   });
 

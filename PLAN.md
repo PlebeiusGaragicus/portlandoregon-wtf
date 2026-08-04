@@ -9,8 +9,8 @@ Status legend: `done` · `next` · `planned` · `idea`
 | Phase | Theme | Status |
 |---|---|---|
 | [Skeleton](#skeleton) | Prove the pipeline | done |
-| [Streets](#streets) | Street graph + squads | next |
-| [Firefight](#firefight) | Combat + win condition | planned |
+| [Streets](#streets) | Street graph + squads | done |
+| [Firefight](#firefight) | Combat + win condition | next |
 | [Breadline](#breadline) | Airdrops + supply economy | planned |
 | [Kettle](#kettle) | Encirclement mechanic | planned |
 | [Keymaster](#keymaster) | Nostr keypair auth (NIP-98) | planned |
@@ -33,8 +33,14 @@ can later power bots, replays, and headless tests).
 
 ## Streets
 
-**The map becomes real.** Everything later (combat, supply, encirclement)
-operates on the street graph, so this is the foundational gameplay phase.
+**Done.** The map became real — twice over: the hand-authored map was
+replaced by real Portland GIS data (see `MAP-PLAN.md`), and movement is now
+A* on that graph (`shared/src/path.ts`: project onto nearest edge, A*
+between edge endpoints, stitch street-polyline waypoints). Squads (3/player)
+deploy on entry nodes — south edge for odd players, north for even — orders
+are per-squad (`input.entityId`), and the client has click-select /
+click-dispatch with a route line drawn along the actual streets, plus the
+own-unit x-ray silhouette when squads pass behind buildings.
 
 - ~~One hand-authored city map in `shared/`~~ **Done via `MAP-PLAN.md`:** the
   baked Portland map (`shared/src/maps/pearl.ts`) ships real nodes/edges/

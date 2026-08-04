@@ -23,7 +23,7 @@ joinForm.addEventListener("submit", (ev) => {
       joinForm.style.display = "none";
       gameEl.style.display = "block";
       renderer = new Renderer(canvas, msg.playerId, activeMap, {
-        onGroundClick: (target) => net.send({ type: "input", target }),
+        onCommand: (entityId, target) => net.send({ type: "input", entityId, target }),
       });
       renderer.pushSnapshot(msg.snapshot);
     },

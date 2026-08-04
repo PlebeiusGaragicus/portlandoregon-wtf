@@ -252,8 +252,9 @@ street graph; nothing changes there. Rendering is `client/src/render/`:
 
 The GPU depth buffer does it: a unit on a street behind a building is
 genuinely occluded — "hiding behind buildings" falls straight out of the
-z-test, no special mechanic needed. Usability pass (future): a **ghost
-silhouette** for *your own* occluded units (`depthTest: false` overlay pass).
+z-test, no special mechanic needed. Usability pass (done): a **ghost
+silhouette** for *your own* occluded units — a second body mesh with
+`depthFunc: GreaterDepth`, so it draws exactly where the normal render fails.
 Enemy units get no silhouette — being unseen behind a building is the point,
 and this becomes real concealment gameplay long before any fog-of-war netcode
 exists (Fog phase in `PLAN.md`).
@@ -279,8 +280,8 @@ step 4 (sim on the graph — `PLAN.md` → Streets) and step 7 (polish).
 3. ~~**Transform + bake**~~ — local meters, graph + component check, clip,
    37 N/S entry nodes; baked as a generated `.ts` module (`pearl.ts`), 403
    nodes / 653 edges.
-4. **Sim on the graph** — `PLAN.md` → Streets: A* movement on the baked
-   graph replaces free 2D movement.
+4. ~~**Sim on the graph**~~ — `PLAN.md` → Streets: A* movement on the baked
+   graph (`shared/src/path.ts`), per-squad orders, entry-node deploys.
 5. ~~**Extractor: buildings**~~ — 2,872 footprints → 1,952 in-play prisms.
    `MAX_HEIGHT` 94.8% populated, detected as **feet** (median 13.7/story,
    converted ×0.3048); fallback `NUM_STORY × 3.5 m`.

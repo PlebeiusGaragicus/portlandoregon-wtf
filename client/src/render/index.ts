@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { TICK_MS, type GameMap, type Snapshot } from "@battle-juice/shared";
+import { ENTITY_RADIUS, TICK_MS, type GameMap, type Snapshot } from "@battle-juice/shared";
 import { CameraRig, toWorldXY } from "./camera.js";
 import { Controls } from "./controls.js";
 import { buildProps } from "./props.js";
@@ -7,7 +7,8 @@ import { UnitLayer } from "./units.js";
 import { buildWorld } from "./world.js";
 
 export interface RendererOpts {
-  onGroundClick: (target: { x: number; y: number }) => void;
+  /** A move order: the selected squad and a street-snapped-later target. */
+  onCommand: (entityId: string, target: { x: number; y: number }) => void;
 }
 
 /**
@@ -54,9 +55,19 @@ export class Renderer {
 
     this.rig = new CameraRig(map);
     this.controls = new Controls(canvas, this.rig, map, (cx, cy) => {
-      const target = this.toWorld(cx, cy);
-      if (target) opts.onGroundClick(target);
+      const p = this.toWorld(cx, cy);
+      if (!p) return;
+      // Click near an own squad selects it; otherwise dispatch the selection.
+      const pickRadius = Math.max(ENTITY_RADIUS * 2, this.rig.viewHeight * 0.02);
+      const picked = this.units.nearestOwn(p.x, p.y, pickRadius);
+      if (picked) {
+        this.units.setSelected(picked);
+      } else {
+        const selected = this.units.selected();
+        if (selected) opts.onCommand(selected, p);
+      }
     });
+    window.addEventListener("keydown", this.onKeyDown);
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(canvas);
@@ -94,8 +105,13 @@ export class Renderer {
     this.disposed = true;
     this.controls.dispose();
     this.resizeObserver.disconnect();
+    window.removeEventListener("keydown", this.onKeyDown);
     this.webgl.dispose();
   }
+
+  private onKeyDown = (e: KeyboardEvent): void => {
+    if (e.key === "Escape") this.units.setSelected(null);
+  };
 
   private resize(): void {
     const w = this.canvas.clientWidth || 1;

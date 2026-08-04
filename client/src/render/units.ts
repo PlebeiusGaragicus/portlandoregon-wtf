@@ -3,6 +3,8 @@ import { ENTITY_RADIUS, type Entity, type Snapshot } from "@battle-juice/shared"
 import { toScene } from "./camera.js";
 
 const PLAYER_COLORS = ["#4f7cff", "#ff5f4f", "#3ecf6a", "#e6b93e", "#b45fff", "#3ec9cf"];
+const RING_COLOR = 0xffffff;
+const SELECTED_COLOR = 0xffd84f;
 
 function colorFor(ownerId: string): string {
   const n = Number(ownerId.replace(/\D/g, "")) || 0;
@@ -11,13 +13,18 @@ function colorFor(ownerId: string): string {
 
 interface Marker {
   root: THREE.Group;
-  targetLine: THREE.Line | null; // own units only
+  own: boolean;
+  ring: THREE.Mesh | null; // own units only
+  routeLine: THREE.Line | null; // own units only
+  x: number;
+  y: number;
 }
 
 /** Per-entity 3D markers, reconciled and interpolated from snapshots. */
 export class UnitLayer {
   readonly group = new THREE.Group();
   private markers = new Map<string, Marker>();
+  private selectedId: string | null = null;
 
   constructor(private myPlayerId: string) {}
 
@@ -35,15 +42,19 @@ export class UnitLayer {
       const before = prev?.entities.find((p) => p.id === e.id);
       const x = before ? before.x + (e.x - before.x) * t : e.x;
       const y = before ? before.y + (e.y - before.y) * t : e.y;
+      marker.x = x;
+      marker.y = y;
       marker.root.position.copy(toScene(x, y, 0));
 
-      if (marker.targetLine) {
-        if (e.target) {
-          const pts = [toScene(0, 0, 0.4), toScene(e.target.x - x, e.target.y - y, 0.4)];
-          marker.targetLine.geometry.setFromPoints(pts);
-          marker.targetLine.visible = true;
+      if (marker.routeLine) {
+        if (e.path && e.path.length > 0) {
+          // Route ahead of the squad, in marker-local coordinates.
+          const pts = [new THREE.Vector3(0, 0.5, 0)];
+          for (const p of e.path) pts.push(toScene(p.x - x, p.y - y, 0.5));
+          marker.routeLine.geometry.setFromPoints(pts);
+          marker.routeLine.visible = true;
         } else {
-          marker.targetLine.visible = false;
+          marker.routeLine.visible = false;
         }
       }
     }
@@ -51,8 +62,38 @@ export class UnitLayer {
       if (!seen.has(id)) {
         this.group.remove(marker.root);
         this.markers.delete(id);
+        if (this.selectedId === id) this.selectedId = null;
       }
     }
+  }
+
+  /** Nearest own squad within maxDist meters of a ground point, or null. */
+  nearestOwn(x: number, y: number, maxDist: number): string | null {
+    let best: string | null = null;
+    let bestDist = maxDist;
+    for (const [id, m] of this.markers) {
+      if (!m.own) continue;
+      const d = Math.hypot(m.x - x, m.y - y);
+      if (d <= bestDist) {
+        bestDist = d;
+        best = id;
+      }
+    }
+    return best;
+  }
+
+  setSelected(id: string | null): void {
+    this.selectedId = id;
+    for (const [mid, m] of this.markers) {
+      if (!m.ring) continue;
+      const selected = mid === id;
+      (m.ring.material as THREE.MeshBasicMaterial).color.setHex(selected ? SELECTED_COLOR : RING_COLOR);
+      m.ring.scale.setScalar(selected ? 1.25 : 1);
+    }
+  }
+
+  selected(): string | null {
+    return this.selectedId;
   }
 
   private makeMarker(e: Entity): Marker {
@@ -60,36 +101,51 @@ export class UnitLayer {
     const own = e.ownerId === this.myPlayerId;
     const color = new THREE.Color(colorFor(e.ownerId));
 
-    const body = new THREE.Mesh(
-      new THREE.CylinderGeometry(ENTITY_RADIUS, ENTITY_RADIUS, 1.5, 12),
-      new THREE.MeshLambertMaterial({ color }),
-    );
+    const bodyGeo = new THREE.CylinderGeometry(ENTITY_RADIUS, ENTITY_RADIUS, 1.5, 12);
+    const body = new THREE.Mesh(bodyGeo, new THREE.MeshLambertMaterial({ color }));
     body.position.y = 0.75;
     root.add(body);
 
+    let ring: THREE.Mesh | null = null;
     if (own) {
-      const ring = new THREE.Mesh(
+      ring = new THREE.Mesh(
         new THREE.TorusGeometry(ENTITY_RADIUS + 1, 0.35, 6, 24),
-        new THREE.MeshBasicMaterial({ color: 0xffffff }),
+        new THREE.MeshBasicMaterial({ color: RING_COLOR }),
       );
       ring.rotation.x = Math.PI / 2;
       ring.position.y = 0.3;
       root.add(ring);
+
+      // X-ray ghost: same shape, drawn ONLY where the normal depth test
+      // fails — i.e. exactly where the squad is hidden behind a building.
+      const ghost = new THREE.Mesh(
+        bodyGeo,
+        new THREE.MeshBasicMaterial({
+          color,
+          transparent: true,
+          opacity: 0.35,
+          depthWrite: false,
+          depthFunc: THREE.GreaterDepth,
+        }),
+      );
+      ghost.position.y = 0.75;
+      ghost.renderOrder = 10;
+      root.add(ghost);
     }
 
     root.add(makeLabel(e.name));
 
-    let targetLine: THREE.Line | null = null;
+    let routeLine: THREE.Line | null = null;
     if (own) {
-      targetLine = new THREE.Line(
+      routeLine = new THREE.Line(
         new THREE.BufferGeometry(),
-        new THREE.LineBasicMaterial({ color: 0x4f7cff, transparent: true, opacity: 0.5 }),
+        new THREE.LineBasicMaterial({ color: 0x4f7cff, transparent: true, opacity: 0.6 }),
       );
-      targetLine.visible = false;
-      targetLine.frustumCulled = false;
-      root.add(targetLine);
+      routeLine.visible = false;
+      routeLine.frustumCulled = false;
+      root.add(routeLine);
     }
-    return { root, targetLine };
+    return { root, own, ring, routeLine, x: e.x, y: e.y };
   }
 }
 
