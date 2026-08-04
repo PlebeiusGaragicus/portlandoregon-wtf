@@ -2,14 +2,14 @@
   "extractDate": "2026-08-04",
   "district": {
     "xmin": -122.86,
-    "ymin": 45.43,
-    "xmax": -122.47,
+    "ymin": 45.33,
+    "xmax": -122.3,
     "ymax": 45.65
   },
   "bufferedEnvelope": {
     "xmin": -122.862,
-    "ymin": 45.428,
-    "xmax": -122.468,
+    "ymin": 45.327999999999996,
+    "xmax": -122.298,
     "ymax": 45.652
   },
   "layers": {
@@ -48,45 +48,72 @@
       "layerName": "Willamette/Columbia River Ordinary High Water",
       "features": 1,
       "sha256": "7c960ecd5aeb207b444984dc40811a612bae54c4da59748d8eca866fab81ce81"
+    },
+    "buildings2": {
+      "endpoint": "https://services2.arcgis.com/McQ0OlIABe29rJJy/arcgis/rest/services/Building_Footprint_Database/FeatureServer/8",
+      "layerName": "Building Footprint Database",
+      "features": 748692,
+      "sha256": "9f522fca2fa0327f46af95e8169bda7a727ab88ce6d909656e9c748feffd00d4"
+    },
+    "parks": {
+      "endpoint": "https://services2.arcgis.com/McQ0OlIABe29rJJy/arcgis/rest/services/Outdoor_Recreation_and_Conservation_Areas_ORCA/FeatureServer/5",
+      "layerName": "Outdoor Recreation and Conservation Areas ORCA",
+      "features": 15083,
+      "sha256": "d121891a19ce5b0586dc26b2c9fb914dcc9d73b68e2ec92fec43c6201bdf18f6"
+    },
+    "trails": {
+      "endpoint": "https://services2.arcgis.com/McQ0OlIABe29rJJy/arcgis/rest/services/Trails/FeatureServer/0",
+      "layerName": "Trails",
+      "features": 28753,
+      "sha256": "db40205d3293933ccc0ff183ce8b17e1f20bdd65b11bd9090e6ca0cf87cc89fb"
+    },
+    "lights": {
+      "endpoint": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/258",
+      "layerName": "Street Lights",
+      "features": 65868,
+      "sha256": "853527760b24668eceb4dc61f14c1b1218f9961ebdafd250cf1d226487cfbabd"
     }
   },
   "transform": {
     "origin": {
-      "lat": 45.43,
+      "lat": 45.33,
       "lon": -122.86
     },
     "playAreaMeters": {
-      "width": 30346,
-      "height": 24569
+      "width": 43573,
+      "height": 35780
     },
     "heightUnit": "feet (converted x0.3048)",
+    "heightUnitRlis": "feet (converted x0.3048)",
     "streetEpsilonM": 1,
     "footprintEpsilonM": 0.5,
     "counts": {
-      "nodes": 28417,
-      "edges": 39650,
-      "buildings": 249017,
-      "props": 309907,
-      "water": 2
+      "nodes": 36912,
+      "edges": 44178,
+      "buildings": 538519,
+      "props": 375775,
+      "water": 2,
+      "parks": 11807,
+      "trails": 20158
     }
   },
   "bakedMap": {
     "file": "data/maps/portland.json.gz",
-    "kind": "gz-asset (66.3 MB raw, 12.2 MB gz)",
+    "kind": "gz-asset (118.9 MB raw, 26.0 MB gz)",
     "meta": {
       "name": "portland",
       "sourceDate": "2026-08-04",
       "origin": {
-        "lat": 45.43,
+        "lat": 45.33,
         "lon": -122.86
       },
-      "width": 30346,
-      "height": 24569
+      "width": 43573,
+      "height": 35780
     },
-    "nodes": 28417,
-    "edges": 39650,
-    "buildings": 249017,
-    "props": 309907,
+    "nodes": 36912,
+    "edges": 44178,
+    "buildings": 538519,
+    "props": 375775,
     "water": 2
   },
   "signKeep": {

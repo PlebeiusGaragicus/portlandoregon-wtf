@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { bufferedEnvelope, rawDir, SIGN_KEEP } from "./config.js";
 import { LAYERS, type LayerKey } from "./layers.js";
-import { extractPaginated } from "./lib/arcgis.js";
+import { extractPaginated, layerInfo } from "./lib/arcgis.js";
 import { readEndpoints, requireLayer } from "./lib/endpoints.js";
 
 const requested = process.argv.slice(2) as LayerKey[];
@@ -31,12 +31,14 @@ async function main(): Promise<void> {
       process.exit(1);
     }
     const resolved = requireLayer(eps, key);
-    console.log(`extracting ${key} from ${resolved.url}`);
+    console.log(`extracting ${key} from ${resolved.url}${spec.keyset ? " (keyset)" : ""}`);
+    const orderField = spec.keyset ? (await layerInfo(resolved.url)).objectIdField : undefined;
     const collection = await extractPaginated(resolved.url, {
       fields: spec.fields,
       envelope: bufferedEnvelope(),
       where: whereFor(key),
       pageSize: resolved.maxRecordCount,
+      orderField,
     });
     const outFile = join(rawDir(), `${key}.geojson`);
     writeFileSync(outFile, JSON.stringify(collection));

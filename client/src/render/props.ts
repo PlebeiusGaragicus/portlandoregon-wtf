@@ -17,21 +17,23 @@ const TILE = 1000; // meters — instanced meshes chunked for frustum culling
 type Tree = Extract<Prop, { kind: "tree" }>;
 type Sign = Extract<Prop, { kind: "sign" }>;
 type Signal = Extract<Prop, { kind: "signal" }>;
+type Light = Extract<Prop, { kind: "light" }>;
 
 /** All decorative props, tiled into InstancedMeshes per prop family. */
 export function buildProps(map: GameMap): THREE.Group {
   const group = new THREE.Group();
-  const byTile = new Map<number, { trees: Tree[]; signs: Sign[]; signals: Signal[] }>();
+  const byTile = new Map<number, { trees: Tree[]; signs: Sign[]; signals: Signal[]; lights: Light[] }>();
   for (const p of map.props) {
     const key = Math.floor(p.y / TILE) * 4096 + Math.floor(p.x / TILE);
     let bucket = byTile.get(key);
     if (!bucket) {
-      bucket = { trees: [], signs: [], signals: [] };
+      bucket = { trees: [], signs: [], signals: [], lights: [] };
       byTile.set(key, bucket);
     }
     if (p.kind === "tree") bucket.trees.push(p);
     else if (p.kind === "sign") bucket.signs.push(p);
-    else bucket.signals.push(p);
+    else if (p.kind === "signal") bucket.signals.push(p);
+    else bucket.lights.push(p);
   }
 
   // Shared geometries/materials across all tiles.
@@ -49,6 +51,10 @@ export function buildProps(map: GameMap): THREE.Group {
   const sigHeadGeo = new THREE.BoxGeometry(0.4, 1.0, 0.4);
   const sigPoleMat = new THREE.MeshLambertMaterial({ color: 0x4a505c });
   const sigHeadMat = new THREE.MeshLambertMaterial({ color: 0x2b2f36, ...flat });
+  const lightPoleGeo = new THREE.CylinderGeometry(0.08, 0.12, 7, 5);
+  const lightHeadGeo = new THREE.SphereGeometry(0.45, 6, 5);
+  const lightPoleMat = new THREE.MeshLambertMaterial({ color: 0x555b66 });
+  const lightHeadMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0 }); // warm glow, unlit
 
   const m = new THREE.Matrix4();
   const q = new THREE.Quaternion();
@@ -91,6 +97,17 @@ export function buildProps(map: GameMap): THREE.Group {
         m.makeTranslation(toScene(s.x, s.y, 2.25));
         poles.setMatrixAt(i, m);
         m.makeTranslation(toScene(s.x, s.y, 4.6));
+        heads.setMatrixAt(i, m);
+      });
+      group.add(poles, heads);
+    }
+    if (bucket.lights.length) {
+      const poles = new THREE.InstancedMesh(lightPoleGeo, lightPoleMat, bucket.lights.length);
+      const heads = new THREE.InstancedMesh(lightHeadGeo, lightHeadMat, bucket.lights.length);
+      bucket.lights.forEach((s, i) => {
+        m.makeTranslation(toScene(s.x, s.y, 3.5));
+        poles.setMatrixAt(i, m);
+        m.makeTranslation(toScene(s.x, s.y, 7.1));
         heads.setMatrixAt(i, m);
       });
       group.add(poles, heads);

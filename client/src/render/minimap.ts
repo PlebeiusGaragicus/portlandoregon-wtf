@@ -74,18 +74,22 @@ export class Minimap {
     ctx.fillStyle = "#171b22";
     ctx.fillRect(0, 0, WIDTH_PX, this.heightPx);
 
-    for (const body of this.map.water ?? []) {
-      const outer = body.rings[0];
-      if (!outer || outer.length < 3) continue;
-      ctx.beginPath();
-      outer.forEach(([x, y], i) => {
-        const [px, py] = this.px(x, y);
-        i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
-      });
-      ctx.closePath();
-      ctx.fillStyle = "#1d3752";
-      ctx.fill();
-    }
+    const fillBodies = (bodies: { rings: [number, number][][] }[], fill: string): void => {
+      for (const body of bodies) {
+        const outer = body.rings[0];
+        if (!outer || outer.length < 3) continue;
+        ctx.beginPath();
+        outer.forEach(([x, y], i) => {
+          const [px, py] = this.px(x, y);
+          i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+        });
+        ctx.closePath();
+        ctx.fillStyle = fill;
+        ctx.fill();
+      }
+    };
+    fillBodies(this.map.parks ?? [], "#24382c");
+    fillBodies(this.map.water ?? [], "#1d3752");
 
     ctx.strokeStyle = "#3d4453";
     for (const edge of this.map.edges) {

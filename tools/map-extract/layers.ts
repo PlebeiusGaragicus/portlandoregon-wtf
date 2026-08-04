@@ -4,7 +4,19 @@
 const TRANSPORT = "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer";
 const PROPERTY = "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Property/MapServer";
 
-export type LayerKey = "streets" | "buildings" | "signs" | "signals" | "trees" | "water";
+export type LayerKey =
+  | "streets"
+  | "buildings"
+  | "buildings2" // RLIS regional footprints (outside Portland city limits)
+  | "signs"
+  | "signals"
+  | "trees"
+  | "water"
+  | "parks"
+  | "trails"
+  | "lights";
+
+const RLIS = "https://services2.arcgis.com/McQ0OlIABe29rJJy/arcgis/rest/services";
 
 export interface LayerSpec {
   key: LayerKey;
@@ -16,6 +28,9 @@ export interface LayerSpec {
   populationChecks: string[];
   /** Optional server-side filter applied at extraction (signs whitelist). */
   where?: () => string | null;
+  /** Cursor pagination on the object-id field, without a spatial filter
+   * (fast path for AGOL hosted layers; transform clips to the box). */
+  keyset?: boolean;
 }
 
 export const LAYERS: LayerSpec[] = [
@@ -78,6 +93,46 @@ export const LAYERS: LayerSpec[] = [
     service: "https://www.portlandmaps.com/od/rest/services/COP_OpenData_PublicSafetyHazards/MapServer",
     idSeed: 95,
     namePattern: /ordinary high water/i,
+    fields: [],
+    populationChecks: [],
+  },
+  {
+    key: "buildings2",
+    keyset: true,
+    // Metro RLIS regional footprints — same height schema as Portland's
+    // layer; covers Gresham/Clackamas etc. Portland-area duplicates are
+    // dropped at transform time (centroid-proximity dedup vs COP).
+    service: `${RLIS}/Building_Footprint_Database/FeatureServer`,
+    idSeed: 8,
+    namePattern: /footprint/i,
+    fields: ["BLDG_TYPE", "BLDG_USE", "NUM_STORY", "MAX_HEIGHT", "AVG_HEIGHT"],
+    populationChecks: ["MAX_HEIGHT"],
+  },
+  {
+    key: "parks",
+    keyset: true,
+    // Regional parks/greenspace polygons (ORCA).
+    service: `${RLIS}/Outdoor_Recreation_and_Conservation_Areas_ORCA/FeatureServer`,
+    idSeed: 5,
+    namePattern: /orca|outdoor recreation/i,
+    fields: ["SITENAME", "UNITTYPE"],
+    populationChecks: [],
+  },
+  {
+    key: "trails",
+    keyset: true,
+    // Regional trails (Forest Park, Springwater Corridor, ...). Render-only.
+    service: `${RLIS}/Trails/FeatureServer`,
+    idSeed: 0,
+    namePattern: /^trails?$/i,
+    fields: ["TRAILNAME", "TRLSURFACE", "STATUS"],
+    populationChecks: [],
+  },
+  {
+    key: "lights",
+    service: "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer",
+    idSeed: 258,
+    namePattern: /^street ?lights$/i,
     fields: [],
     populationChecks: [],
   },

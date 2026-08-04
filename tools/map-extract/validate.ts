@@ -12,7 +12,7 @@ import {
   PORTLAND_ENVELOPE,
   SIGN_KEEP,
 } from "./config.js";
-import { type LayerKey } from "./layers.js";
+import { LAYERS, type LayerKey } from "./layers.js";
 import { envelopeParams, queryCount, type GeoJsonCollection } from "./lib/arcgis.js";
 import { readEndpoints, requireLayer } from "./lib/endpoints.js";
 import { rawDir } from "./config.js";
@@ -52,9 +52,12 @@ async function main(): Promise<void> {
       key === "signs" && Object.keys(SIGN_KEEP).length
         ? `SignCode IN (${Object.keys(SIGN_KEEP).map((c) => `'${c.replace(/'/g, "''")}'`).join(",")})`
         : "1=1";
+    // Keyset layers are pulled WITHOUT a spatial filter (clipped later), so
+    // the count must compare against the unfiltered total.
+    const spec = LAYERS.find((l) => l.key === key);
     const serverCount = await queryCount(resolved.url, {
       where,
-      ...envelopeParams(bufferedEnvelope()),
+      ...(spec?.keyset ? {} : envelopeParams(bufferedEnvelope())),
     });
     if (collection.features.length !== serverCount) {
       console.error(`FATAL: ${key}: extracted ${collection.features.length} != server count ${serverCount}`);
@@ -79,6 +82,9 @@ async function main(): Promise<void> {
         nullGeom++;
         continue;
       }
+      // Keyset layers are pulled region-wide (no spatial filter), so
+      // out-of-envelope features are expected — transform clips them.
+      if (spec?.keyset) continue;
       let anyInside = false;
       for (const [lon, lat] of coordsOf(f.geometry)) {
         if (lon >= sane.xmin && lon <= sane.xmax && lat >= sane.ymin && lat <= sane.ymax) {
@@ -88,10 +94,13 @@ async function main(): Promise<void> {
       }
       if (!anyInside) outOfEnvelope++;
     }
-    if (nullGeom > 0) {
-      console.error(`FATAL: ${key}: ${nullGeom} features with null geometry`);
+    // A redacted service nulls ~100% of geometry; a handful of corrupt
+    // records in a huge regional layer is data noise (transform skips them).
+    if (nullGeom / collection.features.length > 0.005) {
+      console.error(`FATAL: ${key}: ${nullGeom}/${collection.features.length} features with null geometry — redacted service?`);
       process.exit(1);
     }
+    if (nullGeom > 0) console.warn(`  WARN: ${key}: ${nullGeom} null-geometry records skipped downstream`);
     if (outOfEnvelope > 0) {
       console.error(`FATAL: ${key}: ${outOfEnvelope} features outside Portland's envelope — projection bug?`);
       process.exit(1);

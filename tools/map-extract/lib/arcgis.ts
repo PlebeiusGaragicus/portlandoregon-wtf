@@ -9,16 +9,28 @@ function sleep(ms: number): Promise<void> {
 }
 
 export async function throttledGet(url: string): Promise<unknown> {
-  const wait = lastRequestAt + RATE.minDelayMs - Date.now();
-  if (wait > 0) await sleep(wait);
-  lastRequestAt = Date.now();
-  const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
-  if (!res.ok) throw new Error(`HTTP ${res.status} from ${url}`);
-  const json = (await res.json()) as { error?: { message?: string } };
-  if (json && typeof json === "object" && json.error) {
-    throw new Error(`ArcGIS error from ${url}: ${json.error.message ?? JSON.stringify(json.error)}`);
+  // Transient server hiccups (empty ArcGIS errors, 5xx) get retried with
+  // backoff — one flaky response must not kill a multi-hundred-page pull.
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    if (attempt > 0) await sleep(2000 * 2 ** (attempt - 1));
+    const wait = lastRequestAt + RATE.minDelayMs - Date.now();
+    if (wait > 0) await sleep(wait);
+    lastRequestAt = Date.now();
+    try {
+      const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
+      if (!res.ok) throw new Error(`HTTP ${res.status} from ${url}`);
+      const json = (await res.json()) as { error?: { message?: string } };
+      if (json && typeof json === "object" && json.error) {
+        throw new Error(`ArcGIS error from ${url}: ${json.error.message ?? JSON.stringify(json.error)}`);
+      }
+      return json;
+    } catch (err) {
+      lastErr = err;
+      process.stderr.write(`\n  retrying (${attempt + 1}/5): ${String(err).slice(0, 120)}\n`);
+    }
   }
-  return json;
+  throw lastErr;
 }
 
 export function qs(params: Record<string, string | number>): string {
@@ -78,6 +90,7 @@ export interface LayerInfo {
   maxRecordCount: number;
   fields: { name: string; type: string }[];
   geometryType: string;
+  objectIdField: string;
 }
 
 export async function layerInfo(layerUrl: string): Promise<LayerInfo> {
@@ -94,6 +107,7 @@ export async function layerInfo(layerUrl: string): Promise<LayerInfo> {
     maxRecordCount: json.maxRecordCount ?? 200,
     fields: json.fields ?? [],
     geometryType: json.geometryType ?? "?",
+    objectIdField: (json as { objectIdField?: string }).objectIdField ?? "OBJECTID",
   };
 }
 
@@ -109,27 +123,42 @@ export interface GeoJsonCollection {
 }
 
 /**
- * Paginated extraction. Termination requires BOTH signals: an empty/short
- * batch AND no exceededTransferLimit flag — either alone is unreliable.
+ * Paginated extraction. Two modes:
+ * - offset (default): resultOffset pages with a server-side envelope filter.
+ * - keyset (orderField set): cursor on the object-id field with NO spatial
+ *   filter — AGOL hosted layers answer id-range scans ~50x faster than
+ *   spatially filtered deep pages (which also 400 at deep offsets). The
+ *   transform stage clips to the play area anyway.
+ * Termination requires BOTH signals: an empty/short batch AND no
+ * exceededTransferLimit flag — either alone is unreliable.
  */
 export async function extractPaginated(
   layerUrl: string,
-  opts: { fields: string[]; envelope: Envelope; where?: string; pageSize: number },
+  opts: { fields: string[]; envelope: Envelope; where?: string; pageSize: number; orderField?: string },
 ): Promise<GeoJsonCollection> {
   const all: GeoJsonFeature[] = [];
   let offset = 0;
+  let cursor = -Infinity;
   for (;;) {
-    const json = (await throttledGet(
-      `${layerUrl}/query?${qs({
-        where: opts.where ?? "1=1",
-        outFields: opts.fields.length ? opts.fields.join(",") : "*",
-        outSR: "4326",
-        f: "geojson",
-        resultOffset: offset,
-        resultRecordCount: opts.pageSize,
-        ...envelopeParams(opts.envelope),
-      })}`,
-    )) as GeoJsonCollection & {
+    const outFields = opts.fields.length
+      ? [...new Set([...(opts.orderField ? [opts.orderField] : []), ...opts.fields])].join(",")
+      : "*";
+    const params: Record<string, string | number> = {
+      outFields,
+      outSR: "4326",
+      f: "geojson",
+      resultRecordCount: opts.pageSize,
+    };
+    if (opts.orderField) {
+      const rangeWhere = cursor === -Infinity ? "1=1" : `${opts.orderField}>${cursor}`;
+      params["where"] = opts.where ? `(${opts.where}) AND ${rangeWhere}` : rangeWhere;
+      params["orderByFields"] = opts.orderField;
+    } else {
+      params["where"] = opts.where ?? "1=1";
+      params["resultOffset"] = offset;
+      Object.assign(params, envelopeParams(opts.envelope));
+    }
+    const json = (await throttledGet(`${layerUrl}/query?${qs(params)}`)) as GeoJsonCollection & {
       exceededTransferLimit?: boolean;
       properties?: { exceededTransferLimit?: boolean };
     };
@@ -137,6 +166,11 @@ export async function extractPaginated(
     all.push(...batch);
     const exceeded = json.exceededTransferLimit === true || json.properties?.exceededTransferLimit === true;
     process.stdout.write(`\r  ${layerUrl.split("/").slice(-1)[0]}: ${all.length} features…`);
+    if (opts.orderField && batch.length > 0) {
+      const last = batch[batch.length - 1]!.properties[opts.orderField];
+      if (typeof last !== "number") throw new Error(`keyset cursor field ${opts.orderField} missing from results`);
+      cursor = last;
+    }
     if (batch.length === 0 && !exceeded) break;
     if (batch.length < opts.pageSize && !exceeded) break;
     offset += batch.length;

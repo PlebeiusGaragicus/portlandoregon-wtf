@@ -7,12 +7,14 @@ export const PORTLAND_ENVELOPE = { xmin: -122.86, ymin: 45.43, xmax: -122.47, ym
 
 // Play area, WGS84. Profiles:
 //  - "central" (Tier 2): ~5.5 km core, committed as a .ts module
-//  - "portland" (whole city): the full envelope, baked as a gzipped asset
+//  - "portland": Portland + the east/south metro — Gresham/Troutdale out to
+//    the Corbett edge, Milwaukie/Happy Valley down through Oregon City.
+//    Deliberately excludes Hillsboro/Beaverton (west) and Sandy (east).
 export const MAP_NAME = process.env.MAP_PROFILE === "central" ? "central" : "portland";
 export const DISTRICT =
   MAP_NAME === "central"
     ? { xmin: -122.72, ymin: 45.49, xmax: -122.65, ymax: 45.54 }
-    : PORTLAND_ENVELOPE;
+    : { xmin: -122.86, ymin: 45.33, xmax: -122.3, ymax: 45.65 };
 
 // Extract from a slightly larger box, build the graph, then clip — clipping
 // first severs edges and fragments the graph (catalogued failure mode).

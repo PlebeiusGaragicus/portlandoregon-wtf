@@ -38,6 +38,9 @@ export interface StreetEdge {
   class: RoadClass;
 }
 
+/** Normalized building category, for palette/gameplay variety. */
+export type BuildingUse = "sfr" | "mfr" | "com" | "off" | "ind" | "inst" | "other";
+
 /** Extruded 2.5D building prism. */
 export interface Building {
   id: number;
@@ -47,7 +50,7 @@ export interface Building {
   holes?: [number, number][][];
   /** Extrusion height in meters. */
   height: number;
-  /** BLDG_USE, when populated. */
+  /** Normalized use category (older baked maps carry raw BLDG_USE strings). */
   use?: string;
 }
 
@@ -62,7 +65,14 @@ export interface WaterBody {
 export type Prop =
   | { kind: "tree"; x: number; y: number; size: 1 | 2 | 3 }
   | { kind: "sign"; x: number; y: number; rot: number; sign: "stop" | "street-name" | "other" }
-  | { kind: "signal"; x: number; y: number };
+  | { kind: "signal"; x: number; y: number }
+  | { kind: "light"; x: number; y: number };
+
+/** Render-only trail polyline (parks paths, regional corridors). */
+export interface Trail {
+  id: number;
+  polyline: [number, number][];
+}
 
 export interface GameMap {
   meta: MapMeta;
@@ -74,4 +84,8 @@ export interface GameMap {
   props: Prop[];
   /** River/water surfaces (absent on maps baked before Tier 2). */
   water?: WaterBody[];
+  /** Park/greenspace polygons (render-only). */
+  parks?: WaterBody[];
+  /** Trails (render-only). */
+  trails?: Trail[];
 }

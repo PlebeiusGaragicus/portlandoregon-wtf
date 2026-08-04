@@ -4,7 +4,7 @@
 // Reads data/raw/{date}/, writes data/processed/{date}/pearl-core.json.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Building, GameMap, Prop, RoadClass, StreetEdge, StreetNode, WaterBody } from "@battle-juice/shared";
+import type { Building, GameMap, Prop, RoadClass, StreetEdge, StreetNode, Trail, WaterBody } from "@battle-juice/shared";
 import { extractDate, HEIGHT_PER_STORY_M, MANIFEST_FILE, MAP_NAME, processedDir, rawDir, SIGN_KEEP } from "./config.js";
 import type { GeoJsonCollection, GeoJsonFeature } from "./lib/arcgis.js";
 import { clipPolylineAtExit, clipRingToRect, ensureWinding, inRect, round1, simplify, type Pt, type Rect } from "./lib/geo.js";
@@ -230,7 +230,37 @@ function transformStreets(streets: GeoJsonCollection, rect: Rect) {
   return { nodes, edges, entries: { north, south } };
 }
 
-function transformBuildings(buildings: GeoJsonCollection, rect: Rect): { list: Building[]; heightUnit: string } {
+/** Normalize BLDG_TYPE/BLDG_USE strings into a small palette category. */
+function useCategory(type: unknown, use: unknown): string {
+  const s = `${String(type ?? "")} ${String(use ?? "")}`.toLowerCase();
+  if (/single family|house|garage|manufactured|townhouse|mobile home/.test(s)) return "sfr";
+  if (/multi family|apartment|duplex|rowhouse|condo|dorm/.test(s)) return "mfr";
+  if (/industrial|warehouse/.test(s)) return "ind";
+  if (/office/.test(s)) return "off";
+  if (/commercial|retail|restaurant|hotel|mercantile|parking/.test(s)) return "com";
+  if (/institutional|religious|school|church|hospital|public|government/.test(s)) return "inst";
+  return "other";
+}
+
+const DEDUP_CELL = 20; // m — RLIS building dropped if a COP centroid is within a cell ring
+
+function dedupKey(x: number, y: number): number {
+  return Math.floor(y / DEDUP_CELL) * 100000 + Math.floor(x / DEDUP_CELL);
+}
+
+interface BuildingsOut {
+  list: Building[];
+  heightUnit: string;
+  /** Occupied centroid cells (for cross-source dedup). */
+  cells: Set<number>;
+}
+
+function transformBuildings(
+  label: string,
+  buildings: GeoJsonCollection,
+  rect: Rect,
+  opts: { typeField?: string; skipCells?: Set<number> },
+): BuildingsOut {
   // Feet-vs-meters heuristic: median MAX_HEIGHT per story. ~3-4 => meters.
   const ratios: number[] = [];
   for (const f of buildings.features) {
@@ -243,9 +273,11 @@ function transformBuildings(buildings: GeoJsonCollection, rect: Rect): { list: B
   const feet = medianRatio > 6;
   const toMeters = feet ? 0.3048 : 1;
   const heightUnit = feet ? "feet (converted x0.3048)" : "meters";
-  console.log(`  buildings: MAX_HEIGHT median ${medianRatio.toFixed(1)} per story -> treating as ${heightUnit}`);
+  console.log(`  ${label}: MAX_HEIGHT median ${medianRatio.toFixed(1)} per story -> treating as ${heightUnit}`);
 
   const list: Building[] = [];
+  const cells = new Set<number>();
+  let deduped = 0;
   for (const f of buildings.features) {
     if (!f.geometry) continue;
     const polys: [number, number][][][] =
@@ -257,7 +289,7 @@ function transformBuildings(buildings: GeoJsonCollection, rect: Rect): { list: B
     const stories = Number(f.properties["NUM_STORY"] ?? NaN);
     const height =
       rawH > 0 ? rawH * toMeters : stories > 0 ? stories * HEIGHT_PER_STORY_M : 2 * HEIGHT_PER_STORY_M;
-    const use = f.properties["BLDG_USE"] ? String(f.properties["BLDG_USE"]) : undefined;
+    const use = useCategory(opts.typeField ? f.properties[opts.typeField] : "", f.properties["BLDG_USE"]);
 
     for (const rings of polys) {
       const outerRaw = rings[0];
@@ -274,6 +306,31 @@ function transformBuildings(buildings: GeoJsonCollection, rect: Rect): { list: B
       if (outer.length < 3) continue;
       if (!outer.some((p) => inRect(p, rect))) continue; // fully outside the play area
 
+      let cx = 0;
+      let cy = 0;
+      for (const [x, y] of outer) {
+        cx += x;
+        cy += y;
+      }
+      cx /= outer.length;
+      cy /= outer.length;
+      if (opts.skipCells) {
+        // Skip when a primary-source building centroid sits nearby.
+        let hit = false;
+        const kc = Math.floor(cx / DEDUP_CELL);
+        const kr = Math.floor(cy / DEDUP_CELL);
+        for (let r = kr - 1; r <= kr + 1 && !hit; r++) {
+          for (let c = kc - 1; c <= kc + 1 && !hit; c++) {
+            if (opts.skipCells.has(r * 100000 + c)) hit = true;
+          }
+        }
+        if (hit) {
+          deduped++;
+          continue;
+        }
+      }
+      cells.add(dedupKey(cx, cy));
+
       const holes = rings
         .slice(1)
         .map((r) => simplify(toLoc(r), FOOTPRINT_EPSILON))
@@ -285,16 +342,16 @@ function transformBuildings(buildings: GeoJsonCollection, rect: Rect): { list: B
         footprint: ensureWinding(outer, true).map(([x, y]): [number, number] => [round1(x), round1(y)]),
         ...(holes.length ? { holes } : {}),
         height: round1(height),
-        ...(use ? { use } : {}),
+        use,
       });
     }
   }
-  console.log(`  buildings: ${list.length} prisms in play area`);
-  return { list, heightUnit };
+  console.log(`  ${label}: ${list.length} prisms in play area${deduped ? ` (${deduped} deduped vs primary)` : ""}`);
+  return { list, heightUnit, cells };
 }
 
-function transformWater(rect: Rect): WaterBody[] {
-  const water = readRaw("water");
+function transformPolys(key: "water" | "parks", rect: Rect): WaterBody[] {
+  const water = readRaw(key);
   if (!water) return [];
   const bodies: WaterBody[] = [];
   for (const f of water.features) {
@@ -318,8 +375,41 @@ function transformWater(rect: Rect): WaterBody[] {
       bodies.push({ id: bodies.length, rings: [outer, ...holes] });
     }
   }
-  console.log(`  water: ${bodies.length} bodies in play area`);
+  console.log(`  ${key}: ${bodies.length} bodies in play area`);
   return bodies;
+}
+
+function transformTrails(rect: Rect): Trail[] {
+  const raw = readRaw("trails");
+  if (!raw) return [];
+  const trails: Trail[] = [];
+  for (const f of raw.features) {
+    if (!f.geometry) continue;
+    if (/conceptual|proposed|planned/i.test(String(f.properties["STATUS"] ?? ""))) continue;
+    const lines: [number, number][][] =
+      f.geometry.type === "LineString"
+        ? [f.geometry.coordinates as [number, number][]]
+        : (f.geometry.coordinates as [number, number][][]);
+    for (const line of lines) {
+      // Keep in-rect runs; render-only, so boundary precision is unimportant.
+      let run: Pt[] = [];
+      const flush = (): void => {
+        if (run.length >= 2) {
+          const simple = simplify(run, 2).map(([x, y]): [number, number] => [round1(x), round1(y)]);
+          if (simple.length >= 2) trails.push({ id: trails.length, polyline: simple });
+        }
+        run = [];
+      };
+      for (const [lon, lat] of line) {
+        const p = toLocal(lon, lat);
+        if (inRect(p, rect)) run.push(p);
+        else flush();
+      }
+      flush();
+    }
+  }
+  console.log(`  trails: ${trails.length} segments in play area`);
+  return trails;
 }
 
 // Candidate size fields for street trees (exact schema discovered at runtime).
@@ -386,6 +476,18 @@ function transformProps(rect: Rect): Prop[] {
     console.log(`  signals: ${count} in play area`);
   }
 
+  const lights = readRaw("lights");
+  if (lights) {
+    let count = 0;
+    for (const f of lights.features) {
+      const p = pointOf(f);
+      if (!p) continue;
+      props.push({ kind: "light", x: round1(p[0]), y: round1(p[1]) });
+      count++;
+    }
+    console.log(`  lights: ${count} in play area`);
+  }
+
   return props;
 }
 
@@ -402,9 +504,18 @@ async function main(): Promise<void> {
   console.log(`play area: ${area.width.toFixed(0)} x ${area.height.toFixed(0)} m`);
 
   const graph = transformStreets(streets, rect);
-  const built = transformBuildings(buildings, rect);
+  // Hybrid buildings: Portland's own layer (rich BLDG_USE) is primary; RLIS
+  // regional footprints fill the expansion ring, deduped by centroid cell.
+  const cop = transformBuildings("buildings (COP)", buildings, rect, {});
+  const rlisRaw = readRaw("buildings2");
+  const rlis = rlisRaw
+    ? transformBuildings("buildings (RLIS)", rlisRaw, rect, { typeField: "BLDG_TYPE", skipCells: cop.cells })
+    : null;
+  const allBuildings = [...cop.list, ...(rlis?.list ?? [])].map((b, i) => ({ ...b, id: i }));
   const props = transformProps(rect);
-  const water = transformWater(rect);
+  const water = transformPolys("water", rect);
+  const parks = transformPolys("parks", rect);
+  const trails = transformTrails(rect);
 
   const map: GameMap = {
     meta: {
@@ -416,10 +527,12 @@ async function main(): Promise<void> {
     },
     nodes: graph.nodes,
     edges: graph.edges,
-    buildings: built.list,
+    buildings: allBuildings,
     entries: graph.entries,
     props,
     water,
+    parks,
+    trails,
   };
 
   mkdirSync(processedDir(), { recursive: true });
@@ -432,7 +545,8 @@ async function main(): Promise<void> {
   manifest["transform"] = {
     origin: origin(),
     playAreaMeters: { width: map.meta.width, height: map.meta.height },
-    heightUnit: built.heightUnit,
+    heightUnit: cop.heightUnit,
+    heightUnitRlis: rlis?.heightUnit ?? null,
     streetEpsilonM: STREET_EPSILON,
     footprintEpsilonM: FOOTPRINT_EPSILON,
     counts: {
@@ -441,6 +555,8 @@ async function main(): Promise<void> {
       buildings: map.buildings.length,
       props: map.props.length,
       water: water.length,
+      parks: parks.length,
+      trails: trails.length,
     },
   };
   writeFileSync(MANIFEST_FILE, JSON.stringify(manifest, null, 2) + "\n");

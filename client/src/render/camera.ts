@@ -37,27 +37,32 @@ export class CameraRig {
   }
 
   /**
-   * Radius of the circle covering the view's ground footprint — with this
-   * circle kept inside the map, no blank space shows at any rotation.
+   * Half-extents of the view's ground footprint, exact for the current
+   * rotation — the whole footprint stays inside the map, so no blank space
+   * shows, while edge areas remain viewable up close.
    */
-  private viewRadius(vh = this.viewHeight): number {
-    return 0.5 * Math.hypot(vh * this.lastAspect, vh / Math.sin(this.tilt));
+  private viewExtents(vh = this.viewHeight): { ex: number; ey: number } {
+    const hw = (vh * this.lastAspect) / 2; // screen-right half-extent on the ground
+    const hf = vh / (2 * Math.sin(this.tilt)); // screen-up half-extent
+    const c = Math.abs(Math.cos(this.theta));
+    const s = Math.abs(Math.sin(this.theta));
+    return { ex: c * hw + s * hf, ey: s * hw + c * hf };
   }
 
-  /** Largest viewHeight whose footprint circle still fits inside the map. */
+  /** Largest viewHeight whose footprint still fits inside the map. */
   private maxViewHeightFit(): number {
-    const minDim = Math.min(this.mapW, this.mapH);
-    return minDim / Math.hypot(this.lastAspect, 1 / Math.sin(this.tilt));
+    const { ex, ey } = this.viewExtents(1); // extents per meter of viewHeight
+    return Math.min(this.mapW / (2 * ex), this.mapH / (2 * ey));
   }
 
   /** Keep zoom and target such that the view never leaves the map. */
   private constrain(): void {
     this.viewHeight = Math.min(this.maxViewHeightFit(), Math.max(MIN_VIEW_HEIGHT, this.viewHeight));
-    const r = this.viewRadius();
-    const clampAxis = (v: number, dim: number): number =>
-      2 * r >= dim ? dim / 2 : Math.min(dim - r, Math.max(r, v));
-    this.target.x = clampAxis(this.target.x, this.mapW);
-    this.target.y = clampAxis(this.target.y, this.mapH);
+    const { ex, ey } = this.viewExtents();
+    const clampAxis = (v: number, half: number, dim: number): number =>
+      2 * half >= dim ? dim / 2 : Math.min(dim - half, Math.max(half, v));
+    this.target.x = clampAxis(this.target.x, ex, this.mapW);
+    this.target.y = clampAxis(this.target.y, ey, this.mapH);
   }
 
   /** Ground direction from camera toward target ("screen up" on the ground). */

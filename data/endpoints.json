@@ -1,5 +1,5 @@
 {
-  "resolvedAt": "2026-08-04T20:57:37.686Z",
+  "resolvedAt": "2026-08-04T21:50:37.414Z",
   "layers": {
     "streets": {
       "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/68",
@@ -42,6 +42,34 @@
       "name": "Willamette/Columbia River Ordinary High Water",
       "maxRecordCount": 200,
       "citywideCount": 1
+    },
+    "buildings2": {
+      "url": "https://services2.arcgis.com/McQ0OlIABe29rJJy/arcgis/rest/services/Building_Footprint_Database/FeatureServer/8",
+      "id": 8,
+      "name": "Building Footprint Database",
+      "maxRecordCount": 2000,
+      "citywideCount": 748692
+    },
+    "parks": {
+      "url": "https://services2.arcgis.com/McQ0OlIABe29rJJy/arcgis/rest/services/Outdoor_Recreation_and_Conservation_Areas_ORCA/FeatureServer/5",
+      "id": 5,
+      "name": "Outdoor Recreation and Conservation Areas ORCA",
+      "maxRecordCount": 2000,
+      "citywideCount": 15083
+    },
+    "trails": {
+      "url": "https://services2.arcgis.com/McQ0OlIABe29rJJy/arcgis/rest/services/Trails/FeatureServer/0",
+      "id": 0,
+      "name": "Trails",
+      "maxRecordCount": 2000,
+      "citywideCount": 28753
+    },
+    "lights": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/258",
+      "id": 258,
+      "name": "Street Lights",
+      "maxRecordCount": 200,
+      "citywideCount": 65868
     }
   },
   "trees": {
@@ -52,16 +80,16 @@
         "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/220"
       },
       {
-        "title": "Vegetation",
-        "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/31"
-      },
-      {
         "title": "Heritage Trees",
         "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/26"
       },
       {
         "title": "Street Tree Inventory - Active Records",
         "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/1415"
+      },
+      {
+        "title": "Vegetation",
+        "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/31"
       }
     ]
   }

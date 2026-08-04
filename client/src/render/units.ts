@@ -15,7 +15,7 @@ interface Marker {
   root: THREE.Group;
   own: boolean;
   ring: THREE.Mesh | null; // own units only
-  routeLine: THREE.Line | null; // own units only
+  routeMesh: THREE.Mesh | null; // own units only — world-space thick ribbon
   tracer: THREE.Line;
   bar: THREE.Sprite;
   barCtx: CanvasRenderingContext2D;
@@ -23,6 +23,38 @@ interface Marker {
   lastStrength: number;
   x: number;
   y: number;
+}
+
+const ROUTE_Y = 0.35; // above streets, below units
+const ROUTE_WIDTH = 3.5; // meters, scaled with zoom
+
+/** Flat world-space ribbon along route points (thick, unlike gl lines). */
+function routeGeometry(points: { x: number; y: number }[], width: number): THREE.BufferGeometry {
+  const half = width / 2;
+  const positions: number[] = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i]!;
+    const b = points[i + 1]!;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = (-dy / len) * half;
+    const ny = (dx / len) * half;
+    // Two triangles per segment (unmitred — overlaps at joints are invisible).
+    const quad: [number, number][] = [
+      [a.x + nx, a.y + ny],
+      [a.x - nx, a.y - ny],
+      [b.x - nx, b.y - ny],
+      [b.x + nx, b.y + ny],
+    ];
+    for (const idx of [0, 1, 2, 0, 2, 3]) {
+      const [wx, wy] = quad[idx]!;
+      positions.push(wx, ROUTE_Y, -wy);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  return geo;
 }
 
 /** Per-entity 3D markers, reconciled and interpolated from snapshots. */
@@ -65,32 +97,40 @@ export class UnitLayer {
     for (const [id, marker] of this.markers) {
       if (!seen.has(id)) {
         this.group.remove(marker.root);
+        if (marker.routeMesh) {
+          marker.routeMesh.geometry.dispose();
+          this.group.remove(marker.routeMesh);
+        }
         this.markers.delete(id);
         this.selectedIds.delete(id);
       }
     }
 
-    // Pass 2: route lines and tracers (need everyone's fresh positions).
-    // Local-space offsets divide by viewScale so root scaling cancels out.
+    // Pass 2: route ribbons and tracers (need everyone's fresh positions).
     const inv = 1 / this.viewScale;
     const flicker = 0.45 + 0.35 * Math.abs(Math.sin(performance.now() / 40));
     for (const e of curr.entities) {
       const marker = this.markers.get(e.id)!;
 
-      if (marker.routeLine) {
+      if (marker.routeMesh) {
         if (e.path && e.path.length > 0) {
-          const pts = [new THREE.Vector3(0, 0.5, 0)];
-          for (const p of e.path) pts.push(toScene((p.x - marker.x) * inv, (p.y - marker.y) * inv, 0.5));
-          marker.routeLine.geometry.setFromPoints(pts);
-          marker.routeLine.visible = true;
+          // Fresh geometry every update: three's setFromPoints reuses the
+          // buffer without trimming, leaving stale tail segments.
+          marker.routeMesh.geometry.dispose();
+          marker.routeMesh.geometry = routeGeometry(
+            [{ x: marker.x, y: marker.y }, ...e.path],
+            ROUTE_WIDTH * this.viewScale,
+          );
+          marker.routeMesh.visible = true;
         } else {
-          marker.routeLine.visible = false;
+          marker.routeMesh.visible = false;
         }
       }
 
       const targetMarker = e.firingAt ? this.markers.get(e.firingAt) : undefined;
       if (targetMarker) {
-        marker.tracer.geometry.setFromPoints([
+        marker.tracer.geometry.dispose();
+        marker.tracer.geometry = new THREE.BufferGeometry().setFromPoints([
           new THREE.Vector3(0, 2, 0),
           toScene((targetMarker.x - marker.x) * inv, (targetMarker.y - marker.y) * inv, 2),
         ]);
@@ -204,21 +244,21 @@ export class UnitLayer {
     tracer.frustumCulled = false;
     root.add(tracer);
 
-    let routeLine: THREE.Line | null = null;
+    let routeMesh: THREE.Mesh | null = null;
     if (own) {
-      routeLine = new THREE.Line(
+      routeMesh = new THREE.Mesh(
         new THREE.BufferGeometry(),
-        new THREE.LineBasicMaterial({ color: 0x4f7cff, transparent: true, opacity: 0.6 }),
+        new THREE.MeshBasicMaterial({ color: 0x5b8cff, transparent: true, opacity: 0.8, depthWrite: false }),
       );
-      routeLine.visible = false;
-      routeLine.frustumCulled = false;
-      root.add(routeLine);
+      routeMesh.visible = false;
+      routeMesh.frustumCulled = false;
+      this.group.add(routeMesh); // world-space, not under the (scaled) marker
     }
     return {
       root,
       own,
       ring,
-      routeLine,
+      routeMesh,
       tracer,
       bar,
       barCtx,

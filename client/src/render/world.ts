@@ -4,10 +4,26 @@ import type { Building, GameMap, StreetEdge, WaterBody } from "@battle-juice/sha
 
 const GROUND_COLOR = 0x262c36; // city-block base
 const WATER_COLOR = 0x1b2f42; // deep river blue
+const PARK_COLOR = 0x2c4434; // greenspace
+const TRAIL_COLOR = 0x6b5f4c; // dirt path
 const STREET_COLOR = 0x3a4150; // asphalt
 const WATER_Y = 0.05; // between ground and streets
+const PARK_Y = 0.07;
 const STREET_Y = 0.1; // lift above ground to avoid z-fighting
-const BUILDING_TINTS = [0x707786, 0x7d8290, 0x8a8578];
+const TRAIL_Y = 0.12;
+
+// Palette variants per normalized building use — true-to-life variety:
+// warm single-family, terracotta multi-family, cool commercial/office,
+// muddy industrial, pale institutional.
+const USE_TINTS: Record<string, number[]> = {
+  sfr: [0x9d9078, 0xa89a80, 0x8f836e],
+  mfr: [0xa17a68, 0x96705f, 0x8d6a5e],
+  com: [0x7d8aa0, 0x74809a, 0x8891a6],
+  off: [0x6f8096, 0x7a8aa2],
+  ind: [0x6e6a63, 0x7a7168, 0x635f58],
+  inst: [0x9aa0a8, 0xa2a8b2],
+  other: [0x707786, 0x7d8290, 0x8a8578],
+};
 
 // Tile size for chunked meshes — one merged mesh per tile so the GPU
 // frustum-culls off-screen chunks. Every building renders at every zoom.
@@ -23,8 +39,12 @@ export interface WorldLayers {
 export function buildWorld(map: GameMap): WorldLayers {
   const group = new THREE.Group();
   group.add(buildGround(map));
-  const water = buildWater(map.water ?? []);
+  const parks = buildPolys(map.parks ?? [], PARK_COLOR, PARK_Y);
+  if (parks) group.add(parks);
+  const water = buildPolys(map.water ?? [], WATER_COLOR, WATER_Y);
   if (water) group.add(water);
+  const trails = buildTrails(map.trails ?? []);
+  if (trails) group.add(trails);
 
   const streetMat = new THREE.MeshLambertMaterial({ color: STREET_COLOR, side: THREE.DoubleSide });
   for (const mesh of buildStreetTiles(map.edges, streetMat)) group.add(mesh);
@@ -56,26 +76,38 @@ function buildGround(map: GameMap): THREE.Mesh {
   return mesh;
 }
 
-function buildWater(bodies: WaterBody[]): THREE.Mesh | null {
+function buildPolys(bodies: WaterBody[], color: number, y: number): THREE.Mesh | null {
   const parts: THREE.BufferGeometry[] = [];
   for (const body of bodies) {
     const outer = body.rings[0];
     if (!outer || outer.length < 3) continue;
-    const shape = new THREE.Shape(outer.map(([x, y]) => new THREE.Vector2(x, y)));
+    const shape = new THREE.Shape(outer.map(([x, py]) => new THREE.Vector2(x, py)));
     for (const hole of body.rings.slice(1)) {
-      if (hole.length >= 3) shape.holes.push(new THREE.Path(hole.map(([x, y]) => new THREE.Vector2(x, y))));
+      if (hole.length >= 3) shape.holes.push(new THREE.Path(hole.map(([x, py]) => new THREE.Vector2(x, py))));
     }
     const geo = new THREE.ShapeGeometry(shape);
     geo.rotateX(-Math.PI / 2);
-    geo.translate(0, WATER_Y, 0);
+    geo.translate(0, y, 0);
     geo.deleteAttribute("uv");
     parts.push(geo);
   }
   if (parts.length === 0) return null;
   const merged = mergeGeometries(parts);
   for (const p of parts) p.dispose();
-  const mat = new THREE.MeshLambertMaterial({ color: WATER_COLOR });
+  const mat = new THREE.MeshLambertMaterial({ color });
   return new THREE.Mesh(merged, mat);
+}
+
+function buildTrails(trails: { polyline: [number, number][] }[]): THREE.Mesh | null {
+  const parts: THREE.BufferGeometry[] = [];
+  for (const t of trails) {
+    const geo = ribbon(t.polyline, 2.5, TRAIL_Y);
+    if (geo) parts.push(geo);
+  }
+  if (parts.length === 0) return null;
+  const merged = mergeGeometries(parts);
+  for (const p of parts) p.dispose();
+  return new THREE.Mesh(merged, new THREE.MeshLambertMaterial({ color: TRAIL_COLOR, side: THREE.DoubleSide }));
 }
 
 /** Street ribbons, merged per tile (keyed by segment midpoint). */
@@ -99,8 +131,8 @@ function buildStreetTiles(edges: StreetEdge[], mat: THREE.MeshLambertMaterial): 
   return meshes;
 }
 
-/** Triangle-strip ribbon along a polyline with mitered joints, at STREET_Y. */
-function ribbon(polyline: [number, number][], width: number): THREE.BufferGeometry | null {
+/** Triangle-strip ribbon along a polyline with mitered joints. */
+function ribbon(polyline: [number, number][], width: number, atY = STREET_Y): THREE.BufferGeometry | null {
   if (polyline.length < 2) return null;
   const half = width / 2;
   const left: [number, number][] = [];
@@ -130,7 +162,7 @@ function ribbon(polyline: [number, number][], width: number): THREE.BufferGeomet
     const quad = [left[i]!, right[i]!, right[i + 1]!, left[i + 1]!];
     for (const idx of [0, 1, 2, 0, 2, 3]) {
       const [wx, wy] = quad[idx]!;
-      positions.push(wx, STREET_Y, -wy);
+      positions.push(wx, atY, -wy);
     }
   }
   const geo = new THREE.BufferGeometry();
@@ -175,7 +207,8 @@ function prism(b: Building): THREE.BufferGeometry | null {
   // Shape XY is world XY; extrusion +z becomes scene +y (up), shape y -> -z.
   geo.rotateX(-Math.PI / 2);
 
-  const tint = new THREE.Color(BUILDING_TINTS[b.id % BUILDING_TINTS.length]!);
+  const palette = USE_TINTS[b.use ?? "other"] ?? USE_TINTS["other"]!;
+  const tint = new THREE.Color(palette[b.id % palette.length]!);
   const count = geo.getAttribute("position").count;
   const colors = new Float32Array(count * 3);
   for (let i = 0; i < count; i++) {
