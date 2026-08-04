@@ -23,7 +23,9 @@ export class CameraRig {
   target: { x: number; y: number };
   theta = 0; // azimuth, radians; 0 = north up
   viewHeight = 400;
-  readonly tilt = (55 * Math.PI) / 180; // elevation angle above the ground
+  tilt = (55 * Math.PI) / 180; // elevation angle above the ground (variable)
+  static readonly MIN_TILT = (25 * Math.PI) / 180;
+  static readonly MAX_TILT = (80 * Math.PI) / 180;
   private maxViewHeight: number;
 
   constructor(map: GameMap) {
@@ -86,6 +88,10 @@ export class CameraRig {
 
   zoomBy(factor: number): void {
     this.viewHeight = Math.min(this.maxViewHeight, Math.max(MIN_VIEW_HEIGHT, this.viewHeight * factor));
+  }
+
+  tiltBy(delta: number): void {
+    this.tilt = Math.min(CameraRig.MAX_TILT, Math.max(CameraRig.MIN_TILT, this.tilt + delta));
   }
 
   clampToMap(map: GameMap): void {

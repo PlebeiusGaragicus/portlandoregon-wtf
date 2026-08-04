@@ -118,9 +118,17 @@ function dominantComponent(edges: RawEdge[]): Set<number> {
   }
   const fraction = bestSize / parent.size;
   console.log(`  graph: ${parent.size} nodes, ${sizes.size} components, dominant ${(fraction * 100).toFixed(1)}%`);
-  if (fraction < DOMINANT_COMPONENT_MIN) {
+  if (fraction < 0.5) {
     console.error("FATAL: street graph is fragmented — was the extract clipped too tight?");
     process.exit(1);
+  }
+  if (fraction < DOMINANT_COMPONENT_MIN) {
+    // Citywide: the rectangular envelope includes severed slivers of
+    // neighboring jurisdictions (Washington County, Happy Valley). The
+    // dominant component is Portland's own network; the rest is dropped.
+    console.warn(
+      `  WARN: keeping dominant component only — dropping ${sizes.size - 1} fragments (${(100 - fraction * 100).toFixed(1)}% of nodes, mostly neighboring jurisdictions cut by the envelope)`,
+    );
   }
   const keep = new Set<number>();
   for (const key of parent.keys()) if (find(key) === bestRoot) keep.add(key);
@@ -189,12 +197,34 @@ function transformStreets(streets: GeoJsonCollection, rect: Rect) {
 
   // Entry candidates: boundary nodes on the north/south map edges.
   const margin = 2; // m
-  const north: number[] = [];
-  const south: number[] = [];
+  let north: number[] = [];
+  let south: number[] = [];
   for (const id of boundaryNodes) {
     const n = nodes[id]!;
     if (n.y >= rect.ymax - margin) north.push(id);
     else if (n.y <= rect.ymin + margin) south.push(id);
+  }
+  // Whole-city case: the network ends at city limits inside the box, so no
+  // edges cross the border. Fall back to the network's own extreme nodes,
+  // spread across the map width (one per x-decile band).
+  const extremeEntries = (side: "north" | "south"): number[] => {
+    const bins = new Map<number, number>();
+    for (const n of nodes) {
+      const bin = Math.min(9, Math.floor((n.x / (rect.xmax - rect.xmin)) * 10));
+      const cur = bins.get(bin);
+      const better =
+        cur === undefined || (side === "north" ? n.y > nodes[cur]!.y : n.y < nodes[cur]!.y);
+      if (better) bins.set(bin, n.id);
+    }
+    return [...bins.values()];
+  };
+  if (north.length === 0) {
+    north = extremeEntries("north");
+    console.log(`  entries: no north boundary nodes — using ${north.length} network-extreme nodes`);
+  }
+  if (south.length === 0) {
+    south = extremeEntries("south");
+    console.log(`  entries: no south boundary nodes — using ${south.length} network-extreme nodes`);
   }
   console.log(`  clipped: ${nodes.length} nodes, ${edges.length} edges, entries N=${north.length} S=${south.length}`);
   return { nodes, edges, entries: { north, south } };

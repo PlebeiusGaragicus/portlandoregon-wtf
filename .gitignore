@@ -7,3 +7,4 @@ dist/
 # Raw/intermediate GIS extracts (MANIFEST.json and endpoints.json stay committed)
 data/raw/
 data/processed/
+data/maps/

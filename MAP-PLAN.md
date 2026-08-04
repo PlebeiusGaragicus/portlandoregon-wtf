@@ -91,10 +91,41 @@ could get different art or gameplay tags without any authoring.
 > A*, and a river **water** layer
 > (`COP_OpenData_PublicSafetyHazards/MapServer/95`, render-only). Cross-map
 > pathfinding runs ~1 ms; sim tick cost is unchanged. The old `pearl` map
-> remains in `shared/src/maps/` as a small fast map. Next stop (whole city)
-> needs: tile-chunked building meshes for frustum culling, map delivery as a
-> compressed asset instead of a committed `.ts`, and bulk shapefile
-> extraction. The district-first plan below is kept for history.
+> remains in `shared/src/maps/` as a small fast map.
+>
+> **Tier 3 — the whole city (2026-08-04):** the active map is now
+> `portland`: the full city envelope, 30.3 × 24.6 km — 39,650 edges /
+> 249,017 building prisms / 309,907 props / the Willamette *and* Columbia.
+> How it works at this scale:
+>
+> - **Extraction:** paginated citywide with field filtering (~2,600
+>   sequential requests at ~3 req/s, one-time; field-filtered files stay
+>   under V8's 512 MB string-parse limit, which the all-55-column bulk
+>   exports would not). Neighboring-jurisdiction street slivers inside the
+>   rectangular envelope (Washington County, Happy Valley — 36.7% of raw
+>   nodes) are dropped with the non-dominant graph components; entries fall
+>   back to network-extreme nodes because Portland's streets end inside the
+>   envelope, not at it.
+> - **Delivery:** maps > 8 MB bake to `data/maps/{name}.json.gz`
+>   (gitignored, 66 MB → 12.2 MB gz) instead of a committed `.ts`. The
+>   server loads it at boot (`GAME_MAP` env, bundled `central` as fallback)
+>   and serves it at `/map` pre-gzipped; the client fetches it after the
+>   welcome. Load-to-playable ≈ 4.5 s.
+> - **Renderer:** meshes are chunked into 1 km tiles (GPU frustum culling),
+>   building detail **cross-fades** to a landmarks-only set over a zoom band
+>   (no LOD pop), props hide above 3 km view height, and the strategic view
+>   adds faux earth curvature (vertex shader), drifting clouds, and a
+>   gentle blur. 60 fps at every zoom on Apple Silicon.
+> - **Controls:** left-click/drag select (marquee, multi-squad), right-click
+>   move, off-click deselect, WASD pan, Q/E rotate, R/F tilt, N faces
+>   north (compass HUD), wheel zooms toward the cursor, translucent
+>   minimap with view quad + unit dots (click to jump). Above ~4.5 km view
+>   height the game becomes a read-only strategic map — no orders.
+> - **Sim:** boot cost 50 ms (graph) + 158 ms (LOS index); pathfinding
+>   3.9 ms corner-to-corner; LOS 1.4 µs. Tick cost is squad-bound, not
+>   map-bound.
+>
+> The district-first plan below is kept for history.
 
 The extraction doc's strongest recommendation, and it fits an RTS map
 perfectly: **extract a small, bounded slice and prove the whole pipeline on

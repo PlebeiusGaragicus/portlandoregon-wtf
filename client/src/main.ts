@@ -1,17 +1,6 @@
-import { activeMap, type Snapshot } from "@battle-juice/shared";
+import type { GameMap, Snapshot } from "@battle-juice/shared";
 import { Net } from "./net.js";
 import { Renderer } from "./render/index.js";
-
-function updateBanner(s: Snapshot, myPlayerId: string): void {
-  if (!s.winner) {
-    bannerEl.style.display = "none";
-    return;
-  }
-  const survivor = s.entities.find((e) => e.ownerId === s.winner);
-  const name = survivor ? survivor.name.replace(/ \d+$/, "") : s.winner;
-  bannerEl.textContent = s.winner === myPlayerId ? `Victory — ${name} holds the city` : `${name} wins`;
-  bannerEl.style.display = "block";
-}
 
 const joinForm = document.getElementById("join") as HTMLFormElement;
 const nameInput = document.getElementById("name") as HTMLInputElement;
@@ -25,22 +14,52 @@ const bannerEl = document.getElementById("banner") as HTMLDivElement;
 const invited = new URLSearchParams(location.search).get("join");
 if (invited) passwordInput.value = invited;
 
+function updateBanner(s: Snapshot, myPlayerId: string): void {
+  if (!s.winner) {
+    bannerEl.style.display = "none";
+    return;
+  }
+  const survivor = s.entities.find((e) => e.ownerId === s.winner);
+  const name = survivor ? survivor.name.replace(/ \d+$/, "") : s.winner;
+  bannerEl.textContent = s.winner === myPlayerId ? `Victory — ${name} holds the city` : `${name} wins`;
+  bannerEl.style.display = "block";
+}
+
+// The map is served by the game server (large maps are not bundled).
+const mapPromise: Promise<GameMap> = fetch("/map").then((r) => {
+  if (!r.ok) throw new Error(`map fetch failed: ${r.status}`);
+  return r.json() as Promise<GameMap>;
+});
+
 joinForm.addEventListener("submit", (ev) => {
   ev.preventDefault();
   errorEl.textContent = "";
   let renderer: Renderer | null = null;
+  let latest: Snapshot | null = null; // buffered until the map arrives
 
   const net = new Net({
     onWelcome(msg) {
       joinForm.style.display = "none";
       gameEl.style.display = "block";
-      renderer = new Renderer(canvas, msg.playerId, activeMap, {
-        onCommand: (entityId, target) => net.send({ type: "input", entityId, target }),
-      });
-      renderer.pushSnapshot(msg.snapshot);
-      updateBanner(msg.snapshot, msg.playerId);
+      latest = msg.snapshot;
+      mapPromise
+        .then((map) => {
+          renderer = new Renderer(canvas, msg.playerId, map, {
+            onCommand: (entityId, target) => net.send({ type: "input", entityId, target }),
+          });
+          if (latest) {
+            renderer.pushSnapshot(latest);
+            updateBanner(latest, msg.playerId);
+          }
+        })
+        .catch((err) => {
+          errorEl.textContent = String(err);
+          gameEl.style.display = "none";
+          joinForm.style.display = "flex";
+        });
     },
     onSnapshot(msg) {
+      latest = msg.snapshot;
       renderer?.pushSnapshot(msg.snapshot);
       if (renderer) updateBanner(msg.snapshot, renderer.playerId);
     },

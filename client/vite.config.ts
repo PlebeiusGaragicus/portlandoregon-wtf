@@ -16,6 +16,9 @@ export default defineConfig({
         target: `ws://localhost:${gamePort}`,
         ws: true,
       },
+      "/map": {
+        target: `http://localhost:${gamePort}`,
+      },
     },
   },
 });

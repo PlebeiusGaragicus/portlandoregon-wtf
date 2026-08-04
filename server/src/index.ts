@@ -6,7 +6,10 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import { parseClientMsg, type ServerMsg } from "@battle-juice/shared";
 import { checkPassword, issueToken, passwordConfigured } from "./auth.js";
+import { loadActiveMap } from "./map.js";
 import { Room } from "./room.js";
+
+const loadedMap = loadActiveMap();
 
 const PORT = Number(process.env.PORT ?? 4000);
 const clientDist = join(fileURLToPath(new URL(".", import.meta.url)), "../../client/dist");
@@ -26,6 +29,16 @@ const httpServer = createServer((req, res) => {
     res.writeHead(200, { "content-type": "text/plain" }).end("ok");
     return;
   }
+  // The active map as pre-gzipped JSON; browsers decompress transparently.
+  if (url === "/map") {
+    res.writeHead(200, {
+      "content-type": "application/json",
+      "content-encoding": "gzip",
+      "cache-control": "no-cache",
+    });
+    res.end(loadedMap.gz);
+    return;
+  }
   // Static client (production). In dev, Vite serves the client instead.
   const rel = normalize(url === "/" ? "/index.html" : url).replace(/^(\.\.[/\\])+/, "");
   const filePath = join(clientDist, rel);
@@ -42,7 +55,7 @@ const httpServer = createServer((req, res) => {
   res.writeHead(404).end("not found (client not built — run `npm run build -w client`)");
 });
 
-const room = new Room();
+const room = new Room(loadedMap.map);
 const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
 function send(socket: WebSocket, msg: ServerMsg): void {

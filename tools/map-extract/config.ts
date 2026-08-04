@@ -1,19 +1,22 @@
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
-// Play area, WGS84. Tier 2: ~5.5 x 5.5 km of central city — downtown, the
-// Pearl, Old Town, the Willamette with its bridges (Fremont down to Ross
-// Island), and the inner east side.
-export const MAP_NAME = "central";
-export const DISTRICT = { xmin: -122.72, ymin: 45.49, xmax: -122.65, ymax: 45.54 };
+// Every extracted coordinate must fall inside Portland's real envelope —
+// catches projection mistakes instantly. Also the whole-city play area.
+export const PORTLAND_ENVELOPE = { xmin: -122.86, ymin: 45.43, xmax: -122.47, ymax: 45.65 };
+
+// Play area, WGS84. Profiles:
+//  - "central" (Tier 2): ~5.5 km core, committed as a .ts module
+//  - "portland" (whole city): the full envelope, baked as a gzipped asset
+export const MAP_NAME = process.env.MAP_PROFILE === "central" ? "central" : "portland";
+export const DISTRICT =
+  MAP_NAME === "central"
+    ? { xmin: -122.72, ymin: 45.49, xmax: -122.65, ymax: 45.54 }
+    : PORTLAND_ENVELOPE;
 
 // Extract from a slightly larger box, build the graph, then clip — clipping
 // first severs edges and fragments the graph (catalogued failure mode).
 export const BUFFER_DEG = 0.002; // ≈ 160–220 m
-
-// Every extracted coordinate must fall inside Portland's real envelope —
-// catches projection mistakes instantly.
-export const PORTLAND_ENVELOPE = { xmin: -122.86, ymin: 45.43, xmax: -122.47, ymax: 45.65 };
 
 // Etiquette (MAP-PLAN §3): sequential requests, ~3 req/s, honest UA.
 export const RATE = { minDelayMs: 350 };
@@ -50,12 +53,15 @@ export function extractDate(): string {
 }
 
 export function rawDir(): string {
-  return join(DATA_DIR, "raw", extractDate());
+  return join(DATA_DIR, "raw", `${extractDate()}-${MAP_NAME}`);
 }
 
 export function processedDir(): string {
-  return join(DATA_DIR, "processed", extractDate());
+  return join(DATA_DIR, "processed", `${extractDate()}-${MAP_NAME}`);
 }
+
+/** Large maps are baked here as gzipped JSON assets (gitignored). */
+export const MAPS_ASSET_DIR = join(DATA_DIR, "maps");
 
 export function bufferedEnvelope() {
   return {

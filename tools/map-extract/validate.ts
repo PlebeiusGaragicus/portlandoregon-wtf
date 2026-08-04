@@ -61,9 +61,17 @@ async function main(): Promise<void> {
       process.exit(1);
     }
 
-    // Bbox sanity: a projection bug shifts EVERY coordinate, so a feature is
-    // suspect only when none of its coordinates land inside Portland's
-    // envelope. (Large features — the river — legitimately extend past it.)
+    // Bbox sanity: a projection bug shifts coordinates by thousands of km,
+    // so test against a generously padded envelope. (Features can extend
+    // well past the extraction box: rivers, and intersecting boundary
+    // streets whose vertices all lie outside it.)
+    const pad = 0.2; // degrees, ~15-20 km
+    const sane = {
+      xmin: PORTLAND_ENVELOPE.xmin - pad,
+      xmax: PORTLAND_ENVELOPE.xmax + pad,
+      ymin: PORTLAND_ENVELOPE.ymin - pad,
+      ymax: PORTLAND_ENVELOPE.ymax + pad,
+    };
     let nullGeom = 0;
     let outOfEnvelope = 0;
     for (const f of collection.features) {
@@ -73,12 +81,7 @@ async function main(): Promise<void> {
       }
       let anyInside = false;
       for (const [lon, lat] of coordsOf(f.geometry)) {
-        if (
-          lon >= PORTLAND_ENVELOPE.xmin &&
-          lon <= PORTLAND_ENVELOPE.xmax &&
-          lat >= PORTLAND_ENVELOPE.ymin &&
-          lat <= PORTLAND_ENVELOPE.ymax
-        ) {
+        if (lon >= sane.xmin && lon <= sane.xmax && lat >= sane.ymin && lat <= sane.ymax) {
           anyInside = true;
           break;
         }

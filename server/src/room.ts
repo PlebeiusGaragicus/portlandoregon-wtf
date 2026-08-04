@@ -1,6 +1,5 @@
 import type { WebSocket } from "ws";
 import {
-  activeMap,
   createWorld,
   removeEntitiesOwnedBy,
   snapshot,
@@ -8,6 +7,7 @@ import {
   SQUADS_PER_PLAYER,
   tick,
   TICK_MS,
+  type GameMap,
   type PlayerInput,
   type ServerMsg,
 } from "@battle-juice/shared";
@@ -20,7 +20,11 @@ interface Player {
 }
 
 export class Room {
-  private world = createWorld(activeMap);
+  private world: ReturnType<typeof createWorld>;
+
+  constructor(private map: GameMap) {
+    this.world = createWorld(map);
+  }
   private players = new Map<string, Player>();
   private pendingInputs: PlayerInput[] = [];
   private nextPlayerNum = 1;
@@ -42,7 +46,7 @@ export class Room {
     if (this.players.size === 0) {
       this.stopTicking();
       // Empty room: fresh world, so the next match starts clean.
-      this.world = createWorld(activeMap);
+      this.world = createWorld(this.map);
       this.nextPlayerNum = 1;
     }
   }

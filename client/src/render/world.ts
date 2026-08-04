@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import type { Building, GameMap, StreetEdge, WaterBody } from "@battle-juice/shared";
+import { applyCurvature } from "./curvature.js";
 
 const GROUND_COLOR = 0x262c36; // city-block base
 const WATER_COLOR = 0x1b2f42; // deep river blue
@@ -9,17 +10,71 @@ const WATER_Y = 0.05; // between ground and streets
 const STREET_Y = 0.1; // lift above ground to avoid z-fighting
 const BUILDING_TINTS = [0x707786, 0x7d8290, 0x8a8578];
 
-/** Static map meshes: ground, water, street ribbons, extruded buildings. */
-export function buildWorld(map: GameMap): THREE.Group {
+// Tile size for chunked meshes — one merged mesh per tile so the GPU
+// frustum-culls off-screen chunks. FAR keeps only landmark-height buildings
+// when zoomed way out.
+const TILE = 1000; // meters
+const FAR_MIN_HEIGHT = 15; // meters
+
+export interface WorldLayers {
+  group: THREE.Group;
+  /**
+   * Cross-fade detail with zoom: 0 = full building detail, 1 = landmark
+   * buildings only. No sudden pop — the near set fades out over the band.
+   */
+  setBlend(f: number): void;
+}
+
+/** Static map meshes: ground, water, tiled street ribbons + buildings. */
+export function buildWorld(map: GameMap): WorldLayers {
   const group = new THREE.Group();
   group.add(buildGround(map));
   const water = buildWater(map.water ?? []);
   if (water) group.add(water);
-  const streets = buildStreets(map.edges);
-  if (streets) group.add(streets);
-  const buildings = buildBuildings(map.buildings);
-  if (buildings) group.add(buildings);
-  return group;
+
+  const streetMat = new THREE.MeshLambertMaterial({ color: STREET_COLOR, side: THREE.DoubleSide });
+  applyCurvature(streetMat);
+  for (const mesh of buildStreetTiles(map.edges, streetMat)) group.add(mesh);
+
+  const near = new THREE.Group();
+  const far = new THREE.Group();
+  const nearBuilt = buildBuildingTiles(map.buildings, () => true);
+  const farBuilt = buildBuildingTiles(map.buildings, (b) => b.height >= FAR_MIN_HEIGHT);
+  for (const mesh of nearBuilt.meshes) near.add(mesh);
+  for (const mesh of farBuilt.meshes) far.add(mesh);
+  far.visible = false;
+  group.add(near, far);
+
+  const streetNear = new THREE.Color(STREET_COLOR);
+  const streetFar = new THREE.Color(0x5a6478); // brighter so the grid reads from altitude
+  return {
+    group,
+    setBlend(f: number): void {
+      const t = Math.min(1, Math.max(0, f));
+      near.visible = t < 1;
+      far.visible = t > 0;
+      nearBuilt.material.transparent = t > 0;
+      nearBuilt.material.opacity = 1 - t;
+      nearBuilt.material.depthWrite = t < 0.6; // fade without z-artifacts late in the band
+      streetMat.color.lerpColors(streetNear, streetFar, t);
+    },
+  };
+}
+
+function tileKey(x: number, y: number): number {
+  return Math.floor(y / TILE) * 4096 + Math.floor(x / TILE);
+}
+
+function buildGround(map: GameMap): THREE.Mesh {
+  // Segmented so the curvature vertex shader has vertices to bend.
+  const geo = new THREE.PlaneGeometry(map.meta.width, map.meta.height, 64, 64);
+  geo.rotateX(-Math.PI / 2);
+  const mat = new THREE.MeshLambertMaterial({ color: GROUND_COLOR });
+  applyCurvature(mat);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false; // curvature moves it below its bounding box
+  mesh.position.set(map.meta.width / 2, 0, -map.meta.height / 2);
+  return mesh;
 }
 
 function buildWater(bodies: WaterBody[]): THREE.Mesh | null {
@@ -40,29 +95,30 @@ function buildWater(bodies: WaterBody[]): THREE.Mesh | null {
   if (parts.length === 0) return null;
   const merged = mergeGeometries(parts);
   for (const p of parts) p.dispose();
-  return new THREE.Mesh(merged, new THREE.MeshLambertMaterial({ color: WATER_COLOR }));
+  const mat = new THREE.MeshLambertMaterial({ color: WATER_COLOR });
+  applyCurvature(mat);
+  return new THREE.Mesh(merged, mat);
 }
 
-function buildGround(map: GameMap): THREE.Mesh {
-  const geo = new THREE.PlaneGeometry(map.meta.width, map.meta.height);
-  geo.rotateX(-Math.PI / 2);
-  const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ color: GROUND_COLOR }));
-  mesh.position.set(map.meta.width / 2, 0, -map.meta.height / 2);
-  return mesh;
-}
-
-/** One merged flat ribbon geometry for all street centerlines. */
-function buildStreets(edges: StreetEdge[]): THREE.Mesh | null {
-  const parts: THREE.BufferGeometry[] = [];
+/** Street ribbons, merged per tile (keyed by segment midpoint). */
+function buildStreetTiles(edges: StreetEdge[], mat: THREE.MeshLambertMaterial): THREE.Mesh[] {
+  const tiles = new Map<number, THREE.BufferGeometry[]>();
   for (const edge of edges) {
     const geo = ribbon(edge.polyline, edge.width);
-    if (geo) parts.push(geo);
+    if (!geo) continue;
+    const [mx, my] = edge.polyline[Math.floor(edge.polyline.length / 2)]!;
+    const key = tileKey(mx, my);
+    const list = tiles.get(key);
+    if (list) list.push(geo);
+    else tiles.set(key, [geo]);
   }
-  if (parts.length === 0) return null;
-  const merged = mergeGeometries(parts);
-  for (const p of parts) p.dispose();
-  const mat = new THREE.MeshLambertMaterial({ color: STREET_COLOR, side: THREE.DoubleSide });
-  return new THREE.Mesh(merged, mat);
+  const meshes: THREE.Mesh[] = [];
+  for (const parts of tiles.values()) {
+    const merged = mergeGeometries(parts);
+    for (const p of parts) p.dispose();
+    meshes.push(new THREE.Mesh(merged, mat));
+  }
+  return meshes;
 }
 
 /** Triangle-strip ribbon along a polyline with mitered joints, at STREET_Y. */
@@ -74,7 +130,6 @@ function ribbon(polyline: [number, number][], width: number): THREE.BufferGeomet
 
   for (let i = 0; i < polyline.length; i++) {
     const [px, py] = polyline[i]!;
-    // Averaged unit normal of the adjacent segments (simple miter).
     let nx = 0;
     let ny = 0;
     for (const j of [i - 1, i]) {
@@ -106,18 +161,31 @@ function ribbon(polyline: [number, number][], width: number): THREE.BufferGeomet
   return geo;
 }
 
-/** All buildings merged into one vertex-colored geometry (single draw call). */
-function buildBuildings(buildings: Building[]): THREE.Mesh | null {
-  const parts: THREE.BufferGeometry[] = [];
+/** Buildings merged per tile (keyed by first footprint vertex). */
+function buildBuildingTiles(
+  buildings: Building[],
+  keep: (b: Building) => boolean,
+): { meshes: THREE.Mesh[]; material: THREE.MeshLambertMaterial } {
+  const tiles = new Map<number, THREE.BufferGeometry[]>();
   for (const b of buildings) {
+    if (!keep(b)) continue;
     const geo = prism(b);
-    if (geo) parts.push(geo);
+    if (!geo) continue;
+    const [fx, fy] = b.footprint[0]!;
+    const key = tileKey(fx, fy);
+    const list = tiles.get(key);
+    if (list) list.push(geo);
+    else tiles.set(key, [geo]);
   }
-  if (parts.length === 0) return null;
-  const merged = mergeGeometries(parts);
-  for (const p of parts) p.dispose();
-  const mat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
-  return new THREE.Mesh(merged, mat);
+  const material = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+  applyCurvature(material);
+  const meshes: THREE.Mesh[] = [];
+  for (const parts of tiles.values()) {
+    const merged = mergeGeometries(parts);
+    for (const p of parts) p.dispose();
+    meshes.push(new THREE.Mesh(merged, material));
+  }
+  return { meshes, material };
 }
 
 function prism(b: Building): THREE.BufferGeometry | null {

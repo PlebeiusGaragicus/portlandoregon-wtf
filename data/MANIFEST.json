@@ -1,47 +1,47 @@
 {
   "extractDate": "2026-08-04",
   "district": {
-    "xmin": -122.72,
-    "ymin": 45.49,
-    "xmax": -122.65,
-    "ymax": 45.54
+    "xmin": -122.86,
+    "ymin": 45.43,
+    "xmax": -122.47,
+    "ymax": 45.65
   },
   "bufferedEnvelope": {
-    "xmin": -122.722,
-    "ymin": 45.488,
-    "xmax": -122.64800000000001,
-    "ymax": 45.542
+    "xmin": -122.862,
+    "ymin": 45.428,
+    "xmax": -122.468,
+    "ymax": 45.652
   },
   "layers": {
     "streets": {
       "endpoint": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/68",
       "layerName": "Streets",
-      "features": 6662,
-      "sha256": "5e11f02196de978169c76c7024f9011f4d95e0b8c1515a43c7ccdb77724142fe"
+      "features": 59129,
+      "sha256": "ade46b8fc22efa3cccadce0561a626a67f9c9ca51398b18027eac0aa0b4de79e"
     },
     "buildings": {
       "endpoint": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Property/MapServer/184",
       "layerName": "Buildings",
-      "features": 20191,
-      "sha256": "a5bfce8925d6113df099ae2db32a595396fd51d560da309e90d79bc63a0e16ae"
+      "features": 249102,
+      "sha256": "35b39b8779865670ec42956cd677d1f1638a116f51c6cae39ff25eacfbedb88f"
     },
     "trees": {
       "endpoint": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/1415",
       "layerName": "Street Tree Inventory - Active Records",
-      "features": 34624,
-      "sha256": "b3c72fb5797e05ebe130789c2944a790e0ca2489054c7b443874aab2f88a3eb3"
+      "features": 252205,
+      "sha256": "6fe051130828167f1d5e5b45db9c479cfb82505c4e619ae2f5aaab1451e57701"
     },
     "signs": {
       "endpoint": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/223",
       "layerName": "Signs",
-      "features": 9798,
-      "sha256": "eef33ad2fbb1254d17ea9285a33584c677784fd86e3db4bad38e578d1a5cde7a"
+      "features": 56531,
+      "sha256": "eff9b62ef63db9fe287fd63d51d39d99343f921332b461bd5bcddaee721f42ef"
     },
     "signals": {
       "endpoint": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/54",
       "layerName": "Traffic Signals",
-      "features": 526,
-      "sha256": "cf42176cf1f2db20668630f2584937e40aa2bcd1dd6cbcbc6d003caceec9e6fa"
+      "features": 1171,
+      "sha256": "d1183d629eec8c1fbed3f6321360d7369473531b56bcb8e201ae10da598a1730"
     },
     "water": {
       "endpoint": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_PublicSafetyHazards/MapServer/95",
@@ -52,41 +52,42 @@
   },
   "transform": {
     "origin": {
-      "lat": 45.49,
-      "lon": -122.72
+      "lat": 45.43,
+      "lon": -122.86
     },
     "playAreaMeters": {
-      "width": 5446,
-      "height": 5576
+      "width": 30346,
+      "height": 24569
     },
     "heightUnit": "feet (converted x0.3048)",
     "streetEpsilonM": 1,
     "footprintEpsilonM": 0.5,
     "counts": {
-      "nodes": 4029,
-      "edges": 6056,
-      "buildings": 17794,
-      "props": 40306,
-      "water": 1
+      "nodes": 28417,
+      "edges": 39650,
+      "buildings": 249017,
+      "props": 309907,
+      "water": 2
     }
   },
   "bakedMap": {
-    "file": "shared/src/maps/central.ts",
+    "file": "data/maps/portland.json.gz",
+    "kind": "gz-asset (66.3 MB raw, 12.2 MB gz)",
     "meta": {
-      "name": "central",
+      "name": "portland",
       "sourceDate": "2026-08-04",
       "origin": {
-        "lat": 45.49,
-        "lon": -122.72
+        "lat": 45.43,
+        "lon": -122.86
       },
-      "width": 5446,
-      "height": 5576
+      "width": 30346,
+      "height": 24569
     },
-    "nodes": 4029,
-    "edges": 6056,
-    "buildings": 17794,
-    "props": 40306,
-    "water": 1
+    "nodes": 28417,
+    "edges": 39650,
+    "buildings": 249017,
+    "props": 309907,
+    "water": 2
   },
   "signKeep": {
     "R1010": "stop",

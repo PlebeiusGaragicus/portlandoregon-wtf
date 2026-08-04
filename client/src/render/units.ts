@@ -29,9 +29,15 @@ interface Marker {
 export class UnitLayer {
   readonly group = new THREE.Group();
   private markers = new Map<string, Marker>();
-  private selectedId: string | null = null;
+  private selectedIds = new Set<string>();
+  private viewScale = 1;
 
   constructor(private myPlayerId: string) {}
+
+  /** Grow markers when zoomed out so armies stay visible at city scale. */
+  setViewScale(s: number): void {
+    this.viewScale = s;
+  }
 
   /** Position markers at prev->curr interpolation factor t (0..1). */
   sync(curr: Snapshot, prev: Snapshot | null, t: number): void {
@@ -49,6 +55,7 @@ export class UnitLayer {
       marker.x = before ? before.x + (e.x - before.x) * t : e.x;
       marker.y = before ? before.y + (e.y - before.y) * t : e.y;
       marker.root.position.copy(toScene(marker.x, marker.y, 0));
+      marker.root.scale.setScalar(this.viewScale);
       if (e.strength !== marker.lastStrength) {
         marker.lastStrength = e.strength;
         drawBar(marker.barCtx, e.strength / SQUAD_STRENGTH);
@@ -59,11 +66,13 @@ export class UnitLayer {
       if (!seen.has(id)) {
         this.group.remove(marker.root);
         this.markers.delete(id);
-        if (this.selectedId === id) this.selectedId = null;
+        this.selectedIds.delete(id);
       }
     }
 
     // Pass 2: route lines and tracers (need everyone's fresh positions).
+    // Local-space offsets divide by viewScale so root scaling cancels out.
+    const inv = 1 / this.viewScale;
     const flicker = 0.45 + 0.35 * Math.abs(Math.sin(performance.now() / 40));
     for (const e of curr.entities) {
       const marker = this.markers.get(e.id)!;
@@ -71,7 +80,7 @@ export class UnitLayer {
       if (marker.routeLine) {
         if (e.path && e.path.length > 0) {
           const pts = [new THREE.Vector3(0, 0.5, 0)];
-          for (const p of e.path) pts.push(toScene(p.x - marker.x, p.y - marker.y, 0.5));
+          for (const p of e.path) pts.push(toScene((p.x - marker.x) * inv, (p.y - marker.y) * inv, 0.5));
           marker.routeLine.geometry.setFromPoints(pts);
           marker.routeLine.visible = true;
         } else {
@@ -83,7 +92,7 @@ export class UnitLayer {
       if (targetMarker) {
         marker.tracer.geometry.setFromPoints([
           new THREE.Vector3(0, 2, 0),
-          toScene(targetMarker.x - marker.x, targetMarker.y - marker.y, 2),
+          toScene((targetMarker.x - marker.x) * inv, (targetMarker.y - marker.y) * inv, 2),
         ]);
         (marker.tracer.material as THREE.LineBasicMaterial).opacity = flicker;
         marker.tracer.visible = true;
@@ -108,18 +117,32 @@ export class UnitLayer {
     return best;
   }
 
-  setSelected(id: string | null): void {
-    this.selectedId = id;
+  setSelected(ids: string[]): void {
+    this.selectedIds = new Set(ids.filter((id) => this.markers.get(id)?.own));
     for (const [mid, m] of this.markers) {
       if (!m.ring) continue;
-      const selected = mid === id;
+      const selected = this.selectedIds.has(mid);
       (m.ring.material as THREE.MeshBasicMaterial).color.setHex(selected ? SELECTED_COLOR : RING_COLOR);
       m.ring.scale.setScalar(selected ? 1.25 : 1);
     }
   }
 
-  selected(): string | null {
-    return this.selectedId;
+  selected(): string[] {
+    return [...this.selectedIds];
+  }
+
+  /** Current own-squad world positions (for marquee tests and the minimap). */
+  ownPositions(): { id: string; x: number; y: number }[] {
+    const out: { id: string; x: number; y: number }[] = [];
+    for (const [id, m] of this.markers) if (m.own) out.push({ id, x: m.x, y: m.y });
+    return out;
+  }
+
+  /** All marker positions with ownership (minimap dots). */
+  allPositions(): { own: boolean; x: number; y: number }[] {
+    const out: { own: boolean; x: number; y: number }[] = [];
+    for (const m of this.markers.values()) out.push({ own: m.own, x: m.x, y: m.y });
+    return out;
   }
 
   private makeMarker(e: Entity): Marker {
