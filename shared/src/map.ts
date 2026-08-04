@@ -51,6 +51,13 @@ export interface Building {
   use?: string;
 }
 
+/** Water surface polygon (render-only). rings[0] is the outer ring; the
+ * rest are holes (islands). */
+export interface WaterBody {
+  id: number;
+  rings: [number, number][][];
+}
+
 /** Decorative city props — renderer-only, invisible to the sim. */
 export type Prop =
   | { kind: "tree"; x: number; y: number; size: 1 | 2 | 3 }
@@ -65,4 +72,6 @@ export interface GameMap {
   /** Boundary node ids — deploy zones / future supply entry edges. */
   entries: { north: number[]; south: number[] };
   props: Prop[];
+  /** River/water surfaces (absent on maps baked before Tier 2). */
+  water?: WaterBody[];
 }

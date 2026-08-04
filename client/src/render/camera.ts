@@ -12,8 +12,7 @@ export function toWorldXY(v: THREE.Vector3): { x: number; y: number } {
 }
 
 const MIN_VIEW_HEIGHT = 60; // meters visible vertically at max zoom-in
-const MAX_VIEW_HEIGHT = 1800;
-const CAMERA_DIST = 2000; // orthographic: any comfortably large constant
+const CAMERA_DIST = 8000; // orthographic: any comfortably large constant
 
 /**
  * Orthographic camera rig: a ground-plane target, a continuous azimuth theta,
@@ -25,9 +24,12 @@ export class CameraRig {
   theta = 0; // azimuth, radians; 0 = north up
   viewHeight = 400;
   readonly tilt = (55 * Math.PI) / 180; // elevation angle above the ground
+  private maxViewHeight: number;
 
   constructor(map: GameMap) {
     this.target = { x: map.meta.width / 2, y: map.meta.height / 2 };
+    // Zoom out far enough to frame the whole map, whatever its size.
+    this.maxViewHeight = Math.max(1800, Math.max(map.meta.width, map.meta.height) * 1.15);
   }
 
   /** Ground direction from camera toward target ("screen up" on the ground). */
@@ -83,7 +85,7 @@ export class CameraRig {
   }
 
   zoomBy(factor: number): void {
-    this.viewHeight = Math.min(MAX_VIEW_HEIGHT, Math.max(MIN_VIEW_HEIGHT, this.viewHeight * factor));
+    this.viewHeight = Math.min(this.maxViewHeight, Math.max(MIN_VIEW_HEIGHT, this.viewHeight * factor));
   }
 
   clampToMap(map: GameMap): void {

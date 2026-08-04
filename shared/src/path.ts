@@ -3,7 +3,8 @@
 // Units live anywhere on street polylines, not just at nodes, so a path query
 // is: project start/goal onto their nearest edges, A* between edge endpoints,
 // then stitch waypoints from the partial start/goal edges plus full edges
-// in between.
+// in between. Built to city scale: segment lookups go through a uniform grid
+// and the A* open set is a binary heap.
 import type { GameMap, StreetEdge } from "./map.js";
 
 export interface AdjEntry {
@@ -13,9 +14,20 @@ export interface AdjEntry {
   cost: number;
 }
 
+interface SegRef {
+  edge: StreetEdge;
+  seg: number;
+}
+
+const GRID_CELL = 150; // meters
+
 export interface PathGraph {
   map: GameMap;
   adj: Map<number, AdjEntry[]>;
+  /** Uniform grid over street segments for nearest-point queries. */
+  grid: Map<number, SegRef[]>;
+  cols: number;
+  rows: number;
 }
 
 function segLen(a: [number, number], b: [number, number]): number {
@@ -35,12 +47,37 @@ export function buildPathGraph(map: GameMap): PathGraph {
     if (list) list.push(e);
     else adj.set(n, [e]);
   };
+
+  const cols = Math.max(1, Math.ceil(map.meta.width / GRID_CELL));
+  const rows = Math.max(1, Math.ceil(map.meta.height / GRID_CELL));
+  const grid = new Map<number, SegRef[]>();
+  const clampCol = (c: number): number => Math.max(0, Math.min(cols - 1, c));
+  const clampRow = (r: number): number => Math.max(0, Math.min(rows - 1, r));
+
   for (const edge of map.edges) {
     const cost = polylineLength(edge.polyline);
     push(edge.a, { edge, from: edge.a, to: edge.b, cost });
     push(edge.b, { edge, from: edge.b, to: edge.a, cost });
+
+    for (let i = 0; i < edge.polyline.length - 1; i++) {
+      const [ax, ay] = edge.polyline[i]!;
+      const [bx, by] = edge.polyline[i + 1]!;
+      const c0 = clampCol(Math.floor(Math.min(ax, bx) / GRID_CELL));
+      const c1 = clampCol(Math.floor(Math.max(ax, bx) / GRID_CELL));
+      const r0 = clampRow(Math.floor(Math.min(ay, by) / GRID_CELL));
+      const r1 = clampRow(Math.floor(Math.max(ay, by) / GRID_CELL));
+      for (let r = r0; r <= r1; r++) {
+        for (let c = c0; c <= c1; c++) {
+          const key = r * cols + c;
+          const list = grid.get(key);
+          const ref = { edge, seg: i };
+          if (list) list.push(ref);
+          else grid.set(key, [ref]);
+        }
+      }
+    }
   }
-  return { map, adj };
+  return { map, adj, grid, cols, rows };
 }
 
 /** A position projected onto a street polyline. */
@@ -54,32 +91,113 @@ export interface StreetPoint {
   distToB: number;
 }
 
+function projectOnSeg(
+  p: { x: number; y: number },
+  a: [number, number],
+  b: [number, number],
+): { t: number; x: number; y: number; d: number } {
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const lenSq = dx * dx + dy * dy;
+  let t = lenSq === 0 ? 0 : ((p.x - a[0]) * dx + (p.y - a[1]) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const x = a[0] + t * dx;
+  const y = a[1] + t * dy;
+  return { t, x, y, d: Math.hypot(p.x - x, p.y - y) };
+}
+
+function toStreetPoint(ref: SegRef, proj: { t: number; x: number; y: number }): StreetPoint {
+  const line = ref.edge.polyline;
+  let along = 0;
+  for (let i = 0; i < ref.seg; i++) along += segLen(line[i]!, line[i + 1]!);
+  const distToA = along + proj.t * segLen(line[ref.seg]!, line[ref.seg + 1]!);
+  return {
+    edge: ref.edge,
+    seg: ref.seg,
+    t: proj.t,
+    x: proj.x,
+    y: proj.y,
+    distToA,
+    distToB: polylineLength(line) - distToA,
+  };
+}
+
+/** Nearest street point via expanding grid rings (exact per-candidate math). */
 export function nearestOnStreets(graph: PathGraph, p: { x: number; y: number }): StreetPoint | null {
-  let best: StreetPoint | null = null;
-  let bestDist = Infinity;
-  for (const edge of graph.map.edges) {
-    const line = edge.polyline;
-    let along = 0;
-    for (let i = 0; i < line.length - 1; i++) {
-      const a = line[i]!;
-      const b = line[i + 1]!;
-      const dx = b[0] - a[0];
-      const dy = b[1] - a[1];
-      const lenSq = dx * dx + dy * dy;
-      let t = lenSq === 0 ? 0 : ((p.x - a[0]) * dx + (p.y - a[1]) * dy) / lenSq;
-      t = Math.max(0, Math.min(1, t));
-      const x = a[0] + t * dx;
-      const y = a[1] + t * dy;
-      const d = Math.hypot(p.x - x, p.y - y);
-      if (d < bestDist) {
-        bestDist = d;
-        const distToA = along + t * Math.sqrt(lenSq);
-        best = { edge, seg: i, t, x, y, distToA, distToB: polylineLength(line) - distToA };
+  const pc = Math.max(0, Math.min(graph.cols - 1, Math.floor(p.x / GRID_CELL)));
+  const pr = Math.max(0, Math.min(graph.rows - 1, Math.floor(p.y / GRID_CELL)));
+  const maxRing = Math.max(graph.cols, graph.rows);
+
+  let best: { ref: SegRef; proj: { t: number; x: number; y: number; d: number } } | null = null;
+  for (let ring = 0; ring <= maxRing; ring++) {
+    // Conservative stop: every cell in this ring is at least (ring-1)*CELL away.
+    if (best && best.proj.d < (ring - 1) * GRID_CELL) break;
+    for (let r = pr - ring; r <= pr + ring; r++) {
+      if (r < 0 || r >= graph.rows) continue;
+      for (let c = pc - ring; c <= pc + ring; c++) {
+        if (c < 0 || c >= graph.cols) continue;
+        if (Math.max(Math.abs(r - pr), Math.abs(c - pc)) !== ring) continue; // ring shell only
+        const refs = graph.grid.get(r * graph.cols + c);
+        if (!refs) continue;
+        for (const ref of refs) {
+          const line = ref.edge.polyline;
+          const proj = projectOnSeg(p, line[ref.seg]!, line[ref.seg + 1]!);
+          if (!best || proj.d < best.proj.d) best = { ref, proj };
+        }
       }
-      along += Math.sqrt(lenSq);
     }
   }
-  return best;
+  return best ? toStreetPoint(best.ref, best.proj) : null;
+}
+
+/** Binary min-heap keyed on f; lazy deletion (stale entries skipped). */
+class MinHeap {
+  private keys: number[] = [];
+  private vals: number[] = [];
+
+  get size(): number {
+    return this.keys.length;
+  }
+
+  push(key: number, val: number): void {
+    const k = this.keys;
+    const v = this.vals;
+    k.push(key);
+    v.push(val);
+    let i = k.length - 1;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (k[parent]! <= k[i]!) break;
+      [k[parent], k[i]] = [k[i]!, k[parent]!];
+      [v[parent], v[i]] = [v[i]!, v[parent]!];
+      i = parent;
+    }
+  }
+
+  pop(): number {
+    const k = this.keys;
+    const v = this.vals;
+    const top = v[0]!;
+    const lastK = k.pop()!;
+    const lastV = v.pop()!;
+    if (k.length > 0) {
+      k[0] = lastK;
+      v[0] = lastV;
+      let i = 0;
+      for (;;) {
+        const l = 2 * i + 1;
+        const r = l + 1;
+        let smallest = i;
+        if (l < k.length && k[l]! < k[smallest]!) smallest = l;
+        if (r < k.length && k[r]! < k[smallest]!) smallest = r;
+        if (smallest === i) break;
+        [k[smallest], k[i]] = [k[i]!, k[smallest]!];
+        [v[smallest], v[i]] = [v[i]!, v[smallest]!];
+        i = smallest;
+      }
+    }
+    return top;
+  }
 }
 
 /** Waypoints from a street point to one endpoint node of its edge. */
@@ -138,24 +256,17 @@ export function findPath(
 
   const dist = new Map<number, number>();
   const prev = new Map<number, AdjEntry>(); // how we arrived at a node
-  const open = new Map<number, number>(); // node -> f = dist + h
   const settled = new Set<number>();
+  const heap = new MinHeap();
 
   dist.set(s.edge.a, s.distToA);
   dist.set(s.edge.b, s.distToB);
-  open.set(s.edge.a, s.distToA + h(s.edge.a));
-  open.set(s.edge.b, s.distToB + h(s.edge.b));
+  heap.push(s.distToA + h(s.edge.a), s.edge.a);
+  heap.push(s.distToB + h(s.edge.b), s.edge.b);
 
-  while (open.size > 0) {
-    let cur = -1;
-    let curF = Infinity;
-    for (const [n, f] of open) {
-      if (f < curF) {
-        cur = n;
-        curF = f;
-      }
-    }
-    open.delete(cur);
+  while (heap.size > 0) {
+    const cur = heap.pop();
+    if (settled.has(cur)) continue; // stale heap entry
     settled.add(cur);
     if (settled.has(g.edge.a) && settled.has(g.edge.b)) break;
 
@@ -166,7 +277,7 @@ export function findPath(
       if (nd < (dist.get(entry.to) ?? Infinity)) {
         dist.set(entry.to, nd);
         prev.set(entry.to, entry);
-        open.set(entry.to, nd + h(entry.to));
+        heap.push(nd + h(entry.to), entry.to);
       }
     }
   }

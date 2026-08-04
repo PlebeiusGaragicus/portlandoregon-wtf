@@ -1,8 +1,11 @@
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 
-// Play area, WGS84 (Pearl District / downtown core, per MAP-PLAN §2).
-export const DISTRICT = { xmin: -122.685, ymin: 45.515, xmax: -122.665, ymax: 45.527 };
+// Play area, WGS84. Tier 2: ~5.5 x 5.5 km of central city — downtown, the
+// Pearl, Old Town, the Willamette with its bridges (Fremont down to Ross
+// Island), and the inner east side.
+export const MAP_NAME = "central";
+export const DISTRICT = { xmin: -122.72, ymin: 45.49, xmax: -122.65, ymax: 45.54 };
 
 // Extract from a slightly larger box, build the graph, then clip — clipping
 // first severs edges and fragments the graph (catalogued failure mode).
@@ -39,7 +42,7 @@ export const REPO_ROOT = join(HERE, "..", "..");
 export const DATA_DIR = join(REPO_ROOT, "data");
 export const ENDPOINTS_FILE = join(DATA_DIR, "endpoints.json");
 export const MANIFEST_FILE = join(DATA_DIR, "MANIFEST.json");
-export const MAP_OUT_FILE = join(REPO_ROOT, "shared", "src", "maps", "pearl.ts");
+export const MAP_OUT_FILE = join(REPO_ROOT, "shared", "src", "maps", `${MAP_NAME}.ts`);
 
 /** Extraction date used for data/raw/{date} and data/processed/{date}. */
 export function extractDate(): string {

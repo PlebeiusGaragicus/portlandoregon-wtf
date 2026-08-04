@@ -1,5 +1,5 @@
 {
-  "resolvedAt": "2026-08-04T19:26:13.996Z",
+  "resolvedAt": "2026-08-04T20:35:11.575Z",
   "layers": {
     "streets": {
       "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/68",
@@ -35,6 +35,13 @@
       "name": "Street Tree Inventory - Active Records",
       "maxRecordCount": 200,
       "citywideCount": 252205
+    },
+    "water": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_PublicSafetyHazards/MapServer/95",
+      "id": 95,
+      "name": "Willamette/Columbia River Ordinary High Water",
+      "maxRecordCount": 200,
+      "citywideCount": 1
     }
   },
   "trees": {

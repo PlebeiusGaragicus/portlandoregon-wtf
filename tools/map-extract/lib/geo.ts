@@ -102,6 +102,41 @@ function intersectRect(a: Pt, b: Pt, r: Rect): Pt {
   return [a[0] + dx * tMin, a[1] + dy * tMin];
 }
 
+/** Sutherland–Hodgman: clip a ring to a rect (rect is convex). May return
+ * fewer than 3 points when the ring lies outside. */
+export function clipRingToRect(ring: Pt[], r: Rect): Pt[] {
+  type EdgeTest = { inside: (p: Pt) => boolean; hit: (a: Pt, b: Pt) => Pt };
+  const edges: EdgeTest[] = [
+    { inside: (p) => p[0] >= r.xmin, hit: (a, b) => lerpAt(a, b, (r.xmin - a[0]) / (b[0] - a[0])) },
+    { inside: (p) => p[0] <= r.xmax, hit: (a, b) => lerpAt(a, b, (r.xmax - a[0]) / (b[0] - a[0])) },
+    { inside: (p) => p[1] >= r.ymin, hit: (a, b) => lerpAt(a, b, (r.ymin - a[1]) / (b[1] - a[1])) },
+    { inside: (p) => p[1] <= r.ymax, hit: (a, b) => lerpAt(a, b, (r.ymax - a[1]) / (b[1] - a[1])) },
+  ];
+  let out = ring.slice();
+  for (const edge of edges) {
+    const input = out;
+    out = [];
+    for (let i = 0; i < input.length; i++) {
+      const prev = input[(i + input.length - 1) % input.length]!;
+      const cur = input[i]!;
+      const prevIn = edge.inside(prev);
+      const curIn = edge.inside(cur);
+      if (curIn) {
+        if (!prevIn) out.push(edge.hit(prev, cur));
+        out.push(cur);
+      } else if (prevIn) {
+        out.push(edge.hit(prev, cur));
+      }
+    }
+    if (out.length === 0) return out;
+  }
+  return out;
+}
+
+function lerpAt(a: Pt, b: Pt, t: number): Pt {
+  return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+}
+
 export function bboxOf(coords: Pt[]): Rect {
   let xmin = Infinity;
   let ymin = Infinity;

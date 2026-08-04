@@ -4,10 +4,10 @@
 // Reads data/raw/{date}/, writes data/processed/{date}/pearl-core.json.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Building, GameMap, Prop, RoadClass, StreetEdge, StreetNode } from "@battle-juice/shared";
-import { extractDate, HEIGHT_PER_STORY_M, MANIFEST_FILE, processedDir, rawDir, SIGN_KEEP } from "./config.js";
+import type { Building, GameMap, Prop, RoadClass, StreetEdge, StreetNode, WaterBody } from "@battle-juice/shared";
+import { extractDate, HEIGHT_PER_STORY_M, MANIFEST_FILE, MAP_NAME, processedDir, rawDir, SIGN_KEEP } from "./config.js";
 import type { GeoJsonCollection, GeoJsonFeature } from "./lib/arcgis.js";
-import { clipPolylineAtExit, ensureWinding, inRect, round1, simplify, type Pt, type Rect } from "./lib/geo.js";
+import { clipPolylineAtExit, clipRingToRect, ensureWinding, inRect, round1, simplify, type Pt, type Rect } from "./lib/geo.js";
 import { origin, playArea, toLocal } from "./lib/proj.js";
 
 const STREET_EPSILON = 1; // m, Douglas-Peucker
@@ -263,6 +263,35 @@ function transformBuildings(buildings: GeoJsonCollection, rect: Rect): { list: B
   return { list, heightUnit };
 }
 
+function transformWater(rect: Rect): WaterBody[] {
+  const water = readRaw("water");
+  if (!water) return [];
+  const bodies: WaterBody[] = [];
+  for (const f of water.features) {
+    if (!f.geometry) continue;
+    const polys: [number, number][][][] =
+      f.geometry.type === "Polygon"
+        ? [f.geometry.coordinates as [number, number][][]]
+        : (f.geometry.coordinates as [number, number][][][]);
+    for (const rings of polys) {
+      const clipped = rings
+        .map((ring) => {
+          const local = ring.map(([lon, lat]) => toLocal(lon, lat));
+          return simplify(clipRingToRect(local, rect), 1).map(
+            ([x, y]): [number, number] => [round1(x), round1(y)],
+          );
+        })
+        .filter((ring) => ring.length >= 3);
+      if (clipped.length === 0 || clipped[0]!.length < 3) continue;
+      const outer = ensureWinding(clipped[0]!, true);
+      const holes = clipped.slice(1).map((r) => ensureWinding(r, false));
+      bodies.push({ id: bodies.length, rings: [outer, ...holes] });
+    }
+  }
+  console.log(`  water: ${bodies.length} bodies in play area`);
+  return bodies;
+}
+
 // Candidate size fields for street trees (exact schema discovered at runtime).
 const TREE_SIZE_FIELDS = ["DBH", "DIAMETER", "TREE_DBH", "TRUNKDIAM", "DIAMETER_BREAST_HEIGHT"];
 
@@ -345,10 +374,11 @@ async function main(): Promise<void> {
   const graph = transformStreets(streets, rect);
   const built = transformBuildings(buildings, rect);
   const props = transformProps(rect);
+  const water = transformWater(rect);
 
   const map: GameMap = {
     meta: {
-      name: "pearl",
+      name: MAP_NAME,
       sourceDate: extractDate(),
       origin: origin(),
       width: Math.round(area.width),
@@ -359,10 +389,11 @@ async function main(): Promise<void> {
     buildings: built.list,
     entries: graph.entries,
     props,
+    water,
   };
 
   mkdirSync(processedDir(), { recursive: true });
-  const outFile = join(processedDir(), "pearl-core.json");
+  const outFile = join(processedDir(), `${MAP_NAME}-core.json`);
   writeFileSync(outFile, JSON.stringify(map));
   console.log(`wrote ${outFile}`);
 
@@ -379,6 +410,7 @@ async function main(): Promise<void> {
       edges: map.edges.length,
       buildings: map.buildings.length,
       props: map.props.length,
+      water: water.length,
     },
   };
   writeFileSync(MANIFEST_FILE, JSON.stringify(manifest, null, 2) + "\n");

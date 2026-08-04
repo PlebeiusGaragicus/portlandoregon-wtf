@@ -4,7 +4,7 @@
 const TRANSPORT = "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer";
 const PROPERTY = "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Property/MapServer";
 
-export type LayerKey = "streets" | "buildings" | "signs" | "signals" | "trees";
+export type LayerKey = "streets" | "buildings" | "signs" | "signals" | "trees" | "water";
 
 export interface LayerSpec {
   key: LayerKey;
@@ -71,6 +71,15 @@ export const LAYERS: LayerSpec[] = [
     namePattern: /^street\s*tree\s*inventory/i,
     fields: ["SPECIES", "DIAMETER", "MATURE_SIZE"],
     populationChecks: ["DIAMETER"],
+  },
+  {
+    key: "water",
+    // Found via DCAT sweep: river surface polygons (render-only).
+    service: "https://www.portlandmaps.com/od/rest/services/COP_OpenData_PublicSafetyHazards/MapServer",
+    idSeed: 95,
+    namePattern: /ordinary high water/i,
+    fields: [],
+    populationChecks: [],
   },
 ];
 

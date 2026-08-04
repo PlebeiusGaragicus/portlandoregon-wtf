@@ -1,84 +1,92 @@
 {
   "extractDate": "2026-08-04",
   "district": {
-    "xmin": -122.685,
-    "ymin": 45.515,
-    "xmax": -122.665,
-    "ymax": 45.527
+    "xmin": -122.72,
+    "ymin": 45.49,
+    "xmax": -122.65,
+    "ymax": 45.54
   },
   "bufferedEnvelope": {
-    "xmin": -122.687,
-    "ymin": 45.513,
-    "xmax": -122.66300000000001,
-    "ymax": 45.529
+    "xmin": -122.722,
+    "ymin": 45.488,
+    "xmax": -122.64800000000001,
+    "ymax": 45.542
   },
   "layers": {
     "streets": {
       "endpoint": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/68",
       "layerName": "Streets",
-      "features": 1075,
-      "sha256": "adc1eec190d465ad51d2dcf6d996f495f29d472402522b0d2b9651d2f0cab4ab"
+      "features": 6662,
+      "sha256": "5e11f02196de978169c76c7024f9011f4d95e0b8c1515a43c7ccdb77724142fe"
     },
     "buildings": {
       "endpoint": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Property/MapServer/184",
       "layerName": "Buildings",
-      "features": 2872,
-      "sha256": "dae41956038ceea24326fe069ab495b980595e55d827d73688b57a007250eeb3"
+      "features": 20191,
+      "sha256": "a5bfce8925d6113df099ae2db32a595396fd51d560da309e90d79bc63a0e16ae"
     },
     "trees": {
       "endpoint": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/1415",
       "layerName": "Street Tree Inventory - Active Records",
-      "features": 4373,
-      "sha256": "3fe367814b9d60bf3a3a085ab4a463bae9ceb8c466626077148f99f5bcf908fb"
+      "features": 34624,
+      "sha256": "b3c72fb5797e05ebe130789c2944a790e0ca2489054c7b443874aab2f88a3eb3"
     },
     "signs": {
       "endpoint": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/223",
       "layerName": "Signs",
-      "features": 1758,
-      "sha256": "7288433e0abc34fd23d511f5dcdac9819469e78e4eb3da57e7edff1dba986bb2"
+      "features": 9798,
+      "sha256": "eef33ad2fbb1254d17ea9285a33584c677784fd86e3db4bad38e578d1a5cde7a"
     },
     "signals": {
       "endpoint": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/54",
       "layerName": "Traffic Signals",
-      "features": 214,
-      "sha256": "128ee3d980f850c9d646dbc1e2f9f7016f8d7d8fb96a2971c2b404c6c37ae908"
+      "features": 526,
+      "sha256": "cf42176cf1f2db20668630f2584937e40aa2bcd1dd6cbcbc6d003caceec9e6fa"
+    },
+    "water": {
+      "endpoint": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_PublicSafetyHazards/MapServer/95",
+      "layerName": "Willamette/Columbia River Ordinary High Water",
+      "features": 1,
+      "sha256": "7c960ecd5aeb207b444984dc40811a612bae54c4da59748d8eca866fab81ce81"
     }
   },
   "transform": {
     "origin": {
-      "lat": 45.515,
-      "lon": -122.685
+      "lat": 45.49,
+      "lon": -122.72
     },
     "playAreaMeters": {
-      "width": 1557,
-      "height": 1339
+      "width": 5446,
+      "height": 5576
     },
     "heightUnit": "feet (converted x0.3048)",
     "streetEpsilonM": 1,
     "footprintEpsilonM": 0.5,
     "counts": {
-      "nodes": 403,
-      "edges": 653,
-      "buildings": 1952,
-      "props": 4295
+      "nodes": 4029,
+      "edges": 6056,
+      "buildings": 17794,
+      "props": 40306,
+      "water": 1
     }
   },
   "bakedMap": {
-    "file": "shared/src/maps/pearl.ts",
+    "file": "shared/src/maps/central.ts",
     "meta": {
-      "name": "pearl",
+      "name": "central",
       "sourceDate": "2026-08-04",
       "origin": {
-        "lat": 45.515,
-        "lon": -122.685
+        "lat": 45.49,
+        "lon": -122.72
       },
-      "width": 1557,
-      "height": 1339
+      "width": 5446,
+      "height": 5576
     },
-    "nodes": 403,
-    "edges": 653,
-    "buildings": 1952,
-    "props": 4295
+    "nodes": 4029,
+    "edges": 6056,
+    "buildings": 17794,
+    "props": 40306,
+    "water": 1
   },
   "signKeep": {
     "R1010": "stop",

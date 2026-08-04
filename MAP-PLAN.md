@@ -82,6 +82,20 @@ could get different art or gameplay tags without any authoring.
 
 ## 2. Scope: one district, not a city
 
+> **Tier 2 update (2026-08-04):** the active map is now `central` — a
+> ~5.4 × 5.6 km box (`-122.72..-122.65`, `45.49..45.54`) spanning downtown,
+> the Pearl, the West Hills, the Willamette with its bridges (Fremont to
+> Ross Island), and the inner east side: 6,056 edges / 17,794 prisms /
+> 40,306 props / river polygon, baked at ~7 MB. Scale work that landed with
+> it: uniform-grid indexes for nearest-street and LOS queries, a binary-heap
+> A*, and a river **water** layer
+> (`COP_OpenData_PublicSafetyHazards/MapServer/95`, render-only). Cross-map
+> pathfinding runs ~1 ms; sim tick cost is unchanged. The old `pearl` map
+> remains in `shared/src/maps/` as a small fast map. Next stop (whole city)
+> needs: tile-chunked building meshes for frustum culling, map delivery as a
+> compressed asset instead of a committed `.ts`, and bulk shapefile
+> extraction. The district-first plan below is kept for history.
+
 The extraction doc's strongest recommendation, and it fits an RTS map
 perfectly: **extract a small, bounded slice and prove the whole pipeline on
 it.** An RTS level wants roughly 1–2 km² anyway.

@@ -1,21 +1,46 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
-import type { Building, GameMap, StreetEdge } from "@battle-juice/shared";
+import type { Building, GameMap, StreetEdge, WaterBody } from "@battle-juice/shared";
 
 const GROUND_COLOR = 0x262c36; // city-block base
+const WATER_COLOR = 0x1b2f42; // deep river blue
 const STREET_COLOR = 0x3a4150; // asphalt
+const WATER_Y = 0.05; // between ground and streets
 const STREET_Y = 0.1; // lift above ground to avoid z-fighting
 const BUILDING_TINTS = [0x707786, 0x7d8290, 0x8a8578];
 
-/** Static map meshes: ground plane, street ribbons, extruded buildings. */
+/** Static map meshes: ground, water, street ribbons, extruded buildings. */
 export function buildWorld(map: GameMap): THREE.Group {
   const group = new THREE.Group();
   group.add(buildGround(map));
+  const water = buildWater(map.water ?? []);
+  if (water) group.add(water);
   const streets = buildStreets(map.edges);
   if (streets) group.add(streets);
   const buildings = buildBuildings(map.buildings);
   if (buildings) group.add(buildings);
   return group;
+}
+
+function buildWater(bodies: WaterBody[]): THREE.Mesh | null {
+  const parts: THREE.BufferGeometry[] = [];
+  for (const body of bodies) {
+    const outer = body.rings[0];
+    if (!outer || outer.length < 3) continue;
+    const shape = new THREE.Shape(outer.map(([x, y]) => new THREE.Vector2(x, y)));
+    for (const hole of body.rings.slice(1)) {
+      if (hole.length >= 3) shape.holes.push(new THREE.Path(hole.map(([x, y]) => new THREE.Vector2(x, y))));
+    }
+    const geo = new THREE.ShapeGeometry(shape);
+    geo.rotateX(-Math.PI / 2);
+    geo.translate(0, WATER_Y, 0);
+    geo.deleteAttribute("uv");
+    parts.push(geo);
+  }
+  if (parts.length === 0) return null;
+  const merged = mergeGeometries(parts);
+  for (const p of parts) p.dispose();
+  return new THREE.Mesh(merged, new THREE.MeshLambertMaterial({ color: WATER_COLOR }));
 }
 
 function buildGround(map: GameMap): THREE.Mesh {

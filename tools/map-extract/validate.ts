@@ -61,6 +61,9 @@ async function main(): Promise<void> {
       process.exit(1);
     }
 
+    // Bbox sanity: a projection bug shifts EVERY coordinate, so a feature is
+    // suspect only when none of its coordinates land inside Portland's
+    // envelope. (Large features — the river — legitimately extend past it.)
     let nullGeom = 0;
     let outOfEnvelope = 0;
     for (const f of collection.features) {
@@ -68,17 +71,19 @@ async function main(): Promise<void> {
         nullGeom++;
         continue;
       }
+      let anyInside = false;
       for (const [lon, lat] of coordsOf(f.geometry)) {
         if (
-          lon < PORTLAND_ENVELOPE.xmin ||
-          lon > PORTLAND_ENVELOPE.xmax ||
-          lat < PORTLAND_ENVELOPE.ymin ||
-          lat > PORTLAND_ENVELOPE.ymax
+          lon >= PORTLAND_ENVELOPE.xmin &&
+          lon <= PORTLAND_ENVELOPE.xmax &&
+          lat >= PORTLAND_ENVELOPE.ymin &&
+          lat <= PORTLAND_ENVELOPE.ymax
         ) {
-          outOfEnvelope++;
+          anyInside = true;
           break;
         }
       }
+      if (!anyInside) outOfEnvelope++;
     }
     if (nullGeom > 0) {
       console.error(`FATAL: ${key}: ${nullGeom} features with null geometry`);
