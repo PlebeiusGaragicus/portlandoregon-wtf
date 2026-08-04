@@ -10,8 +10,8 @@ Status legend: `done` · `next` · `planned` · `idea`
 |---|---|---|
 | [Skeleton](#skeleton) | Prove the pipeline | done |
 | [Streets](#streets) | Street graph + squads | done |
-| [Firefight](#firefight) | Combat + win condition | next |
-| [Breadline](#breadline) | Airdrops + supply economy | planned |
+| [Firefight](#firefight) | Combat + win condition | done |
+| [Breadline](#breadline) | Airdrops + supply economy | next |
 | [Kettle](#kettle) | Encirclement mechanic | planned |
 | [Keymaster](#keymaster) | Nostr keypair auth (NIP-98) | planned |
 | [Go Live](#go-live) | Deploy to the deployment | planned |
@@ -60,17 +60,24 @@ look sane (no corner-cutting through buildings).
 
 ## Firefight
 
-**First genuinely playable version.** Squads that meet an enemy engage
-automatically — no micro, positioning is the skill.
+**Done.** Squads engage automatically — no micro, positioning is the skill.
 
-- Contact on a street segment starts an exchange of fire, driven by squad
-  strength and ammo; damage ticks in the sim, no client-side dice.
-- Concentration matters: two squads firing on one should win decisively, so
-  flanking via side streets is rewarded (this sets up Kettle).
-- Squads at zero strength are destroyed; losing all squads = elimination win.
-- Minimal combat feedback in the renderer: tracer lines, strength bars.
+- Squads carry strength + ammo; each tick a squad fires at its nearest
+  visible enemy within `FIRE_RANGE`. **Buildings block line of sight**
+  (`shared/src/los.ts`, footprint-edge tests with bbox prefilter), so cover
+  is real. Out of ammo → damage × `LOW_AMMO_FACTOR` (Breadline hook).
+- Damage accumulates before applying (no tick-order bias); concentration
+  wins decisively by plain Lanchester arithmetic — verified: 2v1 leaves
+  both attackers alive.
+- Elimination win, recomputed per tick: last owner with survivors once two
+  players have fielded squads. Rematch semantics: a new challenger clears
+  the winner and resumes combat; an emptied room resets its world. Note:
+  simultaneous mutual annihilation is a draw (no banner) by design.
+- Renderer feedback: flickering tracer lines, strength-bar sprites
+  (green→amber→red), winner banner.
 
-Exit criteria: a full 1v1 match can be played and won.
+Exit criteria met: a full 1v1 was played and won (concentrated 3-squad
+assault eliminated a defender, banner displayed).
 
 ## Breadline
 

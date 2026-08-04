@@ -33,12 +33,15 @@ export class Renderer {
   private lastFrame = 0;
   private disposed = false;
 
+  readonly playerId: string;
+
   constructor(
     private canvas: HTMLCanvasElement,
     private myPlayerId: string,
     map: GameMap,
     opts: RendererOpts,
   ) {
+    this.playerId = myPlayerId;
     this.webgl = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.webgl.setPixelRatio(window.devicePixelRatio);
     this.scene.background = new THREE.Color(0x14171c);

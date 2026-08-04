@@ -39,7 +39,12 @@ export class Room {
   removePlayer(playerId: string): void {
     if (!this.players.delete(playerId)) return;
     removeEntitiesOwnedBy(this.world, playerId);
-    if (this.players.size === 0) this.stopTicking();
+    if (this.players.size === 0) {
+      this.stopTicking();
+      // Empty room: fresh world, so the next match starts clean.
+      this.world = createWorld(activeMap);
+      this.nextPlayerNum = 1;
+    }
   }
 
   queueInput(playerId: string, entityId: string, target: { x: number; y: number }): void {
