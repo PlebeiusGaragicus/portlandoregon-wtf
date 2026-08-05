@@ -4,7 +4,6 @@ import { ENTITY_RADIUS, SQUAD_POP, type Entity, type Snapshot } from "@battle-ju
 import { toScene } from "./camera.js";
 
 const PLAYER_COLORS = ["#4f7cff", "#ff5f4f", "#3ecf6a", "#e6b93e", "#b45fff", "#3ec9cf"];
-const RING_COLOR = 0xffffff;
 const SELECTED_COLOR = 0xffd84f;
 
 export function colorFor(ownerId: string): string {
@@ -39,7 +38,6 @@ interface Marker {
   color: THREE.Color;
   pop: number;
   people: Person[];
-  ring: THREE.Mesh | null; // own units only
   routeMesh: THREE.Mesh | null; // own units only — world-space thick ribbon
   tracer: THREE.Line;
   bar: THREE.Sprite;
@@ -109,6 +107,14 @@ function limbGeometry(rTop: number, rBot: number, len: number): THREE.BufferGeom
   return geo;
 }
 
+/** Flat ring on the ground under a selected person (feet-sized halo). */
+function discGeometry(): THREE.BufferGeometry {
+  const geo = new THREE.RingGeometry(0.42, 0.62, 16);
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(0, 0.18, 0); // above streets/trails, below the route ribbon
+  return geo;
+}
+
 function flagGeometry(): THREE.BufferGeometry {
   const pole = new THREE.CylinderGeometry(0.03, 0.03, 2.4, 5);
   pole.translate(0, 1.2, 0);
@@ -130,9 +136,9 @@ const _s = new THREE.Vector3();
 const _UP = new THREE.Vector3(0, 1, 0);
 
 /**
- * Instanced crowd: every person in every squad drawn with six draw calls
- * total (body, four swinging limbs, leader flags). Slots beyond the live
- * head count are hidden by shrinking `.count`.
+ * Instanced crowd: every person in every squad drawn with seven draw calls
+ * total (body, four swinging limbs, leader flags, selection discs). Slots
+ * beyond the live head count are hidden by shrinking `.count`.
  */
 class CrowdPools {
   private body: THREE.InstancedMesh;
@@ -141,24 +147,34 @@ class CrowdPools {
   private armL: THREE.InstancedMesh;
   private armR: THREE.InstancedMesh;
   private flags: THREE.InstancedMesh;
+  private discs: THREE.InstancedMesh;
   private capacity = 0;
   private flagCapacity = 0;
   private used = 0;
   private flagsUsed = 0;
+  private discsUsed = 0;
 
   private bodyGeo = bodyGeometry();
   private legGeo = limbGeometry(0.055, 0.05, LEG_LEN);
   private armGeo = limbGeometry(0.045, 0.04, ARM_LEN);
   private flagGeo = flagGeometry();
+  private discGeo = discGeometry();
   private material = new THREE.MeshLambertMaterial();
+  // Selection discs: unlit gold pucks under each selected person's feet.
+  private discMaterial = new THREE.MeshBasicMaterial({
+    color: SELECTED_COLOR,
+    transparent: true,
+    opacity: 0.85,
+    depthWrite: false,
+  });
 
   constructor(private group: THREE.Group) {
-    this.body = this.legL = this.legR = this.armL = this.armR = this.flags = null!;
+    this.body = this.legL = this.legR = this.armL = this.armR = this.flags = this.discs = null!;
     this.grow(128, 16);
   }
 
-  private makePool(geo: THREE.BufferGeometry, capacity: number): THREE.InstancedMesh {
-    const mesh = new THREE.InstancedMesh(geo, this.material, capacity);
+  private makePool(geo: THREE.BufferGeometry, capacity: number, material: THREE.Material): THREE.InstancedMesh {
+    const mesh = new THREE.InstancedMesh(geo, material, capacity);
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.frustumCulled = false; // instances span the whole map
     this.group.add(mesh);
@@ -166,7 +182,7 @@ class CrowdPools {
   }
 
   private grow(capacity: number, flagCapacity: number): void {
-    for (const old of [this.body, this.legL, this.legR, this.armL, this.armR, this.flags]) {
+    for (const old of [this.body, this.legL, this.legR, this.armL, this.armR, this.flags, this.discs]) {
       if (old) {
         this.group.remove(old);
         old.dispose();
@@ -174,12 +190,13 @@ class CrowdPools {
     }
     this.capacity = capacity;
     this.flagCapacity = flagCapacity;
-    this.body = this.makePool(this.bodyGeo, capacity);
-    this.legL = this.makePool(this.legGeo, capacity);
-    this.legR = this.makePool(this.legGeo, capacity);
-    this.armL = this.makePool(this.armGeo, capacity);
-    this.armR = this.makePool(this.armGeo, capacity);
-    this.flags = this.makePool(this.flagGeo, flagCapacity);
+    this.body = this.makePool(this.bodyGeo, capacity, this.material);
+    this.legL = this.makePool(this.legGeo, capacity, this.material);
+    this.legR = this.makePool(this.legGeo, capacity, this.material);
+    this.armL = this.makePool(this.armGeo, capacity, this.material);
+    this.armR = this.makePool(this.armGeo, capacity, this.material);
+    this.flags = this.makePool(this.flagGeo, flagCapacity, this.material);
+    this.discs = this.makePool(this.discGeo, capacity, this.discMaterial);
   }
 
   begin(people: number, units: number): void {
@@ -188,6 +205,7 @@ class CrowdPools {
     }
     this.used = 0;
     this.flagsUsed = 0;
+    this.discsUsed = 0;
   }
 
   /**
@@ -229,6 +247,15 @@ class CrowdPools {
     this.flags.setColorAt(i, color);
   }
 
+  /** Selection puck under one person's feet. */
+  disc(px: number, py: number, s: number): void {
+    if (this.discsUsed >= this.capacity) return;
+    const i = this.discsUsed++;
+    _q.identity();
+    _m.compose(_v.set(px, 0, -py), _q, _s.set(s, s, s));
+    this.discs.setMatrixAt(i, _m);
+  }
+
   commit(): void {
     for (const pool of [this.body, this.legL, this.legR, this.armL, this.armR]) {
       pool.count = this.used;
@@ -238,6 +265,8 @@ class CrowdPools {
     this.flags.count = this.flagsUsed;
     this.flags.instanceMatrix.needsUpdate = true;
     if (this.flags.instanceColor) this.flags.instanceColor.needsUpdate = true;
+    this.discs.count = this.discsUsed;
+    this.discs.instanceMatrix.needsUpdate = true;
   }
 }
 
@@ -335,7 +364,8 @@ export class UnitLayer {
     const minSep = CROWD_SPREAD * s;
     const seekGain = Math.min(1, dt * 2.8);
     const sepGain = Math.min(1, dt * 4);
-    for (const marker of this.markers.values()) {
+    for (const [id, marker] of this.markers) {
+      const selected = this.selectedIds.has(id);
       const ppl = marker.people;
       const cos = Math.cos(marker.heading);
       const sin = Math.sin(marker.heading);
@@ -399,6 +429,7 @@ export class UnitLayer {
         const swing = p.amp * 0.55 * Math.sin(p.phase);
         const ps = pScale * (i === 0 ? LEADER_SCALE : 1);
         this.pools.person(p.x, p.y, p.heading, swing, ps, marker.color);
+        if (selected) this.pools.disc(p.x, p.y, ps);
       }
       const lead = ppl[0]!;
       this.pools.flag(lead.x, lead.y, lead.heading, pScale, marker.color);
@@ -457,13 +488,8 @@ export class UnitLayer {
   }
 
   setSelected(ids: string[]): void {
+    // Selection is drawn as per-person ground discs during sync.
     this.selectedIds = new Set(ids.filter((id) => this.markers.get(id)?.own));
-    for (const [mid, m] of this.markers) {
-      if (!m.ring) continue;
-      const selected = this.selectedIds.has(mid);
-      (m.ring.material as THREE.MeshBasicMaterial).color.setHex(selected ? SELECTED_COLOR : RING_COLOR);
-      m.ring.scale.setScalar(selected ? 1.25 : 1);
-    }
   }
 
   selected(): string[] {
@@ -500,16 +526,7 @@ export class UnitLayer {
     const own = e.ownerId === this.myPlayerId;
     const color = new THREE.Color(colorFor(e.ownerId));
 
-    let ring: THREE.Mesh | null = null;
     if (own) {
-      ring = new THREE.Mesh(
-        new THREE.TorusGeometry(ENTITY_RADIUS + 1, 0.35, 6, 24),
-        new THREE.MeshBasicMaterial({ color: RING_COLOR }),
-      );
-      ring.rotation.x = Math.PI / 2;
-      ring.position.y = 0.3;
-      root.add(ring);
-
       // X-ray blob: drawn ONLY where the normal depth test fails — i.e.
       // exactly where the squad is hidden behind a building.
       const ghost = new THREE.Mesh(
@@ -566,7 +583,6 @@ export class UnitLayer {
       color,
       pop: Math.max(1, Math.ceil(e.strength)),
       people: [],
-      ring,
       routeMesh,
       tracer,
       bar,
