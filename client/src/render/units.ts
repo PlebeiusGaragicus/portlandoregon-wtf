@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
-import { ENTITY_RADIUS, SQUAD_POP, type Entity, type Snapshot } from "@battle-juice/shared";
+import { ENTITY_RADIUS, MOVE_SPEED, SQUAD_POP, type Entity, type Snapshot } from "@battle-juice/shared";
 import { toScene } from "./camera.js";
 
 const PLAYER_COLORS = ["#4f7cff", "#ff5f4f", "#3ecf6a", "#e6b93e", "#b45fff", "#3ec9cf"];
@@ -284,6 +284,12 @@ function crowdOffset(i: number): { x: number; y: number } {
   return { x: Math.cos(a) * r, y: Math.sin(a) * r };
 }
 
+/** Cheap deterministic per-person random in [0, 1) (index + stream key). */
+function hash(i: number, k: number): number {
+  const x = Math.sin(i * 127.1 + k * 311.7) * 43758.5453;
+  return x - Math.floor(x);
+}
+
 /** Per-squad walking crowds, reconciled and interpolated from snapshots. */
 export class UnitLayer {
   readonly group = new THREE.Group();
@@ -364,8 +370,8 @@ export class UnitLayer {
     const s = this.viewScale;
     const pScale = Math.max(1.9, s);
     const minSep = CROWD_SPREAD * s;
-    const seekGain = Math.min(1, dt * 2.8);
     const sepGain = Math.min(1, dt * 4);
+    const time = now / 1000;
     for (const [id, marker] of this.markers) {
       const selected = this.selectedIds.has(id);
       const ppl = marker.people;
@@ -378,12 +384,26 @@ export class UnitLayer {
       }
       if (ppl.length > marker.pop) ppl.length = marker.pop;
 
-      // Seek blob slots (world-fixed offsets around the squad center).
+      // Locomotion: each person WALKS (speed-capped, not spring-glued)
+      // toward a personal, slowly wandering point near the squad center.
+      // Per-person pace jitter oscillates over time and urgency rises the
+      // farther behind someone falls, so individuals continuously overtake
+      // each other and the mass stretches and morphs as it moves.
       for (let i = 0; i < ppl.length; i++) {
         const p = ppl[i]!;
         const o = crowdOffset(i);
-        p.x += (marker.x + o.x * s - p.x) * seekGain;
-        p.y += (marker.y + o.y * s - p.y) * seekGain;
+        const wob = 1.4 * s; // personal wander radius
+        const tx = marker.x + o.x * s + Math.cos(time * (0.5 + hash(i, 1) * 0.5) + i * 2.7) * wob;
+        const ty = marker.y + o.y * s + Math.sin(time * (0.4 + hash(i, 2) * 0.5) + i * 1.9) * wob;
+        const dx = tx - p.x;
+        const dy = ty - p.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < 1e-6) continue;
+        const pace = 0.85 + 0.3 * hash(i, 3) + 0.18 * Math.sin(time * (0.5 + 0.4 * hash(i, 4)) + i);
+        const urgency = 0.35 + Math.min(1.15, dist / (9 * s));
+        const step = Math.min(dist, MOVE_SPEED * pace * urgency * dt);
+        p.x += (dx / dist) * step;
+        p.y += (dy / dist) * step;
       }
       // Personal space: shoulder apart when closer than a stride.
       for (let i = 0; i < ppl.length; i++) {
