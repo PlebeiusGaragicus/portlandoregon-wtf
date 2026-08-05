@@ -17,6 +17,10 @@ export const SQUAD_POP = 30;
 // the street network.
 export const OFFROAD_RANGE = 250; // m
 
+// Squads shoulder past each other instead of stacking: closer than this and
+// they gently shove apart (crowd spacing between whole squads).
+export const SQUAD_SPACING = 16; // m
+
 // Combat tuning knobs (Firefight phase). Damage is people per tick per
 // attacking squad — fractional damage accumulates until someone drops.
 export const SQUAD_AMMO = 240; // ticks of fire (~20 s)

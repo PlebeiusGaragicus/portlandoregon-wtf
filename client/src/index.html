@@ -121,7 +121,7 @@
       #hud {
         position: fixed;
         left: 50%;
-        bottom: 2.4rem;
+        bottom: 1rem;
         transform: translateX(-50%);
         display: flex;
         gap: 0.5rem;
@@ -157,19 +157,6 @@
         overflow: hidden;
       }
       .hud-bar div { height: 100%; }
-      #hint {
-        position: fixed;
-        left: 50%;
-        bottom: 0.75rem;
-        transform: translateX(-50%);
-        padding: 0.3rem 0.8rem;
-        border-radius: 999px;
-        background: rgba(20, 23, 28, 0.75);
-        color: #9aa4b5;
-        font-size: 0.8rem;
-        pointer-events: none;
-        white-space: nowrap;
-      }
     </style>
   </head>
   <body>
@@ -183,7 +170,6 @@
     <div id="game">
       <canvas id="canvas"></canvas>
       <div id="banner"></div>
-      <div id="hint">click squad to select &middot; click street to move &middot; drag/WASD pan &middot; wheel zoom &middot; Q/E rotate</div>
     </div>
     <script type="module" src="./main.ts"></script>
   </body>

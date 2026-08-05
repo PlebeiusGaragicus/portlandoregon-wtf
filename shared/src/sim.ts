@@ -6,6 +6,7 @@ import {
   MOVE_SPEED,
   OFFROAD_RANGE,
   SQUAD_AMMO,
+  SQUAD_SPACING,
   SQUAD_POP,
   TICK_MS,
 } from "./constants.js";
@@ -177,6 +178,40 @@ export function tick(world: World, inputs: PlayerInput[]): void {
     if (entity.path.length === 0) {
       entity.path = null;
       entity.target = null;
+    }
+  }
+
+  // Crowd spacing: squads closer than SQUAD_SPACING shove each other apart a
+  // little each tick, so stacked orders fan out instead of merging into one
+  // dot. The push never carries a squad through a building wall.
+  const es = world.entities;
+  for (let i = 0; i < es.length; i++) {
+    for (let j = i + 1; j < es.length; j++) {
+      const a = es[i]!;
+      const b = es[j]!;
+      let dx = b.x - a.x;
+      let dy = b.y - a.y;
+      let d = Math.hypot(dx, dy);
+      if (d >= SQUAD_SPACING) continue;
+      if (d < 1e-6) {
+        // Perfectly stacked: split along a pair-deterministic direction.
+        dx = Math.cos(i * 2.4 + j);
+        dy = Math.sin(i * 2.4 + j);
+        d = 1;
+      }
+      const push = Math.min(0.6, (SQUAD_SPACING - d) / 2);
+      const ux = (dx / d) * push;
+      const uy = (dy / d) * push;
+      const na = { x: a.x - ux, y: a.y - uy };
+      const nb = { x: b.x + ux, y: b.y + uy };
+      if (hasLineOfSight(world.los, a, na)) {
+        a.x = na.x;
+        a.y = na.y;
+      }
+      if (hasLineOfSight(world.los, b, nb)) {
+        b.x = nb.x;
+        b.y = nb.y;
+      }
     }
   }
 

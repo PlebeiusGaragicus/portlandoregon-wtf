@@ -20,12 +20,25 @@ export interface SquadInfo {
   color: string;
 }
 
+/** One member of a squad: a tiny independent agent with its own position,
+ * facing and stride, so the group flows like a crowd instead of a stamp. */
+interface Person {
+  x: number;
+  y: number;
+  px: number; // previous-frame position, for measuring own motion
+  py: number;
+  heading: number;
+  phase: number; // walk-cycle clock
+  amp: number; // stride blend 0..1
+}
+
 interface Marker {
   root: THREE.Group;
   own: boolean;
   name: string;
   color: THREE.Color;
   pop: number;
+  people: Person[];
   ring: THREE.Mesh | null; // own units only
   routeMesh: THREE.Mesh | null; // own units only — world-space thick ribbon
   tracer: THREE.Line;
@@ -35,9 +48,7 @@ interface Marker {
   lastStrength: number;
   x: number;
   y: number;
-  heading: number; // world radians, direction of travel
-  phase: number; // walk-cycle clock
-  amp: number; // walk swing blend 0..1 (eases in/out of motion)
+  heading: number; // squad travel direction (formation frame)
 }
 
 const ROUTE_Y = 0.35; // above streets, below units
@@ -289,9 +300,6 @@ export class UnitLayer {
         while (d < -Math.PI) d += 2 * Math.PI;
         marker.heading += d * Math.min(1, dt * 8);
       }
-      const moving = moved > 0.05 || e.path !== null;
-      marker.amp += ((moving ? 1 : 0) - marker.amp) * Math.min(1, dt * 6);
-      if (moving) marker.phase += dt * 9;
       marker.x = nx;
       marker.y = ny;
       marker.pop = Math.max(1, Math.ceil(e.strength));
@@ -316,33 +324,84 @@ export class UnitLayer {
       }
     }
 
-    // Pass 2: the crowds themselves — every living person, instanced.
-    // People are drawn stylized-large (min 1.9x life size) so a figure still
-    // reads as a person at the closest allowed zoom; the blob spread stays at
-    // true scale so crowds keep to the street.
+    // Pass 2: the crowds as individuals. Each person springs toward their
+    // formation slot, shoulders away from squadmates, and animates off their
+    // own motion — stragglers lag, corners get cut, the group stays loose.
+    // Figures are drawn stylized-large (min 1.9x life size) so they still
+    // read as people at the closest allowed zoom.
     this.pools.begin(totalPeople, this.markers.size);
     const s = this.viewScale;
     const pScale = Math.max(1.9, s);
+    const minSep = CROWD_SPREAD * s;
+    const seekGain = Math.min(1, dt * 2.8);
+    const sepGain = Math.min(1, dt * 4);
     for (const marker of this.markers.values()) {
+      const ppl = marker.people;
       const cos = Math.cos(marker.heading);
       const sin = Math.sin(marker.heading);
-      for (let i = 0; i < marker.pop; i++) {
-        const o = crowdOffset(i, marker.pop);
-        // Crowd-local (+y forward) -> world, scaled with the view.
+      // Reconcile head count; newcomers step straight into their slot.
+      while (ppl.length < marker.pop) {
+        const o = crowdOffset(ppl.length, marker.pop);
         const wx = marker.x + (o.y * cos - o.x * sin) * s;
         const wy = marker.y + (o.y * sin + o.x * cos) * s;
-        const swing = marker.amp * 0.55 * Math.sin(marker.phase + i * 1.7);
-        const ps = pScale * (i === 0 ? LEADER_SCALE : 1);
-        this.pools.person(wx, wy, marker.heading, swing, ps, marker.color);
+        ppl.push({ x: wx, y: wy, px: wx, py: wy, heading: marker.heading, phase: ppl.length * 1.7, amp: 0 });
       }
-      const lead = crowdOffset(0, marker.pop);
-      this.pools.flag(
-        marker.x + (lead.y * cos) * s,
-        marker.y + (lead.y * sin) * s,
-        marker.heading,
-        pScale,
-        marker.color,
-      );
+      if (ppl.length > marker.pop) ppl.length = marker.pop;
+
+      // Seek formation slots.
+      for (let i = 0; i < ppl.length; i++) {
+        const p = ppl[i]!;
+        const o = crowdOffset(i, ppl.length);
+        const tx = marker.x + (o.y * cos - o.x * sin) * s;
+        const ty = marker.y + (o.y * sin + o.x * cos) * s;
+        p.x += (tx - p.x) * seekGain;
+        p.y += (ty - p.y) * seekGain;
+      }
+      // Personal space: shoulder apart when closer than a stride.
+      for (let i = 0; i < ppl.length; i++) {
+        for (let j = i + 1; j < ppl.length; j++) {
+          const a = ppl[i]!;
+          const b = ppl[j]!;
+          let dx = b.x - a.x;
+          let dy = b.y - a.y;
+          let d = Math.hypot(dx, dy);
+          if (d >= minSep) continue;
+          if (d < 1e-6) {
+            dx = Math.cos(i * 2.4 + j);
+            dy = Math.sin(i * 2.4 + j);
+            d = 1;
+          }
+          const push = ((minSep - d) / 2) * sepGain;
+          const ux = (dx / d) * push;
+          const uy = (dy / d) * push;
+          a.x -= ux;
+          a.y -= uy;
+          b.x += ux;
+          b.y += uy;
+        }
+      }
+      // Animate off each person's own motion and draw them.
+      for (let i = 0; i < ppl.length; i++) {
+        const p = ppl[i]!;
+        const moved = Math.hypot(p.x - p.px, p.y - p.py);
+        const speed = moved / dt / s; // person-relative pace
+        if (moved > 0.02) {
+          const want = Math.atan2(p.y - p.py, p.x - p.px);
+          let dh = want - p.heading;
+          while (dh > Math.PI) dh -= 2 * Math.PI;
+          while (dh < -Math.PI) dh += 2 * Math.PI;
+          p.heading += dh * Math.min(1, dt * 10);
+        }
+        p.amp += ((speed > 0.6 ? 1 : 0) - p.amp) * Math.min(1, dt * 6);
+        p.phase += Math.min(speed, 11) * dt * 1.1;
+        p.px = p.x;
+        p.py = p.y;
+        const swing = p.amp * 0.55 * Math.sin(p.phase);
+        const ps = pScale * (i === 0 ? LEADER_SCALE : 1);
+        this.pools.person(p.x, p.y, p.heading, swing, ps, marker.color);
+      }
+      const lead = ppl[0]!;
+      this.pools.flag(lead.x, lead.y, lead.heading, pScale, marker.color);
     }
     this.pools.commit();
 
@@ -506,6 +565,7 @@ export class UnitLayer {
       name: e.name,
       color,
       pop: Math.max(1, Math.ceil(e.strength)),
+      people: [],
       ring,
       routeMesh,
       tracer,
@@ -516,8 +576,6 @@ export class UnitLayer {
       x: e.x,
       y: e.y,
       heading: Math.PI / 2, // face north until they move
-      phase: Math.random() * Math.PI * 2,
-      amp: 0,
     };
   }
 }

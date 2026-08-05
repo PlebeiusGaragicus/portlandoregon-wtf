@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { ENTITY_RADIUS, SQUAD_POP, TICK_MS, type GameMap, type Snapshot } from "@battle-juice/shared";
+import { ENTITY_RADIUS, SQUAD_POP, SQUAD_SPACING, TICK_MS, type GameMap, type Snapshot } from "@battle-juice/shared";
 import { CameraRig, toWorldXY } from "./camera.js";
 import { Controls, type ControlDelegate } from "./controls.js";
 import { Minimap } from "./minimap.js";
@@ -12,10 +12,6 @@ const BLEND_START = 2200; // street tint starts brightening
 const BLEND_END = 3200;
 const PROPS_VIEW = 3000; // above: hide trees/signs/signals (subpixel anyway)
 const STRATEGIC_VIEW = 4500; // above: read-only map navigation, no orders
-
-const TACTICAL_HINT =
-  "left click/drag select · right click move · WASD pan · wheel zoom · Q/E rotate · R/F tilt · N north";
-const STRATEGIC_HINT = "strategic view — zoom in to command · drag/WASD pan · Q/E rotate · R/F tilt · N north";
 
 export interface PrebuiltLayers {
   world: WorldLayers;
@@ -48,7 +44,6 @@ export class Renderer {
   private compass: HTMLDivElement;
   private hud: HTMLDivElement;
   private hudSig = "";
-  private hintEl: HTMLElement | null;
   private resizeObserver: ResizeObserver;
   private raycaster = new THREE.Raycaster();
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -57,7 +52,7 @@ export class Renderer {
   private curr: Snapshot | null = null;
   private currAt = 0;
   private lastFrame = 0;
-  private lastHintStrategic: boolean | null = null;
+  private lastStrategic: boolean | null = null;
   private disposed = false;
 
   constructor(
@@ -115,7 +110,14 @@ export class Renderer {
       dispatchAt: (cx, cy) => {
         const p = this.toWorld(cx, cy);
         if (!p) return;
-        for (const id of this.units.selected()) opts.onCommand(id, p);
+        // Multi-squad orders fan out around the click (sunflower slots) so
+        // squads arrive as a dispersed crowd instead of a stack.
+        const ids = this.units.selected();
+        ids.forEach((id, i) => {
+          const r = i === 0 ? 0 : SQUAD_SPACING * 1.4 * Math.sqrt(i);
+          const a = i * 2.39996;
+          opts.onCommand(id, { x: p.x + Math.cos(a) * r, y: p.y + Math.sin(a) * r });
+        });
       },
       deselect: () => this.units.setSelected([]),
       zoomAt: (cx, cy, factor) => {
@@ -144,7 +146,6 @@ export class Renderer {
     this.hud = document.createElement("div");
     this.hud.id = "hud";
     parent.appendChild(this.hud);
-    this.hintEl = document.getElementById("hint");
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(canvas);
@@ -257,13 +258,12 @@ export class Renderer {
     this.props.visible = vh < PROPS_VIEW;
     this.units.setViewScale(Math.max(1, vh / 800));
 
-    // Strategic-view mode hint + cursor: the pointer telegraphs whether
-    // commands are possible at this zoom (grab = navigate-only).
+    // Cursor telegraphs whether commands are possible at this zoom
+    // (grab = navigate-only strategic view).
     const strategic = vh > STRATEGIC_VIEW;
-    if (strategic !== this.lastHintStrategic) {
-      if (this.hintEl) this.hintEl.textContent = strategic ? STRATEGIC_HINT : TACTICAL_HINT;
+    if (strategic !== this.lastStrategic) {
       this.canvas.style.cursor = strategic ? "grab" : "crosshair";
-      this.lastHintStrategic = strategic;
+      this.lastStrategic = strategic;
     }
 
     if (this.curr) {
