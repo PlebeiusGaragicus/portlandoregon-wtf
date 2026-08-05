@@ -96,13 +96,16 @@ interface Ember {
 }
 
 /** Free-standing ball of fire (shift+click, gas): catches what's around it or
- * goes out on its own. */
+ * goes out on its own. Renders as a fixed cluster of ground-hugging flame
+ * tongues — a mass clinging to the surface, not orbiting sprites. */
 interface Fireball {
   x: number; y: number; z: number;
   t: number;
   life: number;
   size: number;
   tryClock: number;
+  /** Sub-flame anchors (fixed offsets + flicker seed), set at spawn. */
+  subs: { ox: number; oy: number; seed: number }[];
 }
 
 /** Long-tail smoke source: rubble and burnt shells smoking for 1-2 game days. */
@@ -501,6 +504,9 @@ export class FireSim {
   fireball(x: number, y: number): void {
     const z = this.terrain(x, y) + 1.2;
     this.flash(x, y, z + 3, 22, 0xffb066);
+    // A fireball ON a building takes: the click point is the ignition point.
+    const direct = this.buildingAt(x, y, this.terrain(x, y) + 1);
+    if (direct >= 0) this.igniteBuilding(direct, x, y);
     for (let i = 0; i < 6; i++) {
       const a = Math.random() * Math.PI * 2;
       this.spawnPuff(
@@ -509,12 +515,20 @@ export class FireSim {
         2.5 + Math.random() * 2, 3.4, 0.07 + Math.random() * 0.05, 6 + Math.random() * 5,
       );
     }
+    const size = 11 + Math.random() * 5;
+    const subs = [];
+    for (let i = 0; i < 8; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(Math.random()) * size * 0.55;
+      subs.push({ ox: Math.cos(a) * r, oy: Math.sin(a) * r, seed: Math.random() * 100 });
+    }
     this.fireballs.push({
       x, y, z,
       t: 0,
       life: 6 + Math.random() * 6,
-      size: 11 + Math.random() * 5,
+      size,
       tryClock: 0.4,
+      subs,
     });
   }
 
@@ -862,8 +876,12 @@ export class FireSim {
       fb.tryClock -= dt;
       if (fb.tryClock <= 0) {
         fb.tryClock = 0.7;
-        this.nearBuildings(fb.x, fb.y, 16, (bi) => {
-          if (Math.random() < 0.28) this.igniteBuilding(bi, fb.x, fb.y);
+        // Direct contact always threatens; centroids can sit far from the
+        // click on big footprints, so test the point itself too.
+        const under = this.buildingAt(fb.x, fb.y, fb.z - 1);
+        if (under >= 0 && Math.random() < 0.6) this.igniteBuilding(under, fb.x, fb.y);
+        this.nearBuildings(fb.x, fb.y, 26, (bi) => {
+          if (Math.random() < 0.22) this.igniteBuilding(bi, fb.x, fb.y);
         });
         this.nearTrees(fb.x, fb.y, 12, (ti) => {
           if (Math.random() < 0.4) this.igniteTree(ti);
@@ -1004,16 +1022,18 @@ export class FireSim {
     for (const fb of this.fireballs) {
       if (Math.hypot(fb.x - focus.x, fb.y - focus.y) > RANGE) continue;
       const k = 1 - fb.t / fb.life;
-      const roil = 0.8 + 0.2 * Math.sin(this.time * 17 + fb.x);
-      for (let j = 0; j < 3; j++) {
-        const a = this.time * (2 + j) + j * 2.1;
-        this.glow.push(
-          fb.x + Math.cos(a) * fb.size * 0.25,
-          fb.y + Math.sin(a) * fb.size * 0.25,
-          fb.z + fb.size * (0.25 + j * 0.22),
-          fb.size * (1.15 - j * 0.2) * roil * (0.5 + k * 0.5),
-          1, 0.42 - j * 0.1, 0.08, 0.88 * k * roil,
-        );
+      // One dim body glow for volume, then fixed sub-flames flickering in
+      // place — the mass sits on the ground; nothing orbits.
+      this.glow.push(fb.x, fb.y, fb.z + fb.size * 0.3, fb.size * 1.5 * (0.5 + k * 0.5), 1, 0.32, 0.05, 0.35 * k);
+      for (const sub of fb.subs) {
+        const fl = 0.6 + 0.4 * Math.sin(this.time * 12 + sub.seed) * Math.sin(this.time * 27 + sub.seed * 3);
+        const h = fb.size * (0.25 + 0.45 * fl) * k;
+        const sx = fb.x + sub.ox;
+        const sy = fb.y + sub.oy;
+        const s = fb.size * 0.42 * (0.6 + 0.4 * fl) * (0.5 + k * 0.5);
+        this.glow.push(sx, sy, fb.z + s * 0.3, s, 1, 0.45, 0.1, 0.85 * k * fl);
+        this.glow.push(sx, sy, fb.z + s * 0.3 + h * 0.6, s * 0.62, 1, 0.26, 0.04, 0.55 * k * fl);
+        this.glow.push(sx, sy, fb.z + s * 0.3 + h, s * 0.38, 1, 0.18, 0.02, 0.3 * k * fl);
       }
     }
     for (const e of this.embers) {
