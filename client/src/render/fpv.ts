@@ -17,6 +17,7 @@ const MAX_FALL = 110; // terminal velocity — sky-drop entries stay snappy but 
 const JUMP = 9.5;
 const ACCEL = 14; // horizontal velocity easing, higher = snappier
 const STEP = 0.9; // max ledge height feet can pop over / stand across
+const BODY_R = 0.55; // keep-out from walls so the near plane never clips inside
 const DOUBLE_TAP_MS = 300;
 const MAX_PITCH = Math.PI / 2 - 0.05;
 const SENS = 0.0024; // radians per pixel of mouse travel
@@ -132,6 +133,50 @@ class SolidIndex {
       if (s.top > sup && z >= s.top - STEP && pointInside(x, y, s.segs)) sup = s.top;
     });
     return sup;
+  }
+
+  /** Push a point out of any wall closer than r (the camera's personal
+   * space). Two passes handle corners where the first push lands you near a
+   * second wall. Returns the corrected position. */
+  pushOut(x: number, y: number, z: number, r: number): { x: number; y: number } {
+    for (let pass = 0; pass < 2; pass++) {
+      let moved = false;
+      this.each(x - r, y - r, x + r, y + r, (s) => {
+        if (z >= s.top - STEP) return;
+        const e = s.segs;
+        for (let i = 0; i < e.length; i += 4) {
+          const ax = e[i]!;
+          const ay = e[i + 1]!;
+          const bx = e[i + 2]!;
+          const by = e[i + 3]!;
+          const dx = bx - ax;
+          const dy = by - ay;
+          const len2 = dx * dx + dy * dy || 1e-9;
+          const t = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / len2));
+          const cx = ax + dx * t;
+          const cy = ay + dy * t;
+          let nx = x - cx;
+          let ny = y - cy;
+          const d = Math.hypot(nx, ny);
+          if (d >= r) continue;
+          if (d < 1e-6) {
+            // Standing exactly on the wall line: shove along its outward
+            // normal (outer rings are CCW, so (dy, -dx) points outside).
+            const nl = Math.hypot(dx, dy) || 1;
+            nx = dy / nl;
+            ny = -dx / nl;
+          } else {
+            nx /= d;
+            ny /= d;
+          }
+          x += nx * (r - d);
+          y += ny * (r - d);
+          moved = true;
+        }
+      });
+      if (!moved) break;
+    }
+    return { x, y };
   }
 
   /** Is (x, y) inside a prism that rises above foot height z? */
@@ -301,6 +346,11 @@ export class FpvMode {
     } else if (!this.solids.blocked(this.x, this.y, this.x, ny, this.z)) {
       this.y = ny;
     }
+    // Personal space: never stand so close to a wall that the camera's near
+    // plane pokes through it and shows the hollow interior.
+    const clear = this.solids.pushOut(this.x, this.y, this.z, BODY_R);
+    this.x = clear.x;
+    this.y = clear.y;
 
     // Vertical. Roof eligibility uses the PRE-fall height: a fast fall can
     // cross a whole roof-catch window in one frame, and testing only the

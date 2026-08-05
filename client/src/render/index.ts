@@ -388,6 +388,10 @@ export class Renderer {
         this.toggleFpv();
         return;
       }
+      if (k === "t" && !e.repeat) {
+        this.daynight.offsetT = (this.daynight.offsetT + 3 / 24) % 1;
+        return;
+      }
       if (!this.fpvOn || !this.fpv) return;
       if (k === " ") e.preventDefault();
       if (!e.repeat) this.fpv.keyDown(k);
@@ -468,7 +472,7 @@ export class Renderer {
       this.ensureSky().visible = true;
       const aspect = (this.canvas.clientWidth || 1) / (this.canvas.clientHeight || 1);
       this.actors.setListener({ x: this.fpv.x, y: this.fpv.y });
-      this.actors.update(dt, now / 1000, { x: this.fpv.x, y: this.fpv.y }, this.daynight.night);
+      this.actors.update(dt, now / 1000, { x: this.fpv.x, y: this.fpv.y }, this.daynight.night, this.daynight.t * 24);
       // Draw distance scales with altitude: short and hazy at street level
       // (nearby blocks occlude everything anyway), the whole city from the
       // air. Fog density is tied to the far plane so the cutoff hides in haze.
@@ -528,7 +532,7 @@ export class Renderer {
     this.minimap.update(corners, []);
 
     this.actors.setListener(null);
-    this.actors.update(dt, now / 1000, this.rig.target, this.daynight.night);
+    this.actors.update(dt, now / 1000, this.rig.target, this.daynight.night, this.daynight.t * 24);
     this.applyDayNight(this.rig.target.x, this.rig.target.y, this.ground(this.rig.target.x, this.rig.target.y), vh < SHADOW_MAX_VIEW);
     this.updateScaleBar(vh);
 

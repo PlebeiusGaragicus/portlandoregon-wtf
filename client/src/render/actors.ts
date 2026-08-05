@@ -13,7 +13,15 @@ const MAX_FIRE = 9;
 const MAX_POLICE = 30;
 const MAX_AMBULANCE_DAY = 40;
 const MAX_AMBULANCE_NIGHT = 20;
-const CAP = MAX_FIRE + MAX_POLICE + MAX_AMBULANCE_DAY;
+const MAX_CITYBUS = 12;
+const MAX_SCHOOLBUS = 10; // only during school runs
+const CAP = MAX_FIRE + MAX_POLICE + MAX_AMBULANCE_DAY + MAX_CITYBUS + MAX_SCHOOLBUS;
+const TRAILER_CAP = MAX_CITYBUS;
+
+/** School buses run the morning pickup and afternoon drop-off windows. */
+function schoolRun(hour: number): boolean {
+  return (hour >= 7 && hour < 9.5) || (hour >= 14 && hour < 16.5);
+}
 
 const SPEED_MIN = 14; // m/s — code 3 through city streets
 const SPEED_MAX = 21;
@@ -25,18 +33,29 @@ const FLASH_HZ = 4.2;
 
 interface VehicleKind {
   color: number;
+  /** Code-3 lightbar + glow (emergency kinds only). */
+  lights: boolean;
   /** Lightbar flash pair. */
   flashA: number;
   flashB: number;
   /** Body size: length, width, height (m). */
   size: [number, number, number];
+  /** Articulated rear section (city bus) — hinged at the body's tail. */
+  trailer?: [number, number, number];
+  speedMin: number;
+  speedMax: number;
 }
 
-const KINDS: Record<"engine" | "truck" | "police" | "ambulance", VehicleKind> = {
-  engine: { color: 0xb92418, flashA: 0xff2a1a, flashB: 0xffffff, size: [8.2, 2.5, 3.1] },
-  truck: { color: 0xa81f14, flashA: 0xff2a1a, flashB: 0xffffff, size: [11.5, 2.5, 3.3] },
-  police: { color: 0x272b34, flashA: 0x2f62ff, flashB: 0xff2a1a, size: [5.2, 2.0, 1.7] },
-  ambulance: { color: 0xe4e6e9, flashA: 0xff2a1a, flashB: 0xffffff, size: [6.6, 2.4, 2.6] },
+const KINDS: Record<
+  "engine" | "truck" | "police" | "ambulance" | "schoolbus" | "citybus",
+  VehicleKind
+> = {
+  engine: { color: 0xb92418, lights: true, flashA: 0xff2a1a, flashB: 0xffffff, size: [8.2, 2.5, 3.1], speedMin: 14, speedMax: 21 },
+  truck: { color: 0xa81f14, lights: true, flashA: 0xff2a1a, flashB: 0xffffff, size: [11.5, 2.5, 3.3], speedMin: 14, speedMax: 21 },
+  police: { color: 0x272b34, lights: true, flashA: 0x2f62ff, flashB: 0xff2a1a, size: [5.2, 2.0, 1.7], speedMin: 14, speedMax: 21 },
+  ambulance: { color: 0xe4e6e9, lights: true, flashA: 0xff2a1a, flashB: 0xffffff, size: [6.6, 2.4, 2.6], speedMin: 14, speedMax: 21 },
+  schoolbus: { color: 0xe8a91c, lights: false, flashA: 0, flashB: 0, size: [10.5, 2.5, 3.0], speedMin: 9, speedMax: 12 },
+  citybus: { color: 0x2f8b46, lights: false, flashA: 0, flashB: 0, size: [9.0, 2.55, 3.1], trailer: [8.2, 2.55, 3.1], speedMin: 8, speedMax: 11 },
 };
 
 interface Vehicle {
@@ -61,7 +80,11 @@ interface Vehicle {
   x: number;
   y: number;
   heading: number;
-  glow: THREE.Sprite;
+  /** Articulated rear section's own heading — pivots at the hinge. */
+  trailHeading: number;
+  /** Off-shift (school bus after the bell): despawn once out of sight. */
+  expire: boolean;
+  glow: THREE.Sprite | null;
 }
 
 interface Facility {
@@ -83,6 +106,7 @@ export class Actors {
 
   private body: THREE.InstancedMesh;
   private bar: THREE.InstancedMesh;
+  private trailer: THREE.InstancedMesh;
   private glowTex = radialGlowTexture();
   private terrain: (x: number, y: number) => number;
 
@@ -136,12 +160,14 @@ export class Actors {
     this.body.castShadow = true;
     const barMat = new THREE.MeshBasicMaterial(); // unlit: lightbars burn through any hour
     this.bar = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), barMat, CAP);
+    this.trailer = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), bodyMat, TRAILER_CAP);
+    this.trailer.castShadow = true;
     // Instance matrices place vehicles all over the city, but three.js culls
     // an InstancedMesh by its raw geometry bounds (a 1 m box at the origin) —
     // never cull these, or the fleet only renders near the map's SW corner.
-    this.body.frustumCulled = this.bar.frustumCulled = false;
-    this.body.count = this.bar.count = 0;
-    this.group.add(this.body, this.bar);
+    this.body.frustumCulled = this.bar.frustumCulled = this.trailer.frustumCulled = false;
+    this.body.count = this.bar.count = this.trailer.count = 0;
+    this.group.add(this.body, this.bar, this.trailer);
   }
 
   /** FPV listener position for the siren (null = map view, siren muted). */
@@ -150,14 +176,16 @@ export class Actors {
     if (pos && !this.audio) this.initSiren();
   }
 
-  update(dt: number, timeSec: number, focus: { x: number; y: number }, night = 0): void {
-    this.spawn(focus, dt, night);
+  update(dt: number, timeSec: number, focus: { x: number; y: number }, night = 0, hour = 12): void {
+    this.spawn(focus, dt, night, hour);
 
     for (const v of this.vehicles) v.patience -= dt;
     this.vehicles = this.vehicles.filter((v) => this.advance(v, dt, focus));
 
-    // Write instances.
-    this.body.count = this.bar.count = this.vehicles.length;
+    // Write instances (bars only for lighted kinds, trailers only for buses).
+    let iBar = 0;
+    let iTrail = 0;
+    this.body.count = this.vehicles.length;
     this.vehicles.forEach((v, i) => {
       const k = KINDS[v.kind];
       const gz = this.groundAt(v);
@@ -168,23 +196,52 @@ export class Actors {
       this.m.compose(toScene(v.x, v.y, gz + 0.4 + H / 2), this.q, this.v3.set(L, H, W));
       this.body.setMatrixAt(i, this.m);
       this.body.setColorAt(i, this.color.setHex(k.color));
-      const flash = Math.sin(timeSec * Math.PI * 2 * FLASH_HZ + v.phase) > 0;
-      this.m.compose(
-        toScene(v.x, v.y, gz + 0.4 + H + 0.18),
-        this.q,
-        this.v3.set(Math.min(2.2, L * 0.3), 0.3, W * 0.75),
-      );
-      this.bar.setMatrixAt(i, this.m);
-      this.bar.setColorAt(i, this.color.setHex(flash ? k.flashA : k.flashB));
-      const gm = v.glow.material as THREE.SpriteMaterial;
-      gm.color.setHex(flash ? k.flashA : k.flashB);
-      gm.opacity = 0.2 + 0.45 * night; // subtle by day, a beacon after dark
-      v.glow.position.copy(toScene(v.x, v.y, gz + H + 2.5));
+
+      if (k.trailer) {
+        // Trailer pivots at the hinge on the tractor's tail and swings its
+        // heading toward the tractor's as the bus moves (classic tow model).
+        const [tl, tw, th] = k.trailer;
+        let d = v.heading - v.trailHeading;
+        d = Math.atan2(Math.sin(d), Math.cos(d));
+        v.trailHeading += d * Math.min(1, (v.speed * dt) / (tl * 0.55));
+        const hx = v.x - Math.cos(v.heading) * (L / 2);
+        const hy = v.y - Math.sin(v.heading) * (L / 2);
+        const tx = hx - Math.cos(v.trailHeading) * (tl / 2);
+        const ty = hy - Math.sin(v.trailHeading) * (tl / 2);
+        this.q.setFromAxisAngle(this.up, v.trailHeading);
+        this.m.compose(toScene(tx, ty, gz + 0.4 + th / 2), this.q, this.v3.set(tl, th, tw));
+        this.trailer.setMatrixAt(iTrail, this.m);
+        this.trailer.setColorAt(iTrail, this.color.setHex(k.color));
+        iTrail++;
+      }
+
+      if (k.lights) {
+        const flash = Math.sin(timeSec * Math.PI * 2 * FLASH_HZ + v.phase) > 0;
+        this.q.setFromAxisAngle(this.up, v.heading);
+        this.m.compose(
+          toScene(v.x, v.y, gz + 0.4 + H + 0.18),
+          this.q,
+          this.v3.set(Math.min(2.2, L * 0.3), 0.3, W * 0.75),
+        );
+        this.bar.setMatrixAt(iBar, this.m);
+        this.bar.setColorAt(iBar, this.color.setHex(flash ? k.flashA : k.flashB));
+        iBar++;
+        if (v.glow) {
+          const gm = v.glow.material as THREE.SpriteMaterial;
+          gm.color.setHex(flash ? k.flashA : k.flashB);
+          gm.opacity = 0.2 + 0.45 * night; // subtle by day, a beacon after dark
+          v.glow.position.copy(toScene(v.x, v.y, gz + H + 2.5));
+        }
+      }
     });
+    this.bar.count = iBar;
+    this.trailer.count = iTrail;
     this.body.instanceMatrix.needsUpdate = true;
     this.bar.instanceMatrix.needsUpdate = true;
+    this.trailer.instanceMatrix.needsUpdate = true;
     if (this.body.instanceColor) this.body.instanceColor.needsUpdate = true;
     if (this.bar.instanceColor) this.bar.instanceColor.needsUpdate = true;
+    if (this.trailer.instanceColor) this.trailer.instanceColor.needsUpdate = true;
 
     this.updateSiren(timeSec);
   }
@@ -198,14 +255,22 @@ export class Actors {
 
   // ---- population ----------------------------------------------------------
 
-  private spawn(focus: { x: number; y: number }, dt: number, night: number): void {
+  private spawn(focus: { x: number; y: number }, dt: number, night: number, hour: number): void {
+    // School's out: buses finish their block and vanish once out of sight.
+    const inSession = schoolRun(hour);
+    if (!inSession) {
+      for (const v of this.vehicles) if (v.kind === "schoolbus") v.expire = true;
+    }
     this.respawnCooldown -= dt;
     if (this.respawnCooldown > 0) return;
     const count = (k: (v: Vehicle) => boolean): number => this.vehicles.filter(k).length;
     const nFire = count((v) => v.kind === "engine" || v.kind === "truck");
     const nPol = count((v) => v.kind === "police");
     const nAmb = count((v) => v.kind === "ambulance");
+    const nBus = count((v) => v.kind === "citybus");
+    const nSchool = count((v) => v.kind === "schoolbus");
     const maxAmb = night > 0.5 ? MAX_AMBULANCE_NIGHT : MAX_AMBULANCE_DAY;
+    const maxSchool = inSession ? MAX_SCHOOLBUS : 0;
 
     // Nightfall thins the ambulance fleet: extras head back to a hospital.
     if (nAmb > maxAmb) {
@@ -239,9 +304,16 @@ export class Actors {
         ? homes[Math.floor(Math.random() * homes.length)]!
         : this.randomFacilityNear(focus); // no hospital in range: post up anyway
       if (h) spawned = this.spawnAt("ambulance", h, !homes.length);
+    } else if (nBus < MAX_CITYBUS) {
+      const h = this.randomFacilityNear(focus);
+      if (h) spawned = this.spawnAt("citybus", h, true);
+    } else if (nSchool < maxSchool) {
+      const h = this.randomFacilityNear(focus);
+      if (h) spawned = this.spawnAt("schoolbus", h, true);
     }
     // Stagger arrivals — but fill a big deficit briskly after a view change.
-    const deficit = MAX_FIRE - nFire + (MAX_POLICE - nPol) + (maxAmb - nAmb);
+    const deficit =
+      MAX_FIRE - nFire + (MAX_POLICE - nPol) + (maxAmb - nAmb) + (MAX_CITYBUS - nBus) + (maxSchool - nSchool);
     this.respawnCooldown = spawned ? (deficit > 12 ? 0.25 : 0.9 + Math.random() * 2.5) : 1.5;
   }
 
@@ -260,17 +332,21 @@ export class Actors {
     const edges = this.adj.get(home.node);
     if (!edges?.length) return false;
     const edge = edges[Math.floor(Math.random() * edges.length)]!;
-    const glow = new THREE.Sprite(
-      new THREE.SpriteMaterial({
-        map: this.glowTex,
-        transparent: true,
-        opacity: 0.5,
-        blending: THREE.AdditiveBlending,
-        depthWrite: false,
-      }),
-    );
-    glow.scale.set(11, 11, 1);
-    this.group.add(glow);
+    const k = KINDS[kind];
+    let glow: THREE.Sprite | null = null;
+    if (k.lights) {
+      glow = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: this.glowTex,
+          transparent: true,
+          opacity: 0.5,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false,
+        }),
+      );
+      glow.scale.set(11, 11, 1);
+      this.group.add(glow);
+    }
     const v: Vehicle = {
       kind,
       home: homeless ? null : { x: home.x, y: home.y },
@@ -286,11 +362,13 @@ export class Actors {
       segT: 0,
       edgeId: -1,
       endNode: -1,
-      speed: SPEED_MIN + Math.random() * (SPEED_MAX - SPEED_MIN),
+      speed: k.speedMin + Math.random() * (k.speedMax - k.speedMin),
       phase: Math.random() * Math.PI * 2,
       x: home.x,
       y: home.y,
       heading: 0,
+      trailHeading: 0,
+      expire: false,
       glow,
     };
     this.enterEdge(v, edge, home.node);
@@ -299,8 +377,10 @@ export class Actors {
   }
 
   private kill(v: Vehicle): void {
-    v.glow.removeFromParent();
-    (v.glow.material as THREE.SpriteMaterial).dispose();
+    if (v.glow) {
+      v.glow.removeFromParent();
+      (v.glow.material as THREE.SpriteMaterial).dispose();
+    }
   }
 
   // ---- driving -------------------------------------------------------------
@@ -327,7 +407,8 @@ export class Actors {
 
   /** Move the vehicle; false = despawn it. */
   private advance(v: Vehicle, dt: number, focus: { x: number; y: number }): boolean {
-    if (Math.hypot(v.x - focus.x, v.y - focus.y) > DESPAWN_FAR) {
+    const focusDist = Math.hypot(v.x - focus.x, v.y - focus.y);
+    if (focusDist > DESPAWN_FAR || (v.expire && focusDist > 450)) {
       this.kill(v);
       return false;
     }
@@ -381,6 +462,9 @@ export class Actors {
     let total = 0;
     const weights = cands.map((e) => {
       let w = 1;
+      if (v.kind === "citybus") {
+        w = e.class === "arterial" ? 2.4 : e.class === "collector" ? 1.5 : 0.55;
+      }
       if (goal) {
         const fwd = e.a === node;
         const next = e.polyline[fwd ? 1 : e.polyline.length - 2] ?? e.polyline[fwd ? 0 : e.polyline.length - 1]!;
@@ -434,6 +518,7 @@ export class Actors {
       if (this.audio.state === "suspended") void this.audio.resume();
       let nearest = Infinity;
       for (const v of this.vehicles) {
+        if (!KINDS[v.kind].lights) continue; // buses don't wail
         nearest = Math.min(nearest, Math.hypot(v.x - this.listener.x, v.y - this.listener.y));
       }
       if (Number.isFinite(nearest)) target = 0.1 * Math.max(0, 1 - nearest / 900) ** 1.6;
