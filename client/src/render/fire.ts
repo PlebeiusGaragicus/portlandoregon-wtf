@@ -22,7 +22,8 @@ import { CYCLES_PER_DAY } from "./daynight.js";
 const REAL_PER_GAME_H = 3600 / CYCLES_PER_DAY;
 
 const SMOKE_MAX = 2000;
-const GLOW_MAX = 2600;
+const GLOW_MAX = 1200;
+const FLAME_MAX = 2200;
 const EMBER_MAX = 130;
 const SPREAD_TICK = 4; // real s between spread rolls per burning building
 const TREE_IGNITE_R = 14; // m from a burning building
@@ -126,10 +127,63 @@ interface Tree {
   t: number;
 }
 
+/**
+ * Ragged flame sprite with the COLOR baked in: white-hot core low on the
+ * axis, orange body, deep-red ragged edge, base sitting on the bottom edge
+ * of the quad (so sprites anchor ON the fuel, not hovering over it). Drawn
+ * with normal blending the body is essentially opaque — fire you cannot see
+ * through, unlike the additive glow halos.
+ */
+function flameTexture(size = 128): THREE.CanvasTexture {
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = size;
+  const ctx = cv.getContext("2d")!;
+  ctx.globalCompositeOperation = "lighter";
+  const blob = (x: number, y: number, r: number, rgb: string, a: number) => {
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, `rgba(${rgb},${a})`);
+    g.addColorStop(0.6, `rgba(${rgb},${a * 0.55})`);
+    g.addColorStop(1, `rgba(${rgb},0)`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  };
+  const S = size / 128;
+  // Body: turbulent orange-red mass, wide at the base, narrowing to the tip.
+  for (let i = 0; i < 85; i++) {
+    const t = Math.pow(Math.random(), 0.85); // bias toward the base
+    const y = (118 - t * 102) * S;
+    const w = 30 * (1 - t * 0.72) * S;
+    const x = 64 * S + (Math.random() - 0.5) * 2 * w;
+    const r = (15 * (1 - t * 0.55) + 4 + Math.random() * 5) * S;
+    blob(x, y, r, `255,${Math.round(70 + (1 - t) * 80)},18`, 0.5);
+  }
+  // Inner body: bright orange near the axis.
+  for (let i = 0; i < 34; i++) {
+    const t = Math.random() * 0.72;
+    const y = (116 - t * 95) * S;
+    const x = 64 * S + (Math.random() - 0.5) * 26 * (1 - t * 0.6) * S;
+    const r = (11 * (1 - t * 0.45) + 3) * S;
+    blob(x, y, r, "255,176,52", 0.6);
+  }
+  // Core: white-yellow heart low in the flame.
+  for (let i = 0; i < 16; i++) {
+    const t = Math.random() * 0.4;
+    const y = (112 - t * 80) * S;
+    const x = 64 * S + (Math.random() - 0.5) * 15 * S;
+    const r = (8 * (1 - t * 0.4) + 2.5) * S;
+    blob(x, y, r, "255,242,190", 0.75);
+  }
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 // The renderer uses a logarithmic depth buffer: raw ShaderMaterials MUST
 // include three's logdepthbuf chunks or their fragments lose every depth
 // test and silently vanish.
-function billboardMaterial(tex: THREE.Texture, blending: THREE.Blending): THREE.ShaderMaterial {
+function billboardMaterial(tex: THREE.Texture, blending: THREE.Blending, useMapColor = false): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: { map: { value: tex } },
     vertexShader: `
@@ -160,8 +214,10 @@ function billboardMaterial(tex: THREE.Texture, blending: THREE.Blending): THREE.
       varying float vA;
       void main() {
         #include <logdepthbuf_fragment>
-        float a = texture2D(map, vUv).a;
-        gl_FragColor = vec4(vC, vA * a);
+        vec4 t = texture2D(map, vUv);
+        ${useMapColor
+          ? "gl_FragColor = vec4(t.rgb * vC, vA * min(1.0, t.a * 1.35));"
+          : "gl_FragColor = vec4(vC, vA * t.a);"}
         if (gl_FragColor.a < 0.003) discard;
       }`,
     transparent: true,
@@ -180,7 +236,7 @@ class BillboardPool {
   private geo: THREE.InstancedBufferGeometry;
   private n = 0;
 
-  constructor(cap: number, tex: THREE.Texture, blending: THREE.Blending, renderOrder: number) {
+  constructor(cap: number, tex: THREE.Texture, blending: THREE.Blending, renderOrder: number, useMapColor = false) {
     const plane = new THREE.PlaneGeometry(1, 1);
     this.geo = new THREE.InstancedBufferGeometry();
     this.geo.index = plane.index;
@@ -194,7 +250,7 @@ class BillboardPool {
     this.geo.setAttribute("iSize", this.size);
     this.geo.setAttribute("iColor", this.color);
     this.geo.setAttribute("iAlpha", this.alpha);
-    this.mesh = new THREE.Mesh(this.geo, billboardMaterial(tex, blending));
+    this.mesh = new THREE.Mesh(this.geo, billboardMaterial(tex, blending, useMapColor));
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = renderOrder;
   }
@@ -253,6 +309,7 @@ export class FireSim {
 
   private smoke: BillboardPool;
   private glow: BillboardPool;
+  private flames: BillboardPool;
 
   /** A fresh fire started somewhere no incident covers — dispatch hook. */
   onNewFire: ((x: number, y: number) => void) | null = null;
@@ -300,9 +357,11 @@ export class FireSim {
       ti++;
     }
     const tex = radialGlowTexture();
+    // Draw order: light halos under the solid flame bodies, smoke on top.
     this.glow = new BillboardPool(GLOW_MAX, tex, THREE.AdditiveBlending, 40);
-    this.smoke = new BillboardPool(SMOKE_MAX, tex, THREE.NormalBlending, 41);
-    this.group.add(this.glow.mesh, this.smoke.mesh);
+    this.flames = new BillboardPool(FLAME_MAX, flameTexture(), THREE.NormalBlending, 41, true);
+    this.smoke = new BillboardPool(SMOKE_MAX, tex, THREE.NormalBlending, 42);
+    this.group.add(this.glow.mesh, this.flames.mesh, this.smoke.mesh);
   }
 
   /** Prop sets whose trees this sim recolors (map set + lazy FPV set). */
@@ -883,9 +942,10 @@ export class FireSim {
           sx, sy, sz,
           wx * this.windSpeed * 0.15, wy * this.windSpeed * 0.15,
           3.5 + Math.random() * 2.5,
-          5 + burn.size * 0.4, 1.8, grey,
+          5 + burn.size * 0.4, 1.8,
+          burn.suppressed ? grey : grey * 0.5, // pitch black right off the fire
           4 + Math.random() * 3,
-          0.85,
+          1,
         );
       }
       // Contribute to the shared plume for this neighborhood.
@@ -1053,87 +1113,94 @@ export class FireSim {
   private writeBillboards(focus: { x: number; y: number }): void {
     const RANGE = 9000;
     this.glow.begin();
+    this.flames.begin();
+    // Flame sprites carry their own baked color and are near-opaque (normal
+    // blending): iColor stays white, iAlpha is coverage. Glow is only the
+    // light they throw.
     for (const burn of this.burns.values()) {
       const dist = Math.hypot(burn.x - focus.x, burn.y - focus.y);
       if (dist > RANGE) continue;
       const flick = 0.82 + 0.18 * Math.sin(this.time * 13 + burn.bi) * Math.sin(this.time * 29 + burn.x);
       if (dist > CELL_FLAME_LOD) {
-        // Far away: one aggregate glow — the pixels wouldn't resolve cells.
-        const s = burn.size * (0.5 + burn.intensity) * flick;
-        this.glow.push(burn.x, burn.y, burn.z + 1, s, 1, 0.42, 0.1, 0.75 * burn.intensity * flick);
-        this.glow.push(burn.x, burn.y, burn.z + 1 + s * 0.3, s * 1.6, 1, 0.25, 0.04, 0.3 * burn.intensity * flick);
+        // Far away: one aggregate flame — the pixels wouldn't resolve cells.
+        const s = burn.size * (0.9 + burn.intensity) * flick;
+        this.flames.push(burn.x, burn.y, burn.z - 2 + s * 0.44, s, 1, 1, 1, Math.min(1, burn.intensity * 1.6));
+        this.glow.push(burn.x, burn.y, burn.z + 2, s * 2, 1, 0.35, 0.07, 0.4 * burn.intensity * flick);
         continue;
       }
-      // Near: localized flames per burning cell, climbing the walls.
+      // Light halo over the whole fire.
+      if (burn.intensity > 0.05) {
+        this.glow.push(burn.x, burn.y, burn.z + 2, burn.size * (1.3 + burn.intensity), 1, 0.4, 0.1, 0.45 * burn.intensity * flick);
+      }
+      // Localized flame bodies per burning cell, base ON the fuel.
       for (let ci = 0; ci < burn.cells.length; ci++) {
         const c = burn.cells[ci]!;
         if (c.i < 0.03) continue;
         const cf = 0.75 + 0.25 * Math.sin(this.time * 11 + ci * 2.7 + burn.bi) * Math.sin(this.time * 23 + ci);
-        const colH = c.z + (c.top - c.z) * Math.min(1, c.i * 1.15);
-        const s = (4.2 + c.i * (7 + burn.height * 0.2)) * cf;
-        // Base fire at the fuel, tongue partway up the column, tip licking the top.
-        this.glow.push(c.fx, c.fy, c.z + s * 0.35, s, 1, 0.46, 0.11, 0.95 * c.i * cf);
-        this.glow.push(c.fx, c.fy, c.z + (colH - c.z) * 0.55, s * 0.85, 1, 0.32, 0.06, 0.65 * c.i * cf);
-        this.glow.push(c.fx, c.fy, colH, s * 0.6, 1, 0.22, 0.03, 0.45 * c.i * cf);
+        const s = (5 + c.i * (8 + burn.height * 0.22)) * cf;
+        this.flames.push(c.fx, c.fy, c.z + s * 0.42, s, 1, 1, 1, Math.min(1, c.i * 1.5) * (0.8 + 0.2 * cf));
       }
-      // Heavily involved: the whole structure is a mass of flame — every cell
-      // gets a second, larger fire body plus a stacked central inferno.
+      // Heavily involved: bigger flame bodies over every cell plus a central
+      // inferno rooted in the structure — a raging mass, not a glow ball.
       if (burn.intensity > 0.45) {
         const k = (burn.intensity - 0.45) / 0.55;
         for (let ci = 0; ci < burn.cells.length; ci++) {
           const c = burn.cells[ci]!;
           if (c.i < 0.25) continue;
           const cf = 0.7 + 0.3 * Math.sin(this.time * 9 + ci * 4.1 + burn.bi * 2);
-          const s = (7 + burn.height * 0.3 + burn.size * 0.35) * cf * k;
-          this.glow.push(c.fx, c.fy, c.z + s * 0.4, s, 1, 0.42, 0.09, 0.7 * k * cf);
-          this.glow.push(c.fx, c.fy, c.z + s * 0.9, s * 0.75, 1, 0.28, 0.05, 0.45 * k * cf);
+          const s = (9 + burn.height * 0.35 + burn.size * 0.4) * cf * k;
+          this.flames.push(c.fx, c.fy, c.z + s * 0.42, s, 1, 1, 1, Math.min(1, 0.9 * k * cf + 0.15));
         }
-        const s = burn.size * (1 + k * 1.2) * flick;
-        this.glow.push(burn.x, burn.y, burn.z + burn.height * 0.15, s, 1, 0.42, 0.09, 0.7 * k * flick);
-        this.glow.push(burn.x, burn.y, burn.z + s * 0.35, s * 1.25, 1, 0.3, 0.05, 0.5 * k * flick);
-        this.glow.push(burn.x, burn.y, burn.z + s * 0.75, s * 1.5, 1, 0.22, 0.03, 0.3 * k * flick);
+        const sC = burn.size * (1.1 + k * 1.3) * flick;
+        this.flames.push(
+          burn.x, burn.y,
+          burn.z - burn.height * 0.35 + sC * 0.44, sC,
+          1, 1, 1, Math.min(1, 0.3 + k * 0.9),
+        );
       }
     }
     for (const fb of this.fireballs) {
       if (Math.hypot(fb.x - focus.x, fb.y - focus.y) > RANGE) continue;
       const k = 1 - fb.t / fb.life;
-      // One dim body glow for volume, then fixed sub-flames flickering in
-      // place — the mass sits on the ground; nothing orbits.
-      this.glow.push(fb.x, fb.y, fb.z + fb.size * 0.3, fb.size * 1.5 * (0.5 + k * 0.5), 1, 0.32, 0.05, 0.35 * k);
+      this.glow.push(fb.x, fb.y, fb.z + fb.size * 0.3, fb.size * 1.6 * (0.5 + k * 0.5), 1, 0.32, 0.05, 0.4 * k);
       for (const sub of fb.subs) {
         const fl = 0.6 + 0.4 * Math.sin(this.time * 12 + sub.seed) * Math.sin(this.time * 27 + sub.seed * 3);
-        const h = fb.size * (0.25 + 0.45 * fl) * k;
-        const sx = fb.x + sub.ox;
-        const sy = fb.y + sub.oy;
-        const s = fb.size * 0.42 * (0.6 + 0.4 * fl) * (0.5 + k * 0.5);
-        this.glow.push(sx, sy, fb.z + s * 0.3, s, 1, 0.45, 0.1, 0.85 * k * fl);
-        this.glow.push(sx, sy, fb.z + s * 0.3 + h * 0.6, s * 0.62, 1, 0.26, 0.04, 0.55 * k * fl);
-        this.glow.push(sx, sy, fb.z + s * 0.3 + h, s * 0.38, 1, 0.18, 0.02, 0.3 * k * fl);
+        const s = fb.size * (0.55 + 0.45 * fl) * (0.55 + k * 0.45);
+        this.flames.push(fb.x + sub.ox, fb.y + sub.oy, fb.z - 1 + s * 0.44, s, 1, 1, 1, Math.min(1, k * 1.4 * (0.5 + fl * 0.5)));
       }
     }
+    // Embers: white-hot core inside an orange halo — brands you can track
+    // sailing over the rooftops.
     for (const e of this.embers) {
       if (Math.hypot(e.x - focus.x, e.y - focus.y) > RANGE) continue;
-      const tw = 0.6 + 0.4 * Math.sin(this.time * 31 + e.x * 7);
-      this.glow.push(e.x, e.y, e.z, 0.5 + 0.8 * tw, 1, 0.55, 0.15, 0.85 * tw * (1 - e.t / e.life));
+      const tw = 0.7 + 0.3 * Math.sin(this.time * 31 + e.x * 7);
+      const fade = 1 - Math.pow(e.t / e.life, 2);
+      this.glow.push(e.x, e.y, e.z, 2.4 * tw, 1, 0.45, 0.1, 0.95 * tw * fade);
+      this.glow.push(e.x, e.y, e.z, 1.1 * tw, 1, 0.85, 0.55, fade);
     }
     for (const ti of this.burningTrees) {
       const t = this.trees[ti]!;
       if (Math.hypot(t.x - focus.x, t.y - focus.y) > RANGE) continue;
       const f = Math.min(1, t.t / TREE_BURN_S);
       const a = Math.sin(f * Math.PI);
-      this.glow.push(t.x, t.y, this.terrain(t.x, t.y) + 4, 6 + 3 * a, 1, 0.38, 0.08, 0.6 * a);
+      const gz = this.terrain(t.x, t.y);
+      const s = 7 + 5 * a;
+      this.flames.push(t.x, t.y, gz + s * 0.44, s, 1, 1, 1, Math.min(1, a * 1.3));
+      this.glow.push(t.x, t.y, gz + 4, s * 1.5, 1, 0.38, 0.08, 0.5 * a);
     }
     for (const fl of this.flashes) {
       const k = 1 - fl.t / fl.life;
       this.glow.push(fl.x, fl.y, fl.z, fl.size * (0.6 + (1 - k) * 0.8), fl.color.r, fl.color.g, fl.color.b, k * 0.95);
     }
     this.glow.end();
+    this.flames.end();
 
     this.smoke.begin();
     for (const p of this.puffs) {
       if (Math.hypot(p.x - focus.x, p.y - focus.y) > RANGE) continue;
       const f = p.t / p.life;
-      const a = Math.sin(Math.min(1, f) * Math.PI) * p.alpha;
+      // Fast ramp-in, long opaque middle: smoke is a body, not a veil.
+      const a = Math.min(1, Math.sin(Math.min(1, f) * Math.PI) * 2.6) * p.alpha;
       this.smoke.push(p.x, p.y, p.z, p.size, p.grey, p.grey, p.grey * 1.05, a);
     }
     this.smoke.end();
