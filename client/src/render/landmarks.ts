@@ -15,6 +15,8 @@ const PAD_RADIUS = 12; // m, unmatched landmarks only
 /** Zoom (viewHeight, m) past which plates are dropped — labels are a
  * close-up detail; from district height the tinted prism is the marker. */
 const LABEL_MAX_VIEW = 800;
+/** Schools (the lighter tier) label only when practically at street level. */
+const SCHOOL_MAX_VIEW = 380;
 
 export interface LandmarkLayer {
   group: THREE.Group;
@@ -31,7 +33,8 @@ export function buildLandmarks(map: GameMap, hf?: Heightfield | null): LandmarkL
 
   const pads = new THREE.Group();
   const plates = new THREE.Group();
-  group.add(pads, plates);
+  const schoolPlates = new THREE.Group();
+  group.add(pads, plates, schoolPlates);
 
   const padGeo = new THREE.CircleGeometry(PAD_RADIUS, 24).rotateX(-Math.PI / 2);
   const padMats = new Map<Landmark["kind"], THREE.MeshBasicMaterial>();
@@ -57,6 +60,10 @@ export function buildLandmarks(map: GameMap, hf?: Heightfield | null): LandmarkL
     const tallest = bs.reduce((h, b) => Math.max(h, b.height), 0);
     const gz = ground(anchor[0]!, anchor[1]!);
     const h = gz + Math.max(MIN_PLATE_H, tallest + PLATE_CLEARANCE);
+    if (m.kind === "school") {
+      schoolPlates.add(plate(m, anchor[0]!, anchor[1]!, h, 0.0095));
+      continue; // no pad either — the tinted building is the whole marker
+    }
     if (!bs.length) {
       const pad = new THREE.Mesh(padGeo, padMat(m.kind));
       pad.position.copy(toScene(m.x, m.y, ground(m.x, m.y) + 0.4));
@@ -66,6 +73,7 @@ export function buildLandmarks(map: GameMap, hf?: Heightfield | null): LandmarkL
   }
 
   plates.renderOrder = 4;
+  schoolPlates.renderOrder = 4;
 
   return {
     group,
@@ -74,6 +82,7 @@ export function buildLandmarks(map: GameMap, hf?: Heightfield | null): LandmarkL
       // drifting upward with zoom would detach the label from its subject.
       // depthTest is off, so they stay readable through the skyline anyway.
       plates.visible = viewHeight < LABEL_MAX_VIEW;
+      schoolPlates.visible = viewHeight < SCHOOL_MAX_VIEW;
     },
   };
 }
@@ -110,7 +119,7 @@ function ringArea(ring: [number, number][]): number {
 }
 
 /** Billboarded name plate — a canvas texture on a screen-space sprite. */
-function plate(m: Landmark, x: number, y: number, height: number): THREE.Sprite {
+function plate(m: Landmark, x: number, y: number, height: number, ndcScale = 0.013): THREE.Sprite {
   const text = m.label;
   const font = "bold 24px system-ui, sans-serif";
   const measure = document.createElement("canvas").getContext("2d")!;
@@ -144,7 +153,7 @@ function plate(m: Landmark, x: number, y: number, height: number): THREE.Sprite 
   );
   // sizeAttenuation off: scale is in NDC units, so plates keep a constant
   // on-screen size at every zoom.
-  sprite.scale.set((w / h) * 0.013, 0.013, 1);
+  sprite.scale.set((w / h) * ndcScale, ndcScale, 1);
   sprite.position.copy(toScene(x, y, height));
   sprite.userData.baseHeight = height;
   sprite.userData.landmark = m;

@@ -105,7 +105,7 @@
   },
   "bakedMap": {
     "file": "data/maps/portland.json.gz",
-    "kind": "gz-asset (139.6 MB raw, 30.5 MB gz)",
+    "kind": "gz-asset (139.8 MB raw, 30.5 MB gz)",
     "meta": {
       "name": "portland",
       "sourceDate": "2026-08-04",
@@ -122,9 +122,9 @@
     "props": 405582,
     "water": 2,
     "landmarks": {
-      "count": 76,
-      "matchedToBuilding": 75,
-      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/{0,1,2} + https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0",
+      "count": 658,
+      "matchedToBuilding": 657,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/{0,1,2,3} + https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0",
       "scrapedAt": "2026-08-05"
     }
   },

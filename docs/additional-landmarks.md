@@ -79,7 +79,7 @@ tools/map-extract`, then re-run build-map.
 
 | Layer | Endpoint | Count | Notes / game idea |
 |---|---|---|---|
-| Schools | `Public/Public_Safety_Places/MapServer/3` | 831 | Too many for name plates — bake as a building-use overlay or rally points. Metro `PlacesDataWebMerc/5` is the regional alternative. |
+| Schools | **DONE** — `Public/Public_Safety_Places/MapServer/3` | 582 baked | "Lighter tier": muted building tint, close-zoom-only small labels, no glow/minimap dot. School buses spawn from them during school runs. |
 | Bridges / River bridges | `COP_OpenData_Transportation/MapServer/79` + `/80` | 520 / 13 | Decks already render via streets; this adds *identity* — name the 13 Willamette crossings, make them targetable chokepoints. |
 | Transit centers | Metro `TransitDataWebMerc/3` | 13 | Hubs if MAX becomes troop fast-travel. |
 | Aerial tram | Metro `TransitDataWebMerc/4` | 1 | OHSU tram. Pattern A, kind `tram`. |

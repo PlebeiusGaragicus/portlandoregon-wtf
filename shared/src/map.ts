@@ -116,7 +116,7 @@ export interface MarkingLine {
 /** Named civic point of interest, drawn with a label. */
 export interface Landmark {
   id: number;
-  kind: "fire-station" | "police" | "hospital" | "city-hall";
+  kind: "fire-station" | "police" | "hospital" | "city-hall" | "school";
   /** Short map label, e.g. "Station 12". */
   label: string;
   /** Full name from the source, e.g. "Portland Fire Station 12". */

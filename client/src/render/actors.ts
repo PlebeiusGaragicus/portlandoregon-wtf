@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { heightAt, type GameMap, type Heightfield, type StreetEdge } from "@battle-juice/shared";
 import { toScene } from "./camera.js";
+import { Dispatch } from "./dispatch.js";
 import { radialGlowTexture } from "./props.js";
 
 // Ambient emergency traffic: fire engines/trucks, police cars and ambulances
@@ -30,6 +31,12 @@ const SPAWN_NEAR = 6000; // m — facilities eligible around the camera focus
 const DESPAWN_FAR = 7500; // m — too far from focus: recycle the vehicle
 const HOME_DONE = 130; // m — close enough to the station to "back in"
 const FLASH_HZ = 4.2;
+const ACCEL = 4; // m/s^2
+const BRAKE = 9;
+const TURN_EASE = 4.2; // body heading chase rate (1/s)
+const AVOID_AHEAD = 20; // m — start giving way to a vehicle ahead
+const CRASH_DIST = 3.1; // m — close enough to trade paint
+const SCENE_RADIUS = 65; // m — near enough to the call to work it
 
 interface VehicleKind {
   color: number;
@@ -62,7 +69,11 @@ interface Vehicle {
   kind: keyof typeof KINDS;
   /** Home facility (fire station / hospital), world meters. */
   home: { x: number; y: number } | null;
-  mode: "roam" | "return";
+  mode: "roam" | "return" | "respond" | "onscene";
+  /** Dispatch destination while responding. */
+  goal: { x: number; y: number } | null;
+  respondT: number;
+  sceneT: number;
   /** Seconds until this roamer heads home (fire/ambulance). */
   patience: number;
   pts: [number, number][]; // oriented polyline of the current edge
@@ -79,7 +90,14 @@ interface Vehicle {
   phase: number; // flash phase offset
   x: number;
   y: number;
-  heading: number;
+  heading: number; // path direction (instant)
+  rHeading: number; // rendered body heading (eased — no snapping at corners)
+  curSpeed: number; // actual speed (eased toward cruise/brake targets)
+  /** Transient crash shove, decays back to the lane. */
+  ox: number;
+  oy: number;
+  /** Per-frame speed ceiling imposed by traffic ahead. */
+  avoidCap: number;
   /** Articulated rear section's own heading — pivots at the hinge. */
   trailHeading: number;
   /** Off-shift (school bus after the bell): despawn once out of sight. */
@@ -101,6 +119,8 @@ export class Actors {
   private fireHomes: Facility[] = [];
   private ambHomes: Facility[] = [];
   private policeHomes: Facility[] = [];
+  private schoolHomes: Facility[] = [];
+  private dispatch: Dispatch;
   private vehicles: Vehicle[] = [];
   private respawnCooldown = 0;
 
@@ -153,7 +173,19 @@ export class Actors {
       if (lm.kind === "fire-station") this.fireHomes.push(snap(lm.x, lm.y));
       else if (lm.kind === "hospital") this.ambHomes.push(snap(lm.x, lm.y));
       else if (lm.kind === "police") this.policeHomes.push(snap(lm.x, lm.y));
+      else if (lm.kind === "school") this.schoolHomes.push(snap(lm.x, lm.y));
     }
+    this.dispatch = new Dispatch((focus, range) => {
+      const ids = [...this.nodePos.keys()];
+      for (let tries = 0; tries < 40; tries++) {
+        const p = this.nodePos.get(ids[Math.floor(Math.random() * ids.length)]!)!;
+        if (Math.hypot(p.x - focus.x, p.y - focus.y) < range) {
+          return { x: p.x, y: p.y, z: this.terrain(p.x, p.y) };
+        }
+      }
+      return null;
+    });
+    this.group.add(this.dispatch.group);
 
     const bodyMat = new THREE.MeshLambertMaterial({ flatShading: true });
     this.body = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), bodyMat, CAP);
@@ -178,8 +210,10 @@ export class Actors {
 
   update(dt: number, timeSec: number, focus: { x: number; y: number }, night = 0, hour = 12): void {
     this.spawn(focus, dt, night, hour);
+    this.dispatch.update(dt, timeSec, focus, this.vehicles);
 
     for (const v of this.vehicles) v.patience -= dt;
+    this.interact(dt);
     this.vehicles = this.vehicles.filter((v) => this.advance(v, dt, focus));
 
     // Write instances (bars only for lighted kinds, trailers only for buses).
@@ -190,10 +224,12 @@ export class Actors {
       const k = KINDS[v.kind];
       const gz = this.groundAt(v);
       const [L, W, H] = k.size;
-      // heading is the world math angle of travel; a yaw of exactly that
-      // about scene-up maps local +x (the box length) onto the travel dir.
-      this.q.setFromAxisAngle(this.up, v.heading);
-      this.m.compose(toScene(v.x, v.y, gz + 0.4 + H / 2), this.q, this.v3.set(L, H, W));
+      const rx = v.x + v.ox;
+      const ry = v.y + v.oy;
+      // rHeading is the eased body yaw; a yaw of exactly that about scene-up
+      // maps local +x (the box length) onto the travel dir.
+      this.q.setFromAxisAngle(this.up, v.rHeading);
+      this.m.compose(toScene(rx, ry, gz + 0.4 + H / 2), this.q, this.v3.set(L, H, W));
       this.body.setMatrixAt(i, this.m);
       this.body.setColorAt(i, this.color.setHex(k.color));
 
@@ -201,11 +237,11 @@ export class Actors {
         // Trailer pivots at the hinge on the tractor's tail and swings its
         // heading toward the tractor's as the bus moves (classic tow model).
         const [tl, tw, th] = k.trailer;
-        let d = v.heading - v.trailHeading;
+        let d = v.rHeading - v.trailHeading;
         d = Math.atan2(Math.sin(d), Math.cos(d));
-        v.trailHeading += d * Math.min(1, (v.speed * dt) / (tl * 0.55));
-        const hx = v.x - Math.cos(v.heading) * (L / 2);
-        const hy = v.y - Math.sin(v.heading) * (L / 2);
+        v.trailHeading += d * Math.min(1, (Math.max(1, v.curSpeed) * dt) / (tl * 0.55));
+        const hx = rx - Math.cos(v.rHeading) * (L / 2);
+        const hy = ry - Math.sin(v.rHeading) * (L / 2);
         const tx = hx - Math.cos(v.trailHeading) * (tl / 2);
         const ty = hy - Math.sin(v.trailHeading) * (tl / 2);
         this.q.setFromAxisAngle(this.up, v.trailHeading);
@@ -217,9 +253,9 @@ export class Actors {
 
       if (k.lights) {
         const flash = Math.sin(timeSec * Math.PI * 2 * FLASH_HZ + v.phase) > 0;
-        this.q.setFromAxisAngle(this.up, v.heading);
+        this.q.setFromAxisAngle(this.up, v.rHeading);
         this.m.compose(
-          toScene(v.x, v.y, gz + 0.4 + H + 0.18),
+          toScene(rx, ry, gz + 0.4 + H + 0.18),
           this.q,
           this.v3.set(Math.min(2.2, L * 0.3), 0.3, W * 0.75),
         );
@@ -230,7 +266,7 @@ export class Actors {
           const gm = v.glow.material as THREE.SpriteMaterial;
           gm.color.setHex(flash ? k.flashA : k.flashB);
           gm.opacity = 0.2 + 0.45 * night; // subtle by day, a beacon after dark
-          v.glow.position.copy(toScene(v.x, v.y, gz + H + 2.5));
+          v.glow.position.copy(toScene(rx, ry, gz + H + 2.5));
         }
       }
     });
@@ -297,7 +333,9 @@ export class Actors {
       const h = homes.length
         ? homes[Math.floor(Math.random() * homes.length)]!
         : this.randomFacilityNear(focus);
-      if (h) spawned = this.spawnAt("police", h, /* homeless */ true);
+      // Precinct cars are homed (they cycle back to the precinct); cars far
+      // from any precinct patrol homeless and recycle by distance.
+      if (h) spawned = this.spawnAt("police", h, homes.length === 0);
     } else if (nAmb < maxAmb) {
       const homes = near(this.ambHomes);
       const h = homes.length
@@ -308,8 +346,11 @@ export class Actors {
       const h = this.randomFacilityNear(focus);
       if (h) spawned = this.spawnAt("citybus", h, true);
     } else if (nSchool < maxSchool) {
-      const h = this.randomFacilityNear(focus);
-      if (h) spawned = this.spawnAt("schoolbus", h, true);
+      const homes = near(this.schoolHomes);
+      const h = homes.length
+        ? homes[Math.floor(Math.random() * homes.length)]!
+        : this.randomFacilityNear(focus);
+      if (h) spawned = this.spawnAt("schoolbus", h, homes.length === 0);
     }
     // Stagger arrivals — but fill a big deficit briskly after a view change.
     const deficit =
@@ -367,11 +408,20 @@ export class Actors {
       x: home.x,
       y: home.y,
       heading: 0,
+      rHeading: 0,
+      curSpeed: 0,
+      ox: 0,
+      oy: 0,
+      avoidCap: Infinity,
+      goal: null,
+      respondT: 0,
+      sceneT: 0,
       trailHeading: 0,
       expire: false,
       glow,
     };
     this.enterEdge(v, edge, home.node);
+    v.rHeading = v.trailHeading = this.pathHeading(v);
     this.vehicles.push(v);
     return true;
   }
@@ -405,6 +455,14 @@ export class Actors {
     v.segT = 0;
   }
 
+  /** Path heading at the vehicle's current segment. */
+  private pathHeading(v: Vehicle): number {
+    const a = v.pts[v.seg] ?? v.pts[v.pts.length - 2];
+    const b = v.pts[v.seg + 1] ?? v.pts[v.pts.length - 1];
+    if (!a || !b) return v.heading;
+    return Math.atan2(b[1] - a[1], b[0] - a[0]);
+  }
+
   /** Move the vehicle; false = despawn it. */
   private advance(v: Vehicle, dt: number, focus: { x: number; y: number }): boolean {
     const focusDist = Math.hypot(v.x - focus.x, v.y - focus.y);
@@ -418,7 +476,40 @@ export class Actors {
       return false;
     }
 
-    let left = v.speed * dt;
+    // Dispatch lifecycle.
+    if (v.mode === "respond" && v.goal) {
+      v.respondT -= dt;
+      if (Math.hypot(v.x - v.goal.x, v.y - v.goal.y) < SCENE_RADIUS) {
+        v.mode = "onscene";
+        v.sceneT = 25 + Math.random() * 40;
+      } else if (v.respondT <= 0) {
+        v.mode = "roam"; // couldn't find the address — back on patrol
+        v.goal = null;
+      }
+    } else if (v.mode === "onscene") {
+      v.sceneT -= dt;
+      if (v.sceneT <= 0) {
+        v.goal = null;
+        v.mode = v.home ? "return" : "roam";
+        v.patience = 40 + Math.random() * 60;
+      }
+    }
+
+    // Speed: cruise, braked for corners, dispatch stops and traffic ahead.
+    let target = v.mode === "onscene" ? 0 : v.speed;
+    const err = Math.abs(Math.atan2(Math.sin(v.heading - v.rHeading), Math.cos(v.heading - v.rHeading)));
+    target = Math.min(target, v.speed * Math.max(0.22, 1 - err * 1.15));
+    if (v.avoidCap < target) target = v.avoidCap;
+    const delta = target - v.curSpeed;
+    v.curSpeed += Math.max(-BRAKE * dt, Math.min(ACCEL * dt, delta));
+    if (v.curSpeed < 0.02 && target === 0) v.curSpeed = 0;
+
+    // Crash shove decays back to the lane.
+    const decay = Math.exp(-dt * 2.1);
+    v.ox *= decay;
+    v.oy *= decay;
+
+    let left = v.curSpeed * dt;
     while (left > 0) {
       const a = v.pts[v.seg];
       const b = v.pts[v.seg + 1];
@@ -441,7 +532,44 @@ export class Actors {
         v.segT = 0;
       }
     }
+    // Body yaw chases the path direction — corners are steered, not snapped.
+    const dh = Math.atan2(Math.sin(v.heading - v.rHeading), Math.cos(v.heading - v.rHeading));
+    v.rHeading += dh * Math.min(1, dt * TURN_EASE);
     return true;
+  }
+
+  /** Pairwise traffic sense: brake for a vehicle ahead; trade paint (and a
+   * shove) when two actually meet. O(n^2) over ~100 units — negligible. */
+  private interact(dt: number): void {
+    for (const v of this.vehicles) v.avoidCap = Infinity;
+    const vs = this.vehicles;
+    for (let i = 0; i < vs.length; i++) {
+      const a = vs[i]!;
+      for (let j = i + 1; j < vs.length; j++) {
+        const b = vs[j]!;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const d = Math.hypot(dx, dy);
+        if (d > AVOID_AHEAD) continue;
+        // Give way to whoever is in front of your nose.
+        const aAhead = (dx * Math.cos(a.rHeading) + dy * Math.sin(a.rHeading)) / (d || 1);
+        const bAhead = (-dx * Math.cos(b.rHeading) - dy * Math.sin(b.rHeading)) / (d || 1);
+        if (aAhead > 0.6) a.avoidCap = Math.min(a.avoidCap, Math.max(0, (d - 5) * 0.9));
+        if (bAhead > 0.6) b.avoidCap = Math.min(b.avoidCap, Math.max(0, (d - 5) * 0.9));
+        if (d < CRASH_DIST) {
+          // Bump: both stop dead and get shoved apart, then recover.
+          const nx = d > 0.01 ? dx / d : 1;
+          const ny = d > 0.01 ? dy / d : 0;
+          const push = (CRASH_DIST - d) * 0.55 + 0.4;
+          a.ox -= nx * push;
+          a.oy -= ny * push;
+          b.ox += nx * push;
+          b.oy += ny * push;
+          a.curSpeed = Math.min(a.curSpeed, 0.5);
+          b.curSpeed = Math.min(b.curSpeed, 0.5);
+        }
+      }
+    }
   }
 
   private nextEdge(v: Vehicle): boolean {
@@ -455,7 +583,8 @@ export class Actors {
     // Direction bias: returners steer home; fire apparatus that strayed past
     // the edge of their first-due area steer back toward it.
     let goal: { x: number; y: number } | null = null;
-    if (v.home) {
+    if (v.mode === "respond" && v.goal) goal = v.goal;
+    else if (v.home) {
       if (v.mode === "return") goal = v.home;
       else if (Math.hypot(pos.x - v.home.x, pos.y - v.home.y) > FMA_RADIUS) goal = v.home;
     }
@@ -530,6 +659,7 @@ export class Actors {
   }
 
   dispose(): void {
+    this.dispatch.dispose();
     for (const v of this.vehicles) this.kill(v);
     this.vehicles = [];
     if (this.sirenOsc) this.sirenOsc.stop();

@@ -65,6 +65,9 @@ export const LANDMARK_THEMES: Record<Landmark["kind"], LandmarkTheme> = {
   police: { building: 0x2b56c4, plateBg: "rgba(18, 38, 110, 0.9)", plateBorder: "#7ea1ff", plateText: "#cfdcff" },
   hospital: { building: 0xdde2e7, plateBg: "rgba(12, 84, 96, 0.9)", plateBorder: "#63d6e2", plateText: "#cdf3f7" },
   "city-hall": { building: 0xd9a441, plateBg: "rgba(110, 80, 14, 0.9)", plateBorder: "#ffd67e", plateText: "#ffeec9" },
+  // Lighter tier: schools are numerous (580+), so a muted tint only — no
+  // emissive glow, no minimap dot, labels only at very close zoom.
+  school: { building: 0x8f8563, plateBg: "rgba(66, 60, 38, 0.88)", plateBorder: "#c9bd8d", plateText: "#ece5c8" },
 };
 const LANDMARK_RGB = new Map<Landmark["kind"], number[]>(
   (Object.entries(LANDMARK_THEMES) as [Landmark["kind"], LandmarkTheme][]).map(([k, t]) => {
@@ -681,6 +684,8 @@ function buildBuildingTiles(
   const material = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
   const meshes = [...tiles.values()].map((soup) => soupMesh(soup, material));
   for (const [kind, soup] of lmSoups) {
+    // Lighter-tier kinds keep the tint but not the glow.
+    const emissive = kind === "school" ? 0 : 0.42;
     meshes.push(
       soupMesh(
         soup,
@@ -688,7 +693,7 @@ function buildBuildingTiles(
           vertexColors: true,
           flatShading: true,
           emissive: new THREE.Color(LANDMARK_THEMES[kind].building),
-          emissiveIntensity: 0.42,
+          emissiveIntensity: emissive,
         }),
       ),
     );

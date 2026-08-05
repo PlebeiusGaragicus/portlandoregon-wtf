@@ -40,7 +40,12 @@ async function getJson(url: string, init?: RequestInit): Promise<unknown> {
   return res.json();
 }
 
-async function queryPoints(layerUrl: string, where: string, outFields: string): Promise<ArcGisPointQuery> {
+async function queryPoints(
+  layerUrl: string,
+  where: string,
+  outFields: string,
+  inBounds = false,
+): Promise<ArcGisPointQuery> {
   const params = new URLSearchParams({
     where,
     outFields,
@@ -48,6 +53,13 @@ async function queryPoints(layerUrl: string, where: string, outFields: string): 
     outSR: "4326",
     f: "json",
   });
+  if (inBounds) {
+    const e = PORTLAND_ENVELOPE;
+    params.set("geometry", `${e.xmin},${e.ymin},${e.xmax},${e.ymax}`);
+    params.set("geometryType", "esriGeometryEnvelope");
+    params.set("inSR", "4326");
+    params.set("spatialRel", "esriSpatialRelIntersects");
+  }
   await sleep(RATE_MS);
   return (await getJson(`${layerUrl}/query?${params}`)) as ArcGisPointQuery;
 }
@@ -120,6 +132,24 @@ async function fetchHospitals(): Promise<LandmarkSource[]> {
     lon: f.geometry.x,
     source: `${SAFETY}/2`,
   }));
+}
+
+/** Schools — the "lighter tier": hundreds of rows, so in-game they get a
+ * muted building tint and close-zoom labels only (no glow, no minimap dot). */
+async function fetchSchools(): Promise<LandmarkSource[]> {
+  const data = await queryPoints(`${SAFETY}/3`, "1=1", "NAME,ADDRESS,CITY,LEVEL_NAME", true);
+  return data.features
+    .filter((f) => (f.attributes["NAME"] ?? "").trim().length > 0)
+    .map((f, i) => ({
+      kind: "school" as const,
+      ref: String(i + 1),
+      label: titleCase(f.attributes["NAME"] ?? ""),
+      name: titleCase(f.attributes["NAME"] ?? ""),
+      address: `${titleCase(f.attributes["ADDRESS"] ?? "")}, ${titleCase(f.attributes["CITY"] ?? "Portland")}, OR`,
+      lat: f.geometry.y,
+      lon: f.geometry.x,
+      source: `${SAFETY}/3`,
+    }));
 }
 
 async function fetchCityHalls(): Promise<LandmarkSource[]> {
@@ -195,18 +225,21 @@ const hospitals = await fetchHospitals();
 console.log(`hospitals: ${hospitals.length}`);
 const cityHalls = await fetchCityHalls();
 console.log(`city halls: ${cityHalls.length}`);
+const schools = await fetchSchools();
+console.log(`schools: ${schools.length}`);
 
 await crossCheckOsm("fire", "fire_station", fire);
 await crossCheckOsm("police", "police", police);
 await crossCheckOsm("hospitals", "hospital", hospitals);
 await crossCheckOsm("city halls", "townhall", cityHalls);
+// Schools: no OSM pass — 800+ rows would spam warnings for zero decisions.
 
-const landmarks = [...fire, ...police, ...hospitals, ...cityHalls];
+const landmarks = [...fire, ...police, ...hospitals, ...cityHalls, ...schools];
 writeFileSync(
   LANDMARKS_FILE,
   JSON.stringify(
     {
-      source: `${SAFETY}/{0,1,2} + ${METRO_PLACES}/0`,
+      source: `${SAFETY}/{0,1,2,3} + ${METRO_PLACES}/0`,
       scrapedAt: new Date().toISOString().slice(0, 10),
       landmarks,
     },

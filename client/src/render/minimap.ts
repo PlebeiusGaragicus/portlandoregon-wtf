@@ -133,6 +133,7 @@ export class Minimap {
       "city-hall": "#e0ab41",
     };
     for (const m of this.map.landmarks ?? []) {
+      if (m.kind === "school") continue; // lighter tier: no minimap dot
       const [px, py] = this.px(m.x, m.y);
       ctx.fillStyle = landmarkColor[m.kind] ?? "#e02b1d";
       ctx.fillRect(px - 1.8, py - 1.8, 3.6, 3.6);
