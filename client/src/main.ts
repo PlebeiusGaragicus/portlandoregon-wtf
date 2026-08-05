@@ -14,10 +14,23 @@ const loadingEl = document.getElementById("loading") as HTMLDivElement;
 const statusEl = document.getElementById("loading-status") as HTMLParagraphElement;
 
 /** Paint a status line, then yield two frames so it actually shows before
- * the next main-thread-blocking build step. */
+ * the next main-thread-blocking build step.
+ *
+ * Raced against a timer because background tabs throttle requestAnimationFrame
+ * to a stop: without the race, loading a backgrounded tab hangs on whatever
+ * status line it reached and never even issues the map request. */
 async function status(text: string): Promise<void> {
   statusEl.textContent = text;
-  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const done = (): void => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    requestAnimationFrame(() => requestAnimationFrame(done));
+    setTimeout(done, 100);
+  });
 }
 
 /** The server is reachable-but-down, or not reachable at all. Distinguished
