@@ -270,15 +270,17 @@ class CrowdPools {
   }
 }
 
-/** Sunflower blob offsets: person i of the crowd, in crowd-local meters
- * (+y is the direction of travel). The leader (i=0) walks out front. */
-function crowdOffset(i: number, pop: number): { x: number; y: number } {
-  if (i === 0) {
-    const front = CROWD_SPREAD * Math.sqrt(pop) * 0.75 + 0.8;
-    return { x: 0, y: front };
-  }
-  const r = CROWD_SPREAD * Math.sqrt(i - 0.5);
-  const a = i * 2.39996; // golden angle
+/**
+ * Ragged blob offsets in a FIXED world frame. Deliberately not rotated by
+ * travel direction: a formation frame gives the mass a front and back, and
+ * a 180-degree order visibly pinwheels the whole crowd. Deterministic
+ * per-index jitter roughs up the sunflower ring so the mass reads as a
+ * loose mob, not a disc. The leader (i=0) is just one of the crowd,
+ * marked by the flag.
+ */
+function crowdOffset(i: number): { x: number; y: number } {
+  const r = CROWD_SPREAD * Math.sqrt(i + 0.5) * (1 + 0.3 * Math.sin(i * 12.9898));
+  const a = i * 2.39996 + 0.8 * Math.sin(i * 78.233); // jittered golden angle
   return { x: Math.cos(a) * r, y: Math.sin(a) * r };
 }
 
@@ -367,25 +369,21 @@ export class UnitLayer {
     for (const [id, marker] of this.markers) {
       const selected = this.selectedIds.has(id);
       const ppl = marker.people;
-      const cos = Math.cos(marker.heading);
-      const sin = Math.sin(marker.heading);
       // Reconcile head count; newcomers step straight into their slot.
       while (ppl.length < marker.pop) {
-        const o = crowdOffset(ppl.length, marker.pop);
-        const wx = marker.x + (o.y * cos - o.x * sin) * s;
-        const wy = marker.y + (o.y * sin + o.x * cos) * s;
+        const o = crowdOffset(ppl.length);
+        const wx = marker.x + o.x * s;
+        const wy = marker.y + o.y * s;
         ppl.push({ x: wx, y: wy, px: wx, py: wy, heading: marker.heading, phase: ppl.length * 1.7, amp: 0 });
       }
       if (ppl.length > marker.pop) ppl.length = marker.pop;
 
-      // Seek formation slots.
+      // Seek blob slots (world-fixed offsets around the squad center).
       for (let i = 0; i < ppl.length; i++) {
         const p = ppl[i]!;
-        const o = crowdOffset(i, ppl.length);
-        const tx = marker.x + (o.y * cos - o.x * sin) * s;
-        const ty = marker.y + (o.y * sin + o.x * cos) * s;
-        p.x += (tx - p.x) * seekGain;
-        p.y += (ty - p.y) * seekGain;
+        const o = crowdOffset(i);
+        p.x += (marker.x + o.x * s - p.x) * seekGain;
+        p.y += (marker.y + o.y * s - p.y) * seekGain;
       }
       // Personal space: shoulder apart when closer than a stride.
       for (let i = 0; i < ppl.length; i++) {
