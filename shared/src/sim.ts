@@ -4,13 +4,14 @@ import {
   FIRE_RANGE,
   LOW_AMMO_FACTOR,
   MOVE_SPEED,
+  OFFROAD_RANGE,
   SQUAD_AMMO,
-  SQUAD_STRENGTH,
+  SQUAD_POP,
   TICK_MS,
 } from "./constants.js";
 import { buildLosIndex, hasLineOfSight, type LosIndex } from "./los.js";
 import type { GameMap } from "./map.js";
-import { buildPathGraph, findPath, type PathGraph } from "./path.js";
+import { buildPathGraph, findPath, nearestOnStreets, type PathGraph } from "./path.js";
 
 export interface Entity {
   id: string;
@@ -18,10 +19,11 @@ export interface Entity {
   name: string;
   x: number;
   y: number;
-  /** Final destination (snapped to the street network), for UI. */
+  /** Final destination (clicked point, or nearest street reach), for UI. */
   target: { x: number; y: number } | null;
-  /** Remaining street waypoints toward target. */
+  /** Remaining waypoints toward target (street legs + overland cut legs). */
   path: { x: number; y: number }[] | null;
+  /** Head count: the squad is `ceil(strength)` living people (max SQUAD_POP). */
   strength: number;
   ammo: number;
   /** Entity id this squad is currently firing at (for tracers). */
@@ -52,8 +54,6 @@ export interface PlayerInput {
   target: { x: number; y: number };
 }
 
-export type Side = "north" | "south";
-
 export function createWorld(map: GameMap): World {
   return {
     tick: 0,
@@ -66,25 +66,44 @@ export function createWorld(map: GameMap): World {
   };
 }
 
+// Matches muster downtown: Pioneer Courthouse Square, converted to the map's
+// local meters frame from its WGS84 origin. Equirectangular is a few meters
+// off the pipeline's UTM projection — irrelevant, spawns snap to streets.
+const MUSTER = { lat: 45.519, lon: -122.6794 };
+
+function musterXY(map: GameMap): { x: number; y: number } {
+  const x = (MUSTER.lon - map.meta.origin.lon) * 111320 * Math.cos((MUSTER.lat * Math.PI) / 180);
+  const y = (MUSTER.lat - map.meta.origin.lat) * 110574;
+  if (x < 0 || y < 0 || x > map.meta.width || y > map.meta.height) {
+    return { x: map.meta.width / 2, y: map.meta.height / 2 };
+  }
+  return { x, y };
+}
+
 /**
- * Spawn a player's squads on their entry nodes (map border), spread across
- * the available entries. Falls back to the map center if a side has none.
+ * Spawn a player's squads downtown. Players muster on a ring around the
+ * square — spaced beyond FIRE_RANGE so joining is never an instant firefight
+ * — with each squad snapped to the nearest street.
  */
-export function spawnSquads(world: World, ownerId: string, baseName: string, side: Side, count: number): Entity[] {
-  const entries = world.map.entries[side];
+export function spawnSquads(world: World, ownerId: string, baseName: string, playerNum: number, count: number): Entity[] {
+  const c = musterXY(world.map);
+  const ang = playerNum * 2.4; // golden-angle spacing around the ring
+  const px = c.x + Math.cos(ang) * 420;
+  const py = c.y + Math.sin(ang) * 420;
   const spawned: Entity[] = [];
   for (let i = 0; i < count; i++) {
-    const entryId = entries.length ? entries[Math.floor((i * entries.length) / count)]! : null;
-    const node = entryId !== null ? world.map.nodes[entryId] : undefined;
+    const sa = ang + (i - (count - 1) / 2) * 0.9;
+    const raw = { x: px + Math.cos(sa) * 70, y: py + Math.sin(sa) * 70 };
+    const snap = nearestOnStreets(world.graph, raw);
     const entity: Entity = {
       id: `e${world.tick}-${ownerId}-${i}`,
       ownerId,
       name: count > 1 ? `${baseName} ${i + 1}` : baseName,
-      x: node ? node.x : world.map.meta.width / 2,
-      y: node ? node.y : world.map.meta.height / 2,
+      x: snap ? snap.x : raw.x,
+      y: snap ? snap.y : raw.y,
       target: null,
       path: null,
-      strength: SQUAD_STRENGTH,
+      strength: SQUAD_POP,
       ammo: SQUAD_AMMO,
       firingAt: null,
     };
@@ -99,11 +118,34 @@ export function removeEntitiesOwnedBy(world: World, ownerId: string): void {
   world.entities = world.entities.filter((e) => e.ownerId !== ownerId);
 }
 
+/**
+ * Waypoints from a unit to a clicked target. People, not vehicles: short
+ * legs cut straight across open ground when no building wall is in the way;
+ * longer trips route on the street network, with a final overland leg to the
+ * actual click point when that leg is clear. A click inside a building always
+ * fails the wall-crossing check, so units stop at the wall, never clip in.
+ */
+function planRoute(
+  world: World,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+): { x: number; y: number }[] | null {
+  const direct = Math.hypot(to.x - from.x, to.y - from.y) <= OFFROAD_RANGE && hasLineOfSight(world.los, from, to);
+  if (direct) return [{ x: to.x, y: to.y }];
+  const path = findPath(world.graph, from, to);
+  if (!path || path.length === 0) return null;
+  const last = path[path.length - 1]!;
+  if (Math.hypot(to.x - last.x, to.y - last.y) <= OFFROAD_RANGE && hasLineOfSight(world.los, last, to)) {
+    path.push({ x: to.x, y: to.y });
+  }
+  return path;
+}
+
 export function tick(world: World, inputs: PlayerInput[]): void {
   for (const input of inputs) {
     const entity = world.entities.find((e) => e.id === input.entityId && e.ownerId === input.ownerId);
     if (!entity) continue;
-    const path = findPath(world.graph, { x: entity.x, y: entity.y }, input.target);
+    const path = planRoute(world, { x: entity.x, y: entity.y }, input.target);
     if (path && path.length > 0) {
       entity.path = path;
       const dest = path[path.length - 1]!;

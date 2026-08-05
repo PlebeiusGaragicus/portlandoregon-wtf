@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { ENTITY_RADIUS, TICK_MS, type GameMap, type Snapshot } from "@battle-juice/shared";
+import { ENTITY_RADIUS, SQUAD_POP, TICK_MS, type GameMap, type Snapshot } from "@battle-juice/shared";
 import { CameraRig, toWorldXY } from "./camera.js";
 import { Controls, type ControlDelegate } from "./controls.js";
 import { Minimap } from "./minimap.js";
@@ -46,6 +46,8 @@ export class Renderer {
   private props: THREE.Group;
   private minimap: Minimap;
   private compass: HTMLDivElement;
+  private hud: HTMLDivElement;
+  private hudSig = "";
   private hintEl: HTMLElement | null;
   private resizeObserver: ResizeObserver;
   private raycaster = new THREE.Raycaster();
@@ -139,6 +141,9 @@ export class Renderer {
     this.compass.innerHTML = "<span>N</span>";
     this.compass.addEventListener("click", () => this.controls.faceNorth());
     parent.appendChild(this.compass);
+    this.hud = document.createElement("div");
+    this.hud.id = "hud";
+    parent.appendChild(this.hud);
     this.hintEl = document.getElementById("hint");
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
@@ -189,6 +194,7 @@ export class Renderer {
     this.controls.dispose();
     this.minimap.dispose();
     this.compass.remove();
+    this.hud.remove();
     this.resizeObserver.disconnect();
     this.canvas.style.filter = "";
     this.webgl.dispose();
@@ -198,6 +204,39 @@ export class Renderer {
     const w = this.canvas.clientWidth || 1;
     const h = this.canvas.clientHeight || 1;
     this.webgl.setSize(w, h, false);
+  }
+
+  /** Bottom-of-screen roster: one avatar card per selected squad. Rebuilt
+   * only when the selection or a head count changes. */
+  private updateHud(): void {
+    const squads = this.units.selectedInfo();
+    const sig = squads.map((s) => `${s.id}:${s.pop}`).join("|");
+    if (sig === this.hudSig) return;
+    this.hudSig = sig;
+    this.hud.replaceChildren();
+    for (const s of squads) {
+      const card = document.createElement("div");
+      card.className = "hud-card";
+      card.appendChild(avatarCanvas(s.color));
+      const info = document.createElement("div");
+      const name = document.createElement("div");
+      name.className = "hud-name";
+      name.textContent = s.name;
+      const pop = document.createElement("div");
+      pop.className = "hud-pop";
+      pop.textContent = `${s.pop} / ${SQUAD_POP}`;
+      const bar = document.createElement("div");
+      bar.className = "hud-bar";
+      const fill = document.createElement("div");
+      fill.style.width = `${Math.round((s.pop / SQUAD_POP) * 100)}%`;
+      fill.style.background = s.pop > SQUAD_POP / 2 ? "#3ecf6a" : s.pop > SQUAD_POP / 4 ? "#e6b93e" : "#ff5f4f";
+      bar.appendChild(fill);
+      info.append(name, pop, bar);
+      card.appendChild(info);
+      // Clicking a card narrows the selection to that one squad.
+      card.addEventListener("pointerdown", () => this.units.setSelected([s.id]));
+      this.hud.appendChild(card);
+    }
   }
 
   private applyCamera(): void {
@@ -218,10 +257,12 @@ export class Renderer {
     this.props.visible = vh < PROPS_VIEW;
     this.units.setViewScale(Math.max(1, vh / 800));
 
-    // Strategic-view mode hint.
+    // Strategic-view mode hint + cursor: the pointer telegraphs whether
+    // commands are possible at this zoom (grab = navigate-only).
     const strategic = vh > STRATEGIC_VIEW;
-    if (strategic !== this.lastHintStrategic && this.hintEl) {
-      this.hintEl.textContent = strategic ? STRATEGIC_HINT : TACTICAL_HINT;
+    if (strategic !== this.lastHintStrategic) {
+      if (this.hintEl) this.hintEl.textContent = strategic ? STRATEGIC_HINT : TACTICAL_HINT;
+      this.canvas.style.cursor = strategic ? "grab" : "crosshair";
       this.lastHintStrategic = strategic;
     }
 
@@ -229,6 +270,7 @@ export class Renderer {
       const t = this.prev ? Math.min(1, (now - this.currAt) / TICK_MS) : 1;
       this.units.sync(this.curr, this.prev, t);
     }
+    this.updateHud();
 
     this.applyCamera();
 
@@ -246,4 +288,33 @@ export class Renderer {
     this.webgl.render(this.scene, this.camera);
     requestAnimationFrame(() => this.frame());
   }
+}
+
+/** Little stick-figure portrait in the squad's color, for HUD cards. */
+function avatarCanvas(color: string): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.className = "hud-avatar";
+  c.width = 44;
+  c.height = 56;
+  const ctx = c.getContext("2d")!;
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = 3;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.arc(22, 12, 7, 0, Math.PI * 2); // head
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(22, 19);
+  ctx.lineTo(22, 36); // torso
+  ctx.moveTo(22, 24);
+  ctx.lineTo(11, 32); // arms
+  ctx.moveTo(22, 24);
+  ctx.lineTo(33, 32);
+  ctx.moveTo(22, 36);
+  ctx.lineTo(14, 51); // legs
+  ctx.moveTo(22, 36);
+  ctx.lineTo(30, 51);
+  ctx.stroke();
+  return c;
 }

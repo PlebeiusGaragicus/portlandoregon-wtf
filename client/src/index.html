@@ -41,7 +41,7 @@
       }
       #join .error { color: #ff7a7a; min-height: 1.2em; margin: 0; }
       #game { display: none; }
-      #game canvas {
+      #game > canvas {
         display: block;
         width: 100vw;
         height: 100vh;
@@ -118,6 +118,45 @@
         position: relative;
         top: -1.55rem;
       }
+      #hud {
+        position: fixed;
+        left: 50%;
+        bottom: 2.4rem;
+        transform: translateX(-50%);
+        display: flex;
+        gap: 0.5rem;
+        z-index: 4;
+      }
+      .hud-card {
+        display: flex;
+        align-items: center;
+        gap: 0.55rem;
+        padding: 0.45rem 0.75rem 0.45rem 0.5rem;
+        border-radius: 10px;
+        background: rgba(20, 23, 28, 0.85);
+        border: 1px solid #3a4150;
+        cursor: pointer;
+        user-select: none;
+      }
+      .hud-card:hover { border-color: #ffd84f; }
+      .hud-avatar { width: 22px; height: 28px; }
+      .hud-name {
+        font-size: 0.78rem;
+        font-weight: 600;
+        max-width: 9rem;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .hud-pop { font-size: 0.72rem; color: #9aa4b5; margin: 0.1rem 0 0.2rem; }
+      .hud-bar {
+        width: 6.5rem;
+        height: 5px;
+        border-radius: 3px;
+        background: rgba(0, 0, 0, 0.6);
+        overflow: hidden;
+      }
+      .hud-bar div { height: 100%; }
       #hint {
         position: fixed;
         left: 50%;

@@ -1,19 +1,31 @@
 import * as THREE from "three";
-import { ENTITY_RADIUS, SQUAD_STRENGTH, type Entity, type Snapshot } from "@battle-juice/shared";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
+import { ENTITY_RADIUS, SQUAD_POP, type Entity, type Snapshot } from "@battle-juice/shared";
 import { toScene } from "./camera.js";
 
 const PLAYER_COLORS = ["#4f7cff", "#ff5f4f", "#3ecf6a", "#e6b93e", "#b45fff", "#3ec9cf"];
 const RING_COLOR = 0xffffff;
 const SELECTED_COLOR = 0xffd84f;
 
-function colorFor(ownerId: string): string {
+export function colorFor(ownerId: string): string {
   const n = Number(ownerId.replace(/\D/g, "")) || 0;
   return PLAYER_COLORS[n % PLAYER_COLORS.length]!;
+}
+
+/** Selected-squad facts for the HUD roster. */
+export interface SquadInfo {
+  id: string;
+  name: string;
+  pop: number;
+  color: string;
 }
 
 interface Marker {
   root: THREE.Group;
   own: boolean;
+  name: string;
+  color: THREE.Color;
+  pop: number;
   ring: THREE.Mesh | null; // own units only
   routeMesh: THREE.Mesh | null; // own units only — world-space thick ribbon
   tracer: THREE.Line;
@@ -23,10 +35,21 @@ interface Marker {
   lastStrength: number;
   x: number;
   y: number;
+  heading: number; // world radians, direction of travel
+  phase: number; // walk-cycle clock
+  amp: number; // walk swing blend 0..1 (eases in/out of motion)
 }
 
 const ROUTE_Y = 0.35; // above streets, below units
 const ROUTE_WIDTH = 3.5; // meters, scaled with zoom
+
+// Stick-figure proportions (meters; feet at y=0).
+const HIP_Y = 0.74;
+const LEG_LEN = 0.74;
+const SHOULDER_Y = 1.32;
+const ARM_LEN = 0.58;
+const CROWD_SPREAD = 1.5; // meters between people in the blob
+const LEADER_SCALE = 1.18;
 
 /** Flat world-space ribbon along route points (thick, unlike gl lines). */
 function routeGeometry(points: { x: number; y: number }[], width: number): THREE.BufferGeometry {
@@ -57,12 +80,176 @@ function routeGeometry(points: { x: number; y: number }[], width: number): THREE
   return geo;
 }
 
-/** Per-entity 3D markers, reconciled and interpolated from snapshots. */
+function bodyGeometry(): THREE.BufferGeometry {
+  const torso = new THREE.CylinderGeometry(0.12, 0.16, 0.62, 5);
+  torso.translate(0, SHOULDER_Y - 0.31, 0);
+  const head = new THREE.SphereGeometry(0.15, 6, 5);
+  head.translate(0, SHOULDER_Y + 0.24, 0);
+  const merged = mergeGeometries([torso, head]);
+  torso.dispose();
+  head.dispose();
+  return merged;
+}
+
+/** Limb cylinder hanging from its pivot (top at the origin). */
+function limbGeometry(rTop: number, rBot: number, len: number): THREE.BufferGeometry {
+  const geo = new THREE.CylinderGeometry(rTop, rBot, len, 5);
+  geo.translate(0, -len / 2, 0);
+  return geo;
+}
+
+function flagGeometry(): THREE.BufferGeometry {
+  const pole = new THREE.CylinderGeometry(0.03, 0.03, 2.4, 5);
+  pole.translate(0, 1.2, 0);
+  const banner = new THREE.BoxGeometry(0.6, 0.34, 0.03);
+  banner.translate(0.33, 2.15, 0);
+  const merged = mergeGeometries([pole, banner]);
+  pole.dispose();
+  banner.dispose();
+  return merged;
+}
+
+// Scratch objects for per-instance matrix composition (no per-frame allocs).
+const _base = new THREE.Matrix4();
+const _m = new THREE.Matrix4();
+const _step = new THREE.Matrix4();
+const _q = new THREE.Quaternion();
+const _v = new THREE.Vector3();
+const _s = new THREE.Vector3();
+const _UP = new THREE.Vector3(0, 1, 0);
+
+/**
+ * Instanced crowd: every person in every squad drawn with six draw calls
+ * total (body, four swinging limbs, leader flags). Slots beyond the live
+ * head count are hidden by shrinking `.count`.
+ */
+class CrowdPools {
+  private body: THREE.InstancedMesh;
+  private legL: THREE.InstancedMesh;
+  private legR: THREE.InstancedMesh;
+  private armL: THREE.InstancedMesh;
+  private armR: THREE.InstancedMesh;
+  private flags: THREE.InstancedMesh;
+  private capacity = 0;
+  private flagCapacity = 0;
+  private used = 0;
+  private flagsUsed = 0;
+
+  private bodyGeo = bodyGeometry();
+  private legGeo = limbGeometry(0.055, 0.05, LEG_LEN);
+  private armGeo = limbGeometry(0.045, 0.04, ARM_LEN);
+  private flagGeo = flagGeometry();
+  private material = new THREE.MeshLambertMaterial();
+
+  constructor(private group: THREE.Group) {
+    this.body = this.legL = this.legR = this.armL = this.armR = this.flags = null!;
+    this.grow(128, 16);
+  }
+
+  private makePool(geo: THREE.BufferGeometry, capacity: number): THREE.InstancedMesh {
+    const mesh = new THREE.InstancedMesh(geo, this.material, capacity);
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    mesh.frustumCulled = false; // instances span the whole map
+    this.group.add(mesh);
+    return mesh;
+  }
+
+  private grow(capacity: number, flagCapacity: number): void {
+    for (const old of [this.body, this.legL, this.legR, this.armL, this.armR, this.flags]) {
+      if (old) {
+        this.group.remove(old);
+        old.dispose();
+      }
+    }
+    this.capacity = capacity;
+    this.flagCapacity = flagCapacity;
+    this.body = this.makePool(this.bodyGeo, capacity);
+    this.legL = this.makePool(this.legGeo, capacity);
+    this.legR = this.makePool(this.legGeo, capacity);
+    this.armL = this.makePool(this.armGeo, capacity);
+    this.armR = this.makePool(this.armGeo, capacity);
+    this.flags = this.makePool(this.flagGeo, flagCapacity);
+  }
+
+  begin(people: number, units: number): void {
+    if (people > this.capacity || units > this.flagCapacity) {
+      this.grow(Math.ceil(people / 128 + 1) * 128, Math.ceil(units / 16 + 1) * 16);
+    }
+    this.used = 0;
+    this.flagsUsed = 0;
+  }
+
+  /**
+   * One person. (px, py) world meters of their feet, heading in world
+   * radians, swing in radians (legs; arms counter-swing), scale s.
+   */
+  person(px: number, py: number, heading: number, swing: number, s: number, color: THREE.Color): void {
+    if (this.used >= this.capacity) return;
+    const i = this.used++;
+    // Scene yaw that points local +Z along the world heading.
+    const yaw = Math.atan2(Math.cos(heading), -Math.sin(heading));
+    _q.setFromAxisAngle(_UP, yaw);
+    _base.compose(_v.set(px, 0, -py), _q, _s.set(s, s, s));
+
+    this.body.setMatrixAt(i, _base);
+    this.body.setColorAt(i, color);
+    this.limb(this.legL, i, -0.1, HIP_Y, swing, color);
+    this.limb(this.legR, i, 0.1, HIP_Y, -swing, color);
+    this.limb(this.armL, i, -0.24, SHOULDER_Y, -swing * 0.7, color);
+    this.limb(this.armR, i, 0.24, SHOULDER_Y, swing * 0.7, color);
+  }
+
+  private limb(pool: THREE.InstancedMesh, i: number, lx: number, ly: number, swing: number, color: THREE.Color): void {
+    _step.makeTranslation(lx, ly, 0);
+    _m.multiplyMatrices(_base, _step);
+    _step.makeRotationX(swing);
+    _m.multiply(_step);
+    pool.setMatrixAt(i, _m);
+    pool.setColorAt(i, color);
+  }
+
+  flag(px: number, py: number, heading: number, s: number, color: THREE.Color): void {
+    if (this.flagsUsed >= this.flagCapacity) return;
+    const i = this.flagsUsed++;
+    const yaw = Math.atan2(Math.cos(heading), -Math.sin(heading));
+    _q.setFromAxisAngle(_UP, yaw);
+    _m.compose(_v.set(px, 0, -py), _q, _s.set(s, s, s));
+    this.flags.setMatrixAt(i, _m);
+    this.flags.setColorAt(i, color);
+  }
+
+  commit(): void {
+    for (const pool of [this.body, this.legL, this.legR, this.armL, this.armR]) {
+      pool.count = this.used;
+      pool.instanceMatrix.needsUpdate = true;
+      if (pool.instanceColor) pool.instanceColor.needsUpdate = true;
+    }
+    this.flags.count = this.flagsUsed;
+    this.flags.instanceMatrix.needsUpdate = true;
+    if (this.flags.instanceColor) this.flags.instanceColor.needsUpdate = true;
+  }
+}
+
+/** Sunflower blob offsets: person i of the crowd, in crowd-local meters
+ * (+y is the direction of travel). The leader (i=0) walks out front. */
+function crowdOffset(i: number, pop: number): { x: number; y: number } {
+  if (i === 0) {
+    const front = CROWD_SPREAD * Math.sqrt(pop) * 0.75 + 0.8;
+    return { x: 0, y: front };
+  }
+  const r = CROWD_SPREAD * Math.sqrt(i - 0.5);
+  const a = i * 2.39996; // golden angle
+  return { x: Math.cos(a) * r, y: Math.sin(a) * r };
+}
+
+/** Per-squad walking crowds, reconciled and interpolated from snapshots. */
 export class UnitLayer {
   readonly group = new THREE.Group();
   private markers = new Map<string, Marker>();
   private selectedIds = new Set<string>();
   private viewScale = 1;
+  private pools = new CrowdPools(this.group);
+  private lastSync = 0;
 
   constructor(private myPlayerId: string) {}
 
@@ -73,7 +260,12 @@ export class UnitLayer {
 
   /** Position markers at prev->curr interpolation factor t (0..1). */
   sync(curr: Snapshot, prev: Snapshot | null, t: number): void {
+    const now = performance.now();
+    const dt = this.lastSync ? Math.min(0.1, (now - this.lastSync) / 1000) : 0.016;
+    this.lastSync = now;
+
     const seen = new Set<string>();
+    let totalPeople = 0;
     // Pass 1: reconcile markers and update positions.
     for (const e of curr.entities) {
       seen.add(e.id);
@@ -84,13 +276,31 @@ export class UnitLayer {
         this.group.add(marker.root);
       }
       const before = prev?.entities.find((p) => p.id === e.id);
-      marker.x = before ? before.x + (e.x - before.x) * t : e.x;
-      marker.y = before ? before.y + (e.y - before.y) * t : e.y;
+      const nx = before ? before.x + (e.x - before.x) * t : e.x;
+      const ny = before ? before.y + (e.y - before.y) * t : e.y;
+      const mdx = nx - marker.x;
+      const mdy = ny - marker.y;
+      const moved = Math.hypot(mdx, mdy);
+      if (moved > 0.05) {
+        // Ease the crowd's facing toward the direction of travel.
+        const want = Math.atan2(mdy, mdx);
+        let d = want - marker.heading;
+        while (d > Math.PI) d -= 2 * Math.PI;
+        while (d < -Math.PI) d += 2 * Math.PI;
+        marker.heading += d * Math.min(1, dt * 8);
+      }
+      const moving = moved > 0.05 || e.path !== null;
+      marker.amp += ((moving ? 1 : 0) - marker.amp) * Math.min(1, dt * 6);
+      if (moving) marker.phase += dt * 9;
+      marker.x = nx;
+      marker.y = ny;
+      marker.pop = Math.max(1, Math.ceil(e.strength));
+      totalPeople += marker.pop;
       marker.root.position.copy(toScene(marker.x, marker.y, 0));
       marker.root.scale.setScalar(this.viewScale);
       if (e.strength !== marker.lastStrength) {
         marker.lastStrength = e.strength;
-        drawBar(marker.barCtx, e.strength / SQUAD_STRENGTH);
+        drawBar(marker.barCtx, e.strength / SQUAD_POP);
         marker.barTexture.needsUpdate = true;
       }
     }
@@ -106,7 +316,37 @@ export class UnitLayer {
       }
     }
 
-    // Pass 2: route ribbons and tracers (need everyone's fresh positions).
+    // Pass 2: the crowds themselves — every living person, instanced.
+    // People are drawn stylized-large (min 1.9x life size) so a figure still
+    // reads as a person at the closest allowed zoom; the blob spread stays at
+    // true scale so crowds keep to the street.
+    this.pools.begin(totalPeople, this.markers.size);
+    const s = this.viewScale;
+    const pScale = Math.max(1.9, s);
+    for (const marker of this.markers.values()) {
+      const cos = Math.cos(marker.heading);
+      const sin = Math.sin(marker.heading);
+      for (let i = 0; i < marker.pop; i++) {
+        const o = crowdOffset(i, marker.pop);
+        // Crowd-local (+y forward) -> world, scaled with the view.
+        const wx = marker.x + (o.y * cos - o.x * sin) * s;
+        const wy = marker.y + (o.y * sin + o.x * cos) * s;
+        const swing = marker.amp * 0.55 * Math.sin(marker.phase + i * 1.7);
+        const ps = pScale * (i === 0 ? LEADER_SCALE : 1);
+        this.pools.person(wx, wy, marker.heading, swing, ps, marker.color);
+      }
+      const lead = crowdOffset(0, marker.pop);
+      this.pools.flag(
+        marker.x + (lead.y * cos) * s,
+        marker.y + (lead.y * sin) * s,
+        marker.heading,
+        pScale,
+        marker.color,
+      );
+    }
+    this.pools.commit();
+
+    // Pass 3: route ribbons and tracers (need everyone's fresh positions).
     const inv = 1 / this.viewScale;
     const flicker = 0.45 + 0.35 * Math.abs(Math.sin(performance.now() / 40));
     for (const e of curr.entities) {
@@ -171,6 +411,17 @@ export class UnitLayer {
     return [...this.selectedIds];
   }
 
+  /** Facts about the selected squads, for the HUD roster (stable order). */
+  selectedInfo(): SquadInfo[] {
+    const out: SquadInfo[] = [];
+    for (const [id, m] of this.markers) {
+      if (this.selectedIds.has(id)) {
+        out.push({ id, name: m.name, pop: m.pop, color: `#${m.color.getHexString()}` });
+      }
+    }
+    return out;
+  }
+
   /** Current own-squad world positions (for marquee tests and the minimap). */
   ownPositions(): { id: string; x: number; y: number }[] {
     const out: { id: string; x: number; y: number }[] = [];
@@ -190,11 +441,6 @@ export class UnitLayer {
     const own = e.ownerId === this.myPlayerId;
     const color = new THREE.Color(colorFor(e.ownerId));
 
-    const bodyGeo = new THREE.CylinderGeometry(ENTITY_RADIUS, ENTITY_RADIUS, 1.5, 12);
-    const body = new THREE.Mesh(bodyGeo, new THREE.MeshLambertMaterial({ color }));
-    body.position.y = 0.75;
-    root.add(body);
-
     let ring: THREE.Mesh | null = null;
     if (own) {
       ring = new THREE.Mesh(
@@ -205,10 +451,10 @@ export class UnitLayer {
       ring.position.y = 0.3;
       root.add(ring);
 
-      // X-ray ghost: same shape, drawn ONLY where the normal depth test
-      // fails — i.e. exactly where the squad is hidden behind a building.
+      // X-ray blob: drawn ONLY where the normal depth test fails — i.e.
+      // exactly where the squad is hidden behind a building.
       const ghost = new THREE.Mesh(
-        bodyGeo,
+        new THREE.CylinderGeometry(ENTITY_RADIUS, ENTITY_RADIUS, 1.8, 12),
         new THREE.MeshBasicMaterial({
           color,
           transparent: true,
@@ -217,7 +463,7 @@ export class UnitLayer {
           depthFunc: THREE.GreaterDepth,
         }),
       );
-      ghost.position.y = 0.75;
+      ghost.position.y = 0.9;
       ghost.renderOrder = 10;
       root.add(ghost);
     }
@@ -229,7 +475,7 @@ export class UnitLayer {
     barCanvas.width = 64;
     barCanvas.height = 10;
     const barCtx = barCanvas.getContext("2d")!;
-    drawBar(barCtx, e.strength / SQUAD_STRENGTH);
+    drawBar(barCtx, e.strength / SQUAD_POP);
     const barTexture = new THREE.CanvasTexture(barCanvas);
     const bar = new THREE.Sprite(new THREE.SpriteMaterial({ map: barTexture, transparent: true }));
     bar.scale.set(12, 1.9, 1);
@@ -257,6 +503,9 @@ export class UnitLayer {
     return {
       root,
       own,
+      name: e.name,
+      color,
+      pop: Math.max(1, Math.ceil(e.strength)),
       ring,
       routeMesh,
       tracer,
@@ -266,6 +515,9 @@ export class UnitLayer {
       lastStrength: e.strength,
       x: e.x,
       y: e.y,
+      heading: Math.PI / 2, // face north until they move
+      phase: Math.random() * Math.PI * 2,
+      amp: 0,
     };
   }
 }
@@ -295,7 +547,7 @@ function makeLabel(name: string): THREE.Sprite {
   const sprite = new THREE.Sprite(
     new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true }),
   );
-  sprite.scale.set(20, 5, 1); // world meters (orthographic)
+  sprite.scale.set(20, 5, 1);
   sprite.position.y = ENTITY_RADIUS + 6;
   return sprite;
 }

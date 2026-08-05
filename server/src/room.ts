@@ -34,8 +34,8 @@ export class Room {
     const num = this.nextPlayerNum++;
     const id = `p${num}`;
     this.players.set(id, { id, name, token, socket });
-    // Odd players deploy from the south edge, even from the north.
-    spawnSquads(this.world, id, name, num % 2 === 1 ? "south" : "north", SQUADS_PER_PLAYER);
+    // Everyone musters downtown; the player number picks their block.
+    spawnSquads(this.world, id, name, num, SQUADS_PER_PLAYER);
     this.ensureTicking();
     return { playerId: id };
   }
