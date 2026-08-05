@@ -11,6 +11,8 @@ const requested = process.argv.slice(2) as LayerKey[];
 const keys: LayerKey[] = requested.length ? requested : ["streets", "buildings"];
 
 function whereFor(key: LayerKey): string | undefined {
+  const spec = LAYERS.find((l) => l.key === key);
+  if (spec?.where) return spec.where() ?? undefined;
   if (key !== "signs") return undefined;
   const codes = Object.keys(SIGN_KEEP);
   if (codes.length === 0) {

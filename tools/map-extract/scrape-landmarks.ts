@@ -1,19 +1,23 @@
-// Landmark fetch — Portland Fire & Rescue stations.
+// Landmark fetch — civic point layers, combined into data/landmarks.json.
 //
-// Coordinates come from the city's official Fire Stations point layer
-// (portlandmaps.com ArcGIS, the same host as the core extraction). The layer
-// is regional, so we filter to the PF&R district. Each row is cross-checked
-// against OSM amenity=fire_station (Overpass) — a disagreement over 60 m is
-// a warning, not a failure: OSM is the independent second opinion, not the
-// source. Writes data/landmarks.json (committed, ~31 rows).
+//   fire-station  PF&R stations      portlandmaps Public_Safety_Places/0
+//   police        PPB facilities     portlandmaps Public_Safety_Places/1
+//   hospital      hospitals          portlandmaps Public_Safety_Places/2
+//   city-hall     metro city halls   Metro OpenData/PlacesDataWebMerc/0
+//
+// Each kind is cross-checked against the matching OSM amenity via Overpass —
+// a disagreement over 60 m is a warning, not a failure: OSM is the
+// independent second opinion, not the source. The full survey of further
+// candidate layers lives in docs/additional-landmarks.md.
 //
 // Run: npm run scrape-landmarks -w tools/map-extract
 import { writeFileSync } from "node:fs";
-import { LANDMARKS_FILE, USER_AGENT } from "./config.js";
+import { LANDMARKS_FILE, PORTLAND_ENVELOPE, USER_AGENT } from "./config.js";
 import type { LandmarkSource } from "./landmarks.js";
 
-const FIRE_LAYER =
-  "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/0/query";
+const SAFETY = "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer";
+const METRO_PLACES = "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer";
+
 /** Prefix, not exact: Station 31 is districted "PORTLAND/GRESHAM - SHARED".
  * Still excludes non-PF&R rows like the Port of Portland's station. */
 const FIRE_DISTRICT_PREFIX = "PORTLAND";
@@ -22,6 +26,9 @@ const STATION_URL = (n: number): string => `https://www.portland.gov/fire/statio
 const OVERPASS = "https://overpass-api.de/api/interpreter";
 /** Scraped-vs-OSM disagreement that earns a warning. */
 const OSM_WARN_M = 60;
+const RATE_MS = 350;
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 interface ArcGisPointQuery {
   features: { attributes: Record<string, string | null>; geometry: { x: number; y: number } }[];
@@ -33,15 +40,34 @@ async function getJson(url: string, init?: RequestInit): Promise<unknown> {
   return res.json();
 }
 
-async function fetchStations(): Promise<LandmarkSource[]> {
+async function queryPoints(layerUrl: string, where: string, outFields: string): Promise<ArcGisPointQuery> {
   const params = new URLSearchParams({
-    where: `DISTRICT LIKE '${FIRE_DISTRICT_PREFIX}%'`,
-    outFields: "STATION,ADDRESS,CITY",
+    where,
+    outFields,
     returnGeometry: "true",
     outSR: "4326",
     f: "json",
   });
-  const data = (await getJson(`${FIRE_LAYER}?${params}`)) as ArcGisPointQuery;
+  await sleep(RATE_MS);
+  return (await getJson(`${layerUrl}/query?${params}`)) as ArcGisPointQuery;
+}
+
+/** "55 SW ASH ST" -> "55 SW Ash St" (directionals stay upper, 122ND -> 122nd). */
+function titleCase(s: string): string {
+  return s
+    .trim()
+    .split(/\s+/)
+    .map((w) => {
+      if (/^[NSEW]{1,2}$/.test(w) || /\d/.test(w[0] ?? "")) {
+        return /^\d+(ST|ND|RD|TH)$/.test(w) ? w.toLowerCase() : w;
+      }
+      return w[0]! + w.slice(1).toLowerCase();
+    })
+    .join(" ");
+}
+
+async function fetchFireStations(): Promise<LandmarkSource[]> {
+  const data = await queryPoints(`${SAFETY}/0`, `DISTRICT LIKE '${FIRE_DISTRICT_PREFIX}%'`, "STATION,ADDRESS,CITY");
   const out = new Map<number, LandmarkSource>();
   for (const f of data.features) {
     const digits = /\d+/.exec(f.attributes["STATION"] ?? "");
@@ -68,47 +94,85 @@ async function fetchStations(): Promise<LandmarkSource[]> {
   return [...out.values()].sort((a, b) => Number(a.ref) - Number(b.ref));
 }
 
-/** "55 SW ASH ST" -> "55 SW Ash St" (directionals stay upper, 122ND -> 122nd). */
-function titleCase(s: string): string {
-  return s
-    .trim()
-    .split(/\s+/)
-    .map((w) => {
-      if (/^[NSEW]{1,2}$/.test(w) || /\d/.test(w[0] ?? "")) {
-        return /^\d+(ST|ND|RD|TH)$/.test(w) ? w.toLowerCase() : w;
-      }
-      return w[0]! + w.slice(1).toLowerCase();
-    })
-    .join(" ");
+async function fetchPolice(): Promise<LandmarkSource[]> {
+  const data = await queryPoints(`${SAFETY}/1`, "1=1", "name,address,city,agency");
+  return data.features.map((f, i) => ({
+    kind: "police" as const,
+    ref: String(i + 1),
+    label: titleCase(f.attributes["name"] ?? `Police ${i + 1}`),
+    name: `Portland Police — ${titleCase(f.attributes["name"] ?? "")}`,
+    address: `${titleCase(f.attributes["address"] ?? "")}, ${titleCase(f.attributes["city"] ?? "Portland")}, OR`,
+    lat: f.geometry.y,
+    lon: f.geometry.x,
+    source: `${SAFETY}/1`,
+  }));
 }
 
-/** Independent second opinion: distance from each station to the nearest OSM
- * fire station. Network trouble degrades to a notice — the check is advisory. */
-async function crossCheckOsm(stations: LandmarkSource[]): Promise<void> {
+async function fetchHospitals(): Promise<LandmarkSource[]> {
+  const data = await queryPoints(`${SAFETY}/2`, "1=1", "NAME,ADDRESS,CITY");
+  return data.features.map((f, i) => ({
+    kind: "hospital" as const,
+    ref: String(i + 1),
+    label: titleCase(f.attributes["NAME"] ?? `Hospital ${i + 1}`),
+    name: titleCase(f.attributes["NAME"] ?? ""),
+    address: `${titleCase(f.attributes["ADDRESS"] ?? "")}, ${titleCase(f.attributes["CITY"] ?? "Portland")}, OR`,
+    lat: f.geometry.y,
+    lon: f.geometry.x,
+    source: `${SAFETY}/2`,
+  }));
+}
+
+async function fetchCityHalls(): Promise<LandmarkSource[]> {
+  // The layer carries no name field — the label is derived from CITY.
+  const data = await queryPoints(`${METRO_PLACES}/0`, "1=1", "ADDRESS,CITY,ZIPCODE");
+  return data.features
+    .filter((f) => (f.attributes["CITY"] ?? "").trim().length > 0)
+    .map((f, i) => {
+      const city = titleCase(f.attributes["CITY"] ?? "");
+      return {
+        kind: "city-hall" as const,
+        ref: String(i + 1),
+        label: `${city} City Hall`,
+        name: `${city} City Hall`,
+        address: `${titleCase(f.attributes["ADDRESS"] ?? "")}, ${city}, OR`,
+        lat: f.geometry.y,
+        lon: f.geometry.x,
+        source: `${METRO_PLACES}/0`,
+      };
+    });
+}
+
+/** Independent second opinion per kind: distance from each landmark to the
+ * nearest matching OSM amenity. Network trouble degrades to a notice. */
+async function crossCheckOsm(kindLabel: string, amenity: string, rows: LandmarkSource[]): Promise<void> {
+  if (rows.length === 0) return;
   interface OverpassResult {
     elements: { type: string; lat?: number; lon?: number; center?: { lat: number; lon: number } }[];
   }
+  const e = PORTLAND_ENVELOPE;
+  const bbox = `(${e.ymin - 0.1},${e.xmin - 0.1},${e.ymax + 0.1},${e.xmax + 0.1})`;
   let osm: OverpassResult;
   try {
     const query =
-      "[out:json][timeout:60];(" +
-      'way["amenity"="fire_station"](45.33,-122.86,45.65,-122.3);' +
-      'relation["amenity"="fire_station"](45.33,-122.86,45.65,-122.3);' +
-      'node["amenity"="fire_station"](45.33,-122.86,45.65,-122.3);' +
-      ");out center;";
+      `[out:json][timeout:60];(` +
+      `way["amenity"="${amenity}"]${bbox};` +
+      `relation["amenity"="${amenity}"]${bbox};` +
+      `node["amenity"="${amenity}"]${bbox};` +
+      `);out center;`;
+    await sleep(RATE_MS);
     osm = (await getJson(OVERPASS, {
       method: "POST",
       body: new URLSearchParams({ data: query }),
     })) as OverpassResult;
   } catch (err) {
-    console.warn(`OSM cross-check skipped (${err instanceof Error ? err.message : err})`);
+    console.warn(`OSM cross-check for ${kindLabel} skipped (${err instanceof Error ? err.message : err})`);
     return;
   }
   const points = osm.elements
-    .map((e) => e.center ?? (e.lat !== undefined ? { lat: e.lat, lon: e.lon! } : undefined))
+    .map((el) => el.center ?? (el.lat !== undefined ? { lat: el.lat, lon: el.lon! } : undefined))
     .filter((p): p is { lat: number; lon: number } => p !== undefined);
   let warned = 0;
-  for (const s of stations) {
+  for (const s of rows) {
     let best = Infinity;
     for (const p of points) {
       const dx = (s.lon - p.lon) * Math.cos((s.lat * Math.PI) / 180) * 111320;
@@ -117,22 +181,37 @@ async function crossCheckOsm(stations: LandmarkSource[]): Promise<void> {
     }
     if (best > OSM_WARN_M) {
       warned++;
-      console.warn(`  ${s.label}: ${Math.round(best)} m from nearest OSM fire station — verify`);
+      console.warn(`  ${s.label}: ${Math.round(best)} m from nearest OSM ${amenity} — verify`);
     }
   }
-  console.log(`OSM cross-check: ${points.length} OSM stations, ${warned} warnings`);
+  console.log(`OSM cross-check (${kindLabel}): ${points.length} OSM features, ${warned} warnings`);
 }
 
-const stations = await fetchStations();
-console.log(`official layer: ${stations.length} PF&R stations`);
-await crossCheckOsm(stations);
+const fire = await fetchFireStations();
+console.log(`fire stations: ${fire.length}`);
+const police = await fetchPolice();
+console.log(`police facilities: ${police.length}`);
+const hospitals = await fetchHospitals();
+console.log(`hospitals: ${hospitals.length}`);
+const cityHalls = await fetchCityHalls();
+console.log(`city halls: ${cityHalls.length}`);
 
+await crossCheckOsm("fire", "fire_station", fire);
+await crossCheckOsm("police", "police", police);
+await crossCheckOsm("hospitals", "hospital", hospitals);
+await crossCheckOsm("city halls", "townhall", cityHalls);
+
+const landmarks = [...fire, ...police, ...hospitals, ...cityHalls];
 writeFileSync(
   LANDMARKS_FILE,
   JSON.stringify(
-    { source: FIRE_LAYER, scrapedAt: new Date().toISOString().slice(0, 10), landmarks: stations },
+    {
+      source: `${SAFETY}/{0,1,2} + ${METRO_PLACES}/0`,
+      scrapedAt: new Date().toISOString().slice(0, 10),
+      landmarks,
+    },
     null,
     2,
   ) + "\n",
 );
-console.log(`wrote ${LANDMARKS_FILE} (${stations.length} landmarks)`);
+console.log(`wrote ${LANDMARKS_FILE} (${landmarks.length} landmarks)`);

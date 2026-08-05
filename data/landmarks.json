@@ -1,5 +1,5 @@
 {
-  "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/0/query",
+  "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/{0,1,2} + https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0",
   "scrapedAt": "2026-08-05",
   "landmarks": [
     {
@@ -311,6 +311,596 @@
       "lat": 45.508668191240645,
       "lon": -122.48511904102139,
       "source": "https://www.portland.gov/fire/station-31"
+    },
+    {
+      "kind": "police",
+      "ref": "1",
+      "label": "North Precinct",
+      "name": "Portland Police — North Precinct",
+      "address": "449 NE Emerson St, Portland, OR",
+      "lat": 45.562111202917286,
+      "lon": -122.66100017612612,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/1"
+    },
+    {
+      "kind": "police",
+      "ref": "2",
+      "label": "Central Precinct",
+      "name": "Portland Police — Central Precinct",
+      "address": "1111 WW 2nd Ave, Portland, OR",
+      "lat": 45.515124157309245,
+      "lon": -122.67666486150667,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/1"
+    },
+    {
+      "kind": "police",
+      "ref": "3",
+      "label": "East Precinct",
+      "name": "Portland Police — East Precinct",
+      "address": "737 SE 106th St, Portland, OR",
+      "lat": 45.51689447332705,
+      "lon": -122.55438997861775,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/1"
+    },
+    {
+      "kind": "police",
+      "ref": "4",
+      "label": "Property/evidence Building",
+      "name": "Portland Police — Property/evidence Building",
+      "address": "2619 NW Industrial Wy, Portland, OR",
+      "lat": 45.54306522827966,
+      "lon": -122.70445324230104,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/1"
+    },
+    {
+      "kind": "police",
+      "ref": "5",
+      "label": "Ppb Training Facility",
+      "name": "Portland Police — Ppb Training Facility",
+      "address": "14912 NE Airport Wy, Portland, OR",
+      "lat": 45.558372288574866,
+      "lon": -122.50828268812063,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/1"
+    },
+    {
+      "kind": "police",
+      "ref": "6",
+      "label": "Traffic Division",
+      "name": "Portland Police — Traffic Division",
+      "address": "7214 N Philadelphia Ave, Portland, OR",
+      "lat": 45.589011727003765,
+      "lon": -122.75592907424357,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/1"
+    },
+    {
+      "kind": "police",
+      "ref": "7",
+      "label": "Transit Police Division",
+      "name": "Portland Police — Transit Police Division",
+      "address": "210 NW 1st Ave, Portland, OR",
+      "lat": 45.5249532994035,
+      "lon": -122.67085685883444,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/1"
+    },
+    {
+      "kind": "police",
+      "ref": "8",
+      "label": "Sunshine Division",
+      "name": "Portland Police — Sunshine Division",
+      "address": "687 N Thompson St, Portland, OR",
+      "lat": 45.53889443226836,
+      "lon": -122.67360274275666,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/1"
+    },
+    {
+      "kind": "police",
+      "ref": "9",
+      "label": "Family Services Division",
+      "name": "Portland Police — Family Services Division",
+      "address": "10225 E Burnside St, Portland, OR",
+      "lat": 45.52315370083606,
+      "lon": -122.55716738172836,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/1"
+    },
+    {
+      "kind": "police",
+      "ref": "10",
+      "label": "Sunshine Division",
+      "name": "Portland Police — Sunshine Division",
+      "address": "12436 SE Stark St, Portland, OR",
+      "lat": 45.51875164762396,
+      "lon": -122.53511931375296,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/1"
+    },
+    {
+      "kind": "hospital",
+      "ref": "1",
+      "label": "Legacy Emanuel",
+      "name": "Legacy Emanuel",
+      "address": "2801 N Gantenbein Ave, Portland, OR",
+      "lat": 45.54363596338289,
+      "lon": -122.66951229824639,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "hospital",
+      "ref": "2",
+      "label": "Legacy Good Samaritan",
+      "name": "Legacy Good Samaritan",
+      "address": "1015 NW 22nd Ave, Portland, OR",
+      "lat": 45.5303004367218,
+      "lon": -122.69754415212718,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "hospital",
+      "ref": "3",
+      "label": "Providence Portland",
+      "name": "Providence Portland",
+      "address": "4805 NE Glisan St, Portland, OR",
+      "lat": 45.52734695776331,
+      "lon": -122.61382478067134,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "hospital",
+      "ref": "4",
+      "label": "Ohsu Hillsboro Medical Center",
+      "name": "Ohsu Hillsboro Medical Center",
+      "address": "335 SE 8th Ave, Hillsboro, OR",
+      "lat": 45.5195958782901,
+      "lon": -122.97824797836034,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "hospital",
+      "ref": "5",
+      "label": "Providence St. Vincent",
+      "name": "Providence St. Vincent",
+      "address": "9205 SW Barnes Rd, Portland, OR",
+      "lat": 45.510423274493995,
+      "lon": -122.77177803193666,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "hospital",
+      "ref": "6",
+      "label": "Legacy Mount Hood",
+      "name": "Legacy Mount Hood",
+      "address": "24800 SE Stark St, Gresham, OR",
+      "lat": 45.516809797326474,
+      "lon": -122.40694935269467,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "hospital",
+      "ref": "7",
+      "label": "Ohsu Adventist Medical Center",
+      "name": "Ohsu Adventist Medical Center",
+      "address": "10123 SE Market St, Portland, OR",
+      "lat": 45.512698460062516,
+      "lon": -122.55836234048223,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "hospital",
+      "ref": "8",
+      "label": "Shriners Hospitals for Children",
+      "name": "Shriners Hospitals for Children",
+      "address": "3101 SW Sam Jackson Park Rd, Portland, OR",
+      "lat": 45.50066842044087,
+      "lon": -122.68437621280628,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "hospital",
+      "ref": "9",
+      "label": "Ohsu Doernbecher Children's Hospital",
+      "name": "Ohsu Doernbecher Children's Hospital",
+      "address": "700 SW Campus Dr, Portland, OR",
+      "lat": 45.497827151428226,
+      "lon": -122.68616979628905,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "hospital",
+      "ref": "10",
+      "label": "Portland Va Medical Center",
+      "name": "Portland Va Medical Center",
+      "address": "3710 SW Us Veterans Hospital Rd, Portland, OR",
+      "lat": 45.49704814356905,
+      "lon": -122.68385528156965,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "hospital",
+      "ref": "11",
+      "label": "Providence Milwaukie",
+      "name": "Providence Milwaukie",
+      "address": "10150 SE 32nd Ave, Milwaukie, OR",
+      "lat": 45.4496512556488,
+      "lon": -122.62758248463751,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "hospital",
+      "ref": "12",
+      "label": "Legacy Meridian Park",
+      "name": "Legacy Meridian Park",
+      "address": "19300 SW 65th Ave, Tualatin, OR",
+      "lat": 45.378554542289365,
+      "lon": -122.74073345945997,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "hospital",
+      "ref": "13",
+      "label": "Providence Willamette Falls",
+      "name": "Providence Willamette Falls",
+      "address": "1500 Division St, Oregon City, OR",
+      "lat": 45.356286997988185,
+      "lon": -122.58688655647869,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "hospital",
+      "ref": "14",
+      "label": "Peacehealth Southwest Washington Medical Center",
+      "name": "Peacehealth Southwest Washington Medical Center",
+      "address": "400 NE Mother Joseph Pl, Vancouver, OR",
+      "lat": 45.623986968344006,
+      "lon": -122.58082185931569,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "hospital",
+      "ref": "15",
+      "label": "Legacy Salmon Creek",
+      "name": "Legacy Salmon Creek",
+      "address": "2211 NE 139th St, Vancouver, OR",
+      "lat": 45.72066787535012,
+      "lon": -122.64800805237766,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "hospital",
+      "ref": "16",
+      "label": "Oregon Health & Science University",
+      "name": "Oregon Health & Science University",
+      "address": "3181 SW Sam Jackson Park Rd, Portland, OR",
+      "lat": 45.499222438250015,
+      "lon": -122.68516946742298,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "hospital",
+      "ref": "17",
+      "label": "Randall Children's Hospital at Legacy Emanuel",
+      "name": "Randall Children's Hospital at Legacy Emanuel",
+      "address": "2801 N Gantenbein Ave, Portland, OR",
+      "lat": 45.544560351085735,
+      "lon": -122.6697457317612,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "hospital",
+      "ref": "18",
+      "label": "Kaiser Permanente Westside Medical Center",
+      "name": "Kaiser Permanente Westside Medical Center",
+      "address": "2875 NE Stucki Ave, Hillsboro, OR",
+      "lat": 45.53928427151915,
+      "lon": -122.87709606219761,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "hospital",
+      "ref": "19",
+      "label": "Kaiser Sunnyside",
+      "name": "Kaiser Sunnyside",
+      "address": "10180 SE Sunnyside Rd, Clackamas, OR",
+      "lat": 45.431350153407806,
+      "lon": -122.5604387666171,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/2"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "1",
+      "label": "Banks City Hall",
+      "name": "Banks City Hall",
+      "address": "13680 NW Main St, Banks, OR",
+      "lat": 45.61950281954913,
+      "lon": -123.11418100583082,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "2",
+      "label": "North Plains City Hall",
+      "name": "North Plains City Hall",
+      "address": "31360 NW Commercial St, North Plains, OR",
+      "lat": 45.597426690224204,
+      "lon": -122.99963426195754,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "3",
+      "label": "Troutdale City Hall",
+      "name": "Troutdale City Hall",
+      "address": "219 E Historic Columbia River Hwy, Troutdale, OR",
+      "lat": 45.5409475829297,
+      "lon": -122.38715925677977,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "4",
+      "label": "Cornelius City Hall",
+      "name": "Cornelius City Hall",
+      "address": "1355 N Barlow St, Cornelius, OR",
+      "lat": 45.52156565128169,
+      "lon": -123.05518396090005,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "5",
+      "label": "Forest Grove City Hall",
+      "name": "Forest Grove City Hall",
+      "address": "1924 Council St, Forest Grove, OR",
+      "lat": 45.51894464054946,
+      "lon": -123.11148425526306,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "6",
+      "label": "Fairview City Hall",
+      "name": "Fairview City Hall",
+      "address": "1300 NE Village St, Fairview, OR",
+      "lat": 45.531054200469654,
+      "lon": -122.43872669083011,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "7",
+      "label": "Portland City Hall",
+      "name": "Portland City Hall",
+      "address": "1221 SW 4th Ave, Portland, OR",
+      "lat": 45.51502054231661,
+      "lon": -122.67909809937068,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "8",
+      "label": "Gresham City Hall",
+      "name": "Gresham City Hall",
+      "address": "1333 NW Eastman Pky, Gresham, OR",
+      "lat": 45.50662865439099,
+      "lon": -122.43576807596712,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "9",
+      "label": "Gaston City Hall",
+      "name": "Gaston City Hall",
+      "address": "116 Front St, Gaston, OR",
+      "lat": 45.436627594033666,
+      "lon": -123.14054944211347,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "10",
+      "label": "Milwaukie City Hall",
+      "name": "Milwaukie City Hall",
+      "address": "10722 SE Main St, Milwaukie, OR",
+      "lat": 45.44523043843607,
+      "lon": -122.64109583067672,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "11",
+      "label": "Tigard City Hall",
+      "name": "Tigard City Hall",
+      "address": "13125 SW Hall Blvd, Tigard, OR",
+      "lat": 45.424901311204565,
+      "lon": -122.76732957824298,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "12",
+      "label": "Lake Oswego City Hall",
+      "name": "Lake Oswego City Hall",
+      "address": "380 A Ave, Lake Oswego, OR",
+      "lat": 45.419558410195336,
+      "lon": -122.66757947948786,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "13",
+      "label": "King City City Hall",
+      "name": "King City City Hall",
+      "address": "15300 SW 116th Ave, King City, OR",
+      "lat": 45.40893698720636,
+      "lon": -122.79514130086169,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "14",
+      "label": "Johnson City City Hall",
+      "name": "Johnson City City Hall",
+      "address": "16121 SE 81st St, Johnson City, OR",
+      "lat": 45.405881407996425,
+      "lon": -122.58033490775298,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "15",
+      "label": "Durham City Hall",
+      "name": "Durham City Hall",
+      "address": "17160 SW Upper Boones Ferry Rd, Durham, OR",
+      "lat": 45.39568922105317,
+      "lon": -122.75466271469597,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "16",
+      "label": "Sandy City Hall",
+      "name": "Sandy City Hall",
+      "address": "39250 Pioneer Blvd, Sandy, OR",
+      "lat": 45.39624241044668,
+      "lon": -122.25888087894815,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "17",
+      "label": "Tualatin City Hall",
+      "name": "Tualatin City Hall",
+      "address": "18880 SW Martinazzi Ave, Tualatin, OR",
+      "lat": 45.38421662893253,
+      "lon": -122.75845630283575,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "18",
+      "label": "Gladstone City Hall",
+      "name": "Gladstone City Hall",
+      "address": "18505 Portland Ave, Gladstone, OR",
+      "lat": 45.38829600709359,
+      "lon": -122.60079450726938,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "19",
+      "label": "West Linn City Hall",
+      "name": "West Linn City Hall",
+      "address": "22500 Salamo Road, West Linn, OR",
+      "lat": 45.36273833006329,
+      "lon": -122.64767356737659,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "20",
+      "label": "Wilsonville City Hall",
+      "name": "Wilsonville City Hall",
+      "address": "29799 Town Center Loop East, Wilsonville, OR",
+      "lat": 45.30349225568267,
+      "lon": -122.75974153958073,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "21",
+      "label": "Estacada City Hall",
+      "name": "Estacada City Hall",
+      "address": "475 SE Main St, Estacada, OR",
+      "lat": 45.28605006357948,
+      "lon": -122.33491628873745,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "22",
+      "label": "Canby City Hall",
+      "name": "Canby City Hall",
+      "address": "222 NE 2nd Ave, Canby, OR",
+      "lat": 45.2644058192412,
+      "lon": -122.69162247394395,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "23",
+      "label": "Molalla City Hall",
+      "name": "Molalla City Hall",
+      "address": "117 N Molalla Ave, Molalla, OR",
+      "lat": 45.14807073334982,
+      "lon": -122.57665954778606,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "24",
+      "label": "Wood Village City Hall",
+      "name": "Wood Village City Hall",
+      "address": "24200 NE Halsey St, Wood Village, OR",
+      "lat": 45.5369328274391,
+      "lon": -122.41367918674854,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "25",
+      "label": "Maywood Park City Hall",
+      "name": "Maywood Park City Hall",
+      "address": "10100 NE Prescott, Maywood Park, OR",
+      "lat": 45.55503956739343,
+      "lon": -122.55873028772768,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "26",
+      "label": "Sherwood City Hall",
+      "name": "Sherwood City Hall",
+      "address": "22560 SW Pine St, Sherwood, OR",
+      "lat": 45.35693824473464,
+      "lon": -122.83996559411385,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "27",
+      "label": "Happy Valley City Hall",
+      "name": "Happy Valley City Hall",
+      "address": "16000 SE Misty Dr, Happy Valley, OR",
+      "lat": 45.4294130181352,
+      "lon": -122.49749077655656,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "28",
+      "label": "Hillsboro City Hall",
+      "name": "Hillsboro City Hall",
+      "address": "150 E Main St, Hillsboro, OR",
+      "lat": 45.52230645906362,
+      "lon": -122.98933408009516,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "29",
+      "label": "Oregon City City Hall",
+      "name": "Oregon City City Hall",
+      "address": "625 Center St, Oregon City, OR",
+      "lat": 45.35683911102778,
+      "lon": -122.60675746393825,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
+    },
+    {
+      "kind": "city-hall",
+      "ref": "30",
+      "label": "Beaverton City Hall",
+      "name": "Beaverton City Hall",
+      "address": "12725 SW Millikan Way, Beaverton, OR",
+      "lat": 45.49006417715898,
+      "lon": -122.80764152872013,
+      "source": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/PlacesDataWebMerc/MapServer/0"
     }
   ]
 }

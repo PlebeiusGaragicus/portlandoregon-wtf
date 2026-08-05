@@ -1,14 +1,13 @@
 import * as THREE from "three";
 import type { Building, GameMap, Landmark } from "@battle-juice/shared";
 import { toScene } from "./camera.js";
-import { LANDMARK_COLOR } from "./world.js";
+import { LANDMARK_THEMES } from "./world.js";
 
-// Civic landmarks (fire stations). The building itself carries the identity —
-// buildWorld paints the matched prism red — so this layer only adds the name
-// plate above its roof, plus a red pad for the few stations whose pin never
-// matched a footprint.
+// Civic landmarks (fire stations, police, hospitals, city halls). The
+// building itself carries the identity — buildWorld paints the matched prism
+// in the kind's color — so this layer only adds the name plate above its
+// roof, plus a colored pad for pins that never matched a footprint.
 
-const LABEL_TEXT = "#ffd3cb";
 const PLATE_CLEARANCE = 8; // m above the roof
 const MIN_PLATE_H = 22; // m — floor for flat/short buildings
 const PAD_RADIUS = 12; // m, unmatched landmarks only
@@ -33,12 +32,20 @@ export function buildLandmarks(map: GameMap): LandmarkLayer {
   group.add(pads, plates);
 
   const padGeo = new THREE.CircleGeometry(PAD_RADIUS, 24).rotateX(-Math.PI / 2);
-  const padMat = new THREE.MeshBasicMaterial({
-    color: LANDMARK_COLOR,
-    transparent: true,
-    opacity: 0.7,
-    depthWrite: false,
-  });
+  const padMats = new Map<Landmark["kind"], THREE.MeshBasicMaterial>();
+  const padMat = (kind: Landmark["kind"]): THREE.MeshBasicMaterial => {
+    let mat = padMats.get(kind);
+    if (!mat) {
+      mat = new THREE.MeshBasicMaterial({
+        color: LANDMARK_THEMES[kind].building,
+        transparent: true,
+        opacity: 0.7,
+        depthWrite: false,
+      });
+      padMats.set(kind, mat);
+    }
+    return mat;
+  };
 
   for (const m of marks) {
     const bs = (m.buildingIds ?? []).flatMap((id) => byId.get(id) ?? []);
@@ -48,7 +55,7 @@ export function buildLandmarks(map: GameMap): LandmarkLayer {
     const tallest = bs.reduce((h, b) => Math.max(h, b.height), 0);
     const h = Math.max(MIN_PLATE_H, tallest + PLATE_CLEARANCE);
     if (!bs.length) {
-      const pad = new THREE.Mesh(padGeo, padMat);
+      const pad = new THREE.Mesh(padGeo, padMat(m.kind));
       pad.position.copy(toScene(m.x, m.y, 0.4));
       pads.add(pad);
     }
@@ -109,18 +116,19 @@ function plate(m: Landmark, x: number, y: number, height: number): THREE.Sprite 
   const w = Math.ceil(measure.measureText(text).width) + padX * 2;
   const h = 40;
 
+  const theme = LANDMARK_THEMES[m.kind];
   const c = document.createElement("canvas");
   c.width = w;
   c.height = h;
   const ctx = c.getContext("2d")!;
-  ctx.fillStyle = "rgba(120, 20, 12, 0.9)";
+  ctx.fillStyle = theme.plateBg;
   roundRect(ctx, 0.5, 0.5, w - 1, h - 1, 7);
   ctx.fill();
-  ctx.strokeStyle = "#ff8b7c";
+  ctx.strokeStyle = theme.plateBorder;
   ctx.lineWidth = 2;
   ctx.stroke();
   ctx.font = font;
-  ctx.fillStyle = LABEL_TEXT;
+  ctx.fillStyle = theme.plateText;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   ctx.fillText(text, w / 2, h / 2 + 1);

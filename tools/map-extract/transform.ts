@@ -4,7 +4,18 @@
 // Reads data/raw/{date}/, writes data/processed/{date}/pearl-core.json.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Building, GameMap, Prop, RoadClass, StreetEdge, StreetNode, Trail, WaterBody } from "@battle-juice/shared";
+import type {
+  Building,
+  GameMap,
+  Prop,
+  RailLine,
+  RailStop,
+  RoadClass,
+  StreetEdge,
+  StreetNode,
+  Trail,
+  WaterBody,
+} from "@battle-juice/shared";
 import { extractDate, HEIGHT_PER_STORY_M, MANIFEST_FILE, MAP_NAME, processedDir, rawDir, SIGN_KEEP } from "./config.js";
 import type { GeoJsonCollection, GeoJsonFeature } from "./lib/arcgis.js";
 import { clipPolylineAtExit, clipRingToRect, ensureWinding, inRect, round1, simplify, type Pt, type Rect } from "./lib/geo.js";
@@ -444,7 +455,7 @@ function transformBuildings(
   return { list, heightUnit, cells };
 }
 
-function transformPolys(key: "water" | "parks", rect: Rect): WaterBody[] {
+function transformPolys(key: "water" | "parks" | "railyards", rect: Rect): WaterBody[] {
   const water = readRaw(key);
   if (!water) return [];
   const bodies: WaterBody[] = [];
@@ -504,6 +515,79 @@ function transformTrails(rect: Rect): Trail[] {
   }
   console.log(`  trails: ${trails.length} segments in play area`);
   return trails;
+}
+
+/** Metro TYPE attribute -> game rail kind ("rail" is heavy/freight). */
+function railKind(type: unknown): RailLine["kind"] {
+  const t = String(type ?? "").toLowerCase();
+  if (t.includes("max")) return "max";
+  if (t.includes("street")) return "streetcar";
+  if (t.includes("wes")) return "wes";
+  return "rail";
+}
+
+/** Rail centerlines: freight (rails.geojson) + MAX/streetcar/WES
+ * (maxlines.geojson), clipped to in-rect runs like trails. */
+function transformRails(rect: Rect): RailLine[] {
+  const out: RailLine[] = [];
+  const ingest = (key: "rails" | "maxlines", kindOf: (f: GeoJsonFeature) => RailLine["kind"]): void => {
+    const raw = readRaw(key);
+    if (!raw) return;
+    let count = 0;
+    for (const f of raw.features) {
+      if (!f.geometry) continue;
+      const lines: [number, number][][] =
+        f.geometry.type === "LineString"
+          ? [f.geometry.coordinates as [number, number][]]
+          : (f.geometry.coordinates as [number, number][][]);
+      const kind = kindOf(f);
+      for (const line of lines) {
+        let run: Pt[] = [];
+        const flush = (): void => {
+          if (run.length >= 2) {
+            const simple = simplify(run, 2).map(([x, y]): [number, number] => [round1(x), round1(y)]);
+            if (simple.length >= 2) {
+              out.push({ id: out.length, polyline: simple, kind });
+              count++;
+            }
+          }
+          run = [];
+        };
+        for (const [lon, lat] of line) {
+          const p = toLocal(lon, lat);
+          if (inRect(p, rect)) run.push(p);
+          else flush();
+        }
+        flush();
+      }
+    }
+    console.log(`  ${key}: ${count} segments in play area`);
+  };
+  ingest("rails", () => "rail");
+  ingest("maxlines", (f) => railKind(f.properties["TYPE"]));
+  return out;
+}
+
+function transformRailStops(rect: Rect): RailStop[] {
+  const raw = readRaw("maxstops");
+  if (!raw) return [];
+  const stops: RailStop[] = [];
+  for (const f of raw.features) {
+    if (!f.geometry || f.geometry.type !== "Point") continue;
+    const [lon, lat] = f.geometry.coordinates as [number, number];
+    const p = toLocal(lon, lat);
+    if (!inRect(p, rect)) continue;
+    const kind = railKind(f.properties["TYPE"]);
+    stops.push({
+      id: stops.length,
+      x: round1(p[0]),
+      y: round1(p[1]),
+      kind: kind === "rail" ? "max" : kind,
+      name: String(f.properties["STATION"] ?? ""),
+    });
+  }
+  console.log(`  maxstops: ${stops.length} in play area`);
+  return stops;
 }
 
 // Candidate size fields for street trees (exact schema discovered at runtime).
@@ -610,6 +694,9 @@ async function main(): Promise<void> {
   const water = transformPolys("water", rect);
   const parks = transformPolys("parks", rect);
   const trails = transformTrails(rect);
+  const rails = transformRails(rect);
+  const railYards = transformPolys("railyards", rect);
+  const railStops = transformRailStops(rect);
 
   const map: GameMap = {
     meta: {
@@ -627,6 +714,9 @@ async function main(): Promise<void> {
     water,
     parks,
     trails,
+    rails,
+    railYards,
+    railStops,
   };
 
   mkdirSync(processedDir(), { recursive: true });
@@ -651,6 +741,9 @@ async function main(): Promise<void> {
       water: water.length,
       parks: parks.length,
       trails: trails.length,
+      rails: rails.length,
+      railYards: railYards.length,
+      railStops: railStops.length,
     },
   };
   writeFileSync(MANIFEST_FILE, JSON.stringify(manifest, null, 2) + "\n");

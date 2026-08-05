@@ -105,12 +105,36 @@ export class Minimap {
     }
     ctx.globalAlpha = 1;
 
-    // Fire stations: small red squares, baked into the base layer.
+    // Rail lines: freight in dark umber, transit in its line color.
+    const railColor: Record<string, string> = {
+      rail: "rgba(122, 108, 90, 0.75)",
+      max: "rgba(78, 133, 224, 0.9)",
+      streetcar: "rgba(82, 178, 152, 0.9)",
+      wes: "rgba(148, 108, 224, 0.9)",
+    };
+    for (const r of this.map.rails ?? []) {
+      ctx.strokeStyle = railColor[r.kind] ?? railColor["rail"]!;
+      ctx.lineWidth = r.kind === "rail" ? 0.5 : 0.9;
+      ctx.beginPath();
+      r.polyline.forEach(([x, y], i) => {
+        const [px, py] = this.px(x, y);
+        i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+      });
+      ctx.stroke();
+    }
+
+    // Landmarks: small squares in their civic color, baked into the base.
+    const landmarkColor: Record<string, string> = {
+      "fire-station": "#e02b1d",
+      police: "#3465e0",
+      hospital: "#e8edf2",
+      "city-hall": "#e0ab41",
+    };
     for (const m of this.map.landmarks ?? []) {
       const [px, py] = this.px(m.x, m.y);
-      ctx.fillStyle = "#e02b1d";
+      ctx.fillStyle = landmarkColor[m.kind] ?? "#e02b1d";
       ctx.fillRect(px - 1.8, py - 1.8, 3.6, 3.6);
-      ctx.strokeStyle = "rgba(255, 190, 180, 0.8)";
+      ctx.strokeStyle = "rgba(20, 23, 28, 0.8)";
       ctx.lineWidth = 0.6;
       ctx.strokeRect(px - 1.8, py - 1.8, 3.6, 3.6);
     }

@@ -1,5 +1,5 @@
 {
-  "resolvedAt": "2026-08-04T21:50:37.414Z",
+  "resolvedAt": "2026-08-05T03:51:16.002Z",
   "layers": {
     "streets": {
       "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/68",
@@ -70,6 +70,34 @@
       "name": "Street Lights",
       "maxRecordCount": 200,
       "citywideCount": 65868
+    },
+    "rails": {
+      "url": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/TransitDataWebMerc/MapServer/9",
+      "id": 9,
+      "name": "Railroads",
+      "maxRecordCount": 1000,
+      "citywideCount": 4489
+    },
+    "railyards": {
+      "url": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/TransitDataWebMerc/MapServer/10",
+      "id": 10,
+      "name": "Railroad yards",
+      "maxRecordCount": 1000,
+      "citywideCount": 22
+    },
+    "maxlines": {
+      "url": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/TransitDataWebMerc/MapServer/6",
+      "id": 6,
+      "name": "Light rail, street car and WES lines",
+      "maxRecordCount": 1000,
+      "citywideCount": 147
+    },
+    "maxstops": {
+      "url": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/TransitDataWebMerc/MapServer/5",
+      "id": 5,
+      "name": "Light rail, street car and WES stops",
+      "maxRecordCount": 1000,
+      "citywideCount": 189
     }
   },
   "trees": {
@@ -80,16 +108,16 @@
         "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/220"
       },
       {
+        "title": "Vegetation",
+        "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/31"
+      },
+      {
         "title": "Heritage Trees",
         "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/26"
       },
       {
         "title": "Street Tree Inventory - Active Records",
         "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/1415"
-      },
-      {
-        "title": "Vegetation",
-        "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/31"
       }
     ]
   }

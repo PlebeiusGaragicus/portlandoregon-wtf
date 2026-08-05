@@ -95,8 +95,8 @@ export class Controls {
     this.listen(window, "keydown", (e: KeyboardEvent) => {
       const k = e.key.toLowerCase();
       if (e.repeat) return;
-      if (k === "q") this.thetaGoal += SNAP;
-      else if (k === "e") this.thetaGoal -= SNAP;
+      if (k === "q") this.thetaGoal -= SNAP;
+      else if (k === "e") this.thetaGoal += SNAP;
       else if (k === "n") this.faceNorth();
       else if (k === "escape") this.delegate.deselect();
       else this.keys.add(k);

@@ -74,10 +74,27 @@ export interface Trail {
   polyline: [number, number][];
 }
 
-/** Named civic point of interest (fire stations today), drawn with a label. */
+/** Rail line (render-only): heavy freight rail, MAX light rail, Portland
+ * Streetcar, or WES commuter rail. */
+export interface RailLine {
+  id: number;
+  polyline: [number, number][];
+  kind: "rail" | "max" | "streetcar" | "wes";
+}
+
+/** Rail transit stop/station platform (render-only). */
+export interface RailStop {
+  id: number;
+  x: number;
+  y: number;
+  kind: "max" | "streetcar" | "wes";
+  name: string;
+}
+
+/** Named civic point of interest, drawn with a label. */
 export interface Landmark {
   id: number;
-  kind: "fire-station";
+  kind: "fire-station" | "police" | "hospital" | "city-hall";
   /** Short map label, e.g. "Station 12". */
   label: string;
   /** Full name from the source, e.g. "Portland Fire Station 12". */
@@ -107,4 +124,10 @@ export interface GameMap {
   trails?: Trail[];
   /** Labeled civic landmarks (absent on maps baked before landmarks). */
   landmarks?: Landmark[];
+  /** Rail lines: freight, MAX, streetcar, WES (render-only). */
+  rails?: RailLine[];
+  /** Railroad yard polygons (render-only). */
+  railYards?: WaterBody[];
+  /** Rail transit stops (render-only). */
+  railStops?: RailStop[];
 }

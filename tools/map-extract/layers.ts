@@ -14,9 +14,16 @@ export type LayerKey =
   | "water"
   | "parks"
   | "trails"
-  | "lights";
+  | "lights"
+  | "rails"
+  | "railyards"
+  | "maxlines"
+  | "maxstops";
 
 const RLIS = "https://services2.arcgis.com/McQ0OlIABe29rJJy/arcgis/rest/services";
+// Metro regional GIS (classic MapServer, same query API as portlandmaps).
+// Full layer survey: docs/additional-landmarks.md.
+const METRO_TRANSIT = "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/TransitDataWebMerc/MapServer";
 
 export interface LayerSpec {
   key: LayerKey;
@@ -135,6 +142,43 @@ export const LAYERS: LayerSpec[] = [
     namePattern: /^street ?lights$/i,
     fields: [],
     populationChecks: [],
+  },
+  {
+    key: "rails",
+    // Heavy/freight rail centerlines (BNSF, UP, ...). Render-only.
+    service: METRO_TRANSIT,
+    idSeed: 9,
+    namePattern: /^railroads$/i,
+    fields: ["OWNER", "OWNER_ABRV"],
+    populationChecks: [],
+  },
+  {
+    key: "railyards",
+    service: METRO_TRANSIT,
+    idSeed: 10,
+    namePattern: /^railroad yards$/i,
+    fields: ["NAME", "OWNER_ABRV"],
+    populationChecks: [],
+  },
+  {
+    key: "maxlines",
+    // MAX light rail + Portland Streetcar + WES. STATUS filters out
+    // planned/proposed alignments at extraction time.
+    service: METRO_TRANSIT,
+    idSeed: 6,
+    namePattern: /^light rail.*lines$/i,
+    fields: ["STATUS", "TYPE", "LINE", "TUNNEL"],
+    populationChecks: ["TYPE"],
+    where: () => `STATUS = 'Existing'`,
+  },
+  {
+    key: "maxstops",
+    service: METRO_TRANSIT,
+    idSeed: 5,
+    namePattern: /^light rail.*stops$/i,
+    fields: ["STATUS", "TYPE", "LINE", "STATION"],
+    populationChecks: ["TYPE", "STATION"],
+    where: () => `STATUS = 'Existing'`,
   },
 ];
 

@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
-import type { Building, GameMap, StreetEdge, WaterBody } from "@battle-juice/shared";
+import type { Building, GameMap, Landmark, RailLine, RailStop, StreetEdge, WaterBody } from "@battle-juice/shared";
 
 /** Growing vertex-soup accumulator — direct buffer writes, no per-feature
  * BufferGeometry/merge round-trips (those made city load take ~36 s). */
@@ -33,12 +33,40 @@ const USE_TINTS: Record<string, number[]> = {
   other: [0x707786, 0x7d8290, 0x8a8578],
 };
 
-// Landmark buildings (fire stations) are painted, not palette-tinted.
-export const LANDMARK_COLOR = 0xd8281a;
-const LANDMARK_RGB = (() => {
-  const c = new THREE.Color(LANDMARK_COLOR);
-  return [c.r, c.g, c.b];
-})();
+// Landmark buildings are painted per civic kind, not palette-tinted. The
+// plate/pad styling for each kind lives here too so world, landmark and
+// minimap layers agree.
+export interface LandmarkTheme {
+  building: number;
+  plateBg: string;
+  plateBorder: string;
+  plateText: string;
+}
+export const LANDMARK_THEMES: Record<Landmark["kind"], LandmarkTheme> = {
+  "fire-station": { building: 0xd8281a, plateBg: "rgba(120, 20, 12, 0.9)", plateBorder: "#ff8b7c", plateText: "#ffd3cb" },
+  police: { building: 0x2b56c4, plateBg: "rgba(18, 38, 110, 0.9)", plateBorder: "#7ea1ff", plateText: "#cfdcff" },
+  hospital: { building: 0xdde2e7, plateBg: "rgba(12, 84, 96, 0.9)", plateBorder: "#63d6e2", plateText: "#cdf3f7" },
+  "city-hall": { building: 0xd9a441, plateBg: "rgba(110, 80, 14, 0.9)", plateBorder: "#ffd67e", plateText: "#ffeec9" },
+};
+const LANDMARK_RGB = new Map<Landmark["kind"], number[]>(
+  (Object.entries(LANDMARK_THEMES) as [Landmark["kind"], LandmarkTheme][]).map(([k, t]) => {
+    const c = new THREE.Color(t.building);
+    return [k, [c.r, c.g, c.b]];
+  }),
+);
+
+// Rail network styling (freight rail, MAX, streetcar, WES).
+const RAIL_STYLE: Record<RailLine["kind"], { color: number; width: number }> = {
+  rail: { color: 0x574f45, width: 4 },
+  max: { color: 0x3172d9, width: 3.2 },
+  streetcar: { color: 0x3aa38b, width: 2.6 },
+  wes: { color: 0x8055d9, width: 3.2 },
+};
+const YARD_COLOR = 0x36322b; // ballast/gravel
+const YARD_Y = 0.065; // under streets, over parks
+const RAIL_Y = 0.14; // over streets/trails so crossings read
+const STOP_Y = 0.16;
+const STOP_RADIUS = 5; // m platform disc
 
 // Tile size for chunked meshes — one merged mesh per tile so the GPU
 // frustum-culls off-screen chunks. Every building renders at every zoom.
@@ -60,12 +88,18 @@ export function buildWorld(map: GameMap): WorldLayers {
   if (water) group.add(water);
   const trails = buildTrails(map.trails ?? []);
   if (trails) group.add(trails);
+  const yards = buildPolys(map.railYards ?? [], YARD_COLOR, YARD_Y);
+  if (yards) group.add(yards);
 
   const streetMat = new THREE.MeshLambertMaterial({ color: STREET_COLOR, side: THREE.DoubleSide });
   for (const mesh of buildStreetTiles(map.edges, streetMat)) group.add(mesh);
 
-  const landmarkBuildings = new Set<number>();
-  for (const m of map.landmarks ?? []) for (const id of m.buildingIds ?? []) landmarkBuildings.add(id);
+  for (const mesh of buildRails(map.rails ?? [])) group.add(mesh);
+  const stops = buildRailStops(map.railStops ?? []);
+  if (stops) group.add(stops);
+
+  const landmarkBuildings = new Map<number, Landmark["kind"]>();
+  for (const m of map.landmarks ?? []) for (const id of m.buildingIds ?? []) landmarkBuildings.set(id, m.kind);
   for (const mesh of buildBuildingTiles(map.buildings, landmarkBuildings)) group.add(mesh);
 
   const streetNear = new THREE.Color(STREET_COLOR);
@@ -203,8 +237,42 @@ function pushRibbon(pos: number[], polyline: [number, number][], width: number, 
   }
 }
 
+/** One mesh per rail kind: ribbon polylines in that kind's color. */
+function buildRails(rails: RailLine[]): THREE.Mesh[] {
+  const soups = new Map<RailLine["kind"], Soup>();
+  for (const r of rails) {
+    let soup = soups.get(r.kind);
+    if (!soup) soups.set(r.kind, (soup = { pos: [], nrm: [] }));
+    pushRibbon(soup.pos, r.polyline, RAIL_STYLE[r.kind].width, RAIL_Y);
+  }
+  return [...soups.entries()].map(([kind, soup]) =>
+    soupMesh(soup, new THREE.MeshLambertMaterial({ color: RAIL_STYLE[kind].color, side: THREE.DoubleSide })),
+  );
+}
+
+/** Rail stops as flat platform discs in their line's color (one mesh). */
+function buildRailStops(stops: RailStop[]): THREE.Mesh | null {
+  if (stops.length === 0) return null;
+  const soup: Soup = { pos: [], nrm: [], col: [] };
+  const SEGS = 12;
+  for (const s of stops) {
+    const c = new THREE.Color(RAIL_STYLE[s.kind].color).multiplyScalar(1.35);
+    for (let i = 0; i < SEGS; i++) {
+      const a0 = (i / SEGS) * Math.PI * 2;
+      const a1 = ((i + 1) / SEGS) * Math.PI * 2;
+      soup.pos.push(
+        s.x, STOP_Y, -s.y,
+        s.x + Math.cos(a0) * STOP_RADIUS, STOP_Y, -(s.y + Math.sin(a0) * STOP_RADIUS),
+        s.x + Math.cos(a1) * STOP_RADIUS, STOP_Y, -(s.y + Math.sin(a1) * STOP_RADIUS),
+      );
+      for (let v = 0; v < 3; v++) soup.col!.push(c.r, c.g, c.b);
+    }
+  }
+  return soupMesh(soup, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+}
+
 /** Buildings written straight into per-tile buffers (keyed by first vertex). */
-function buildBuildingTiles(buildings: Building[], landmarks: Set<number>): THREE.Mesh[] {
+function buildBuildingTiles(buildings: Building[], landmarks: Map<number, Landmark["kind"]>): THREE.Mesh[] {
   // Palette colors as flat rgb triples, resolved once.
   const palettes = new Map<string, number[][]>();
   for (const [use, hexes] of Object.entries(USE_TINTS)) {
@@ -220,8 +288,9 @@ function buildBuildingTiles(buildings: Building[], landmarks: Set<number>): THRE
     const key = tileKey(fx, fy);
     let soup = tiles.get(key);
     if (!soup) tiles.set(key, (soup = { pos: [], nrm: [], col: [] }));
-    if (landmarks.has(b.id)) {
-      pushPrism(soup, b, LANDMARK_RGB);
+    const landmarkKind = landmarks.get(b.id);
+    if (landmarkKind) {
+      pushPrism(soup, b, LANDMARK_RGB.get(landmarkKind)!);
       continue;
     }
     const palette = palettes.get(b.use ?? "other") ?? palettes.get("other")!;
