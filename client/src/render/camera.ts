@@ -11,7 +11,7 @@ export function toWorldXY(v: THREE.Vector3): { x: number; y: number } {
   return { x: v.x, y: -v.z };
 }
 
-const MIN_VIEW_HEIGHT = 150; // meters visible vertically at max zoom-in
+const MIN_VIEW_HEIGHT = 70; // meters visible vertically at max zoom-in
 const MAX_VIEW_HEIGHT = 12000; // hard zoom-out cap (minimap covers the rest)
 const FOV_DEG = 35; // narrow-ish perspective: depth without fisheye
 const HALF_FOV = (FOV_DEG * Math.PI) / 360;

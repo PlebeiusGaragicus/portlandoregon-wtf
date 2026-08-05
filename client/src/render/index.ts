@@ -5,13 +5,14 @@ import { Controls, type ControlDelegate } from "./controls.js";
 import { FpvMode } from "./fpv.js";
 import { buildLandmarks, type LandmarkLayer } from "./landmarks.js";
 import { Minimap } from "./minimap.js";
-import { buildProps } from "./props.js";
+import { buildProps, type PropLayers } from "./props.js";
 import { buildWorld, type WorldLayers } from "./world.js";
 
 // Zoom thresholds (meters of vertical view).
 const BLEND_START = 2200; // street tint starts brightening
 const BLEND_END = 3200;
-const PROPS_VIEW = 3000; // above: hide trees/signs/signals (subpixel anyway)
+const PROPS_VIEW = 3000; // above: hide trees/street lights (subpixel anyway)
+const NEAR_PROPS_VIEW = 1000; // above: hide small street furniture (signs, hydrants, benches...)
 
 const START_VIEW = 2600; // spectator reveal: district scale, then explore
 
@@ -23,7 +24,7 @@ const SKY_R = 20000; // inside the FPV far plane
 
 export interface PrebuiltLayers {
   world: WorldLayers;
-  props: THREE.Group;
+  props: PropLayers;
   landmarks: LandmarkLayer;
 }
 
@@ -46,7 +47,7 @@ export class Renderer {
   private rig: CameraRig;
   private controls: Controls;
   private world: WorldLayers;
-  private props: THREE.Group;
+  private props: PropLayers;
   private landmarks: LandmarkLayer;
   private minimap: Minimap;
   private compass: HTMLDivElement;
@@ -59,6 +60,7 @@ export class Renderer {
 
   private map: GameMap;
   private sky: THREE.Mesh | null = null;
+  private fpvProps: PropLayers | null = null;
   private fpv: FpvMode | null = null;
   private fpvOn = false;
   private fpvHint: HTMLDivElement;
@@ -90,7 +92,7 @@ export class Renderer {
     this.world = opts.prebuilt?.world ?? buildWorld(map, hf);
     this.scene.add(this.world.group);
     this.props = opts.prebuilt?.props ?? buildProps(map, hf);
-    this.scene.add(this.props);
+    this.scene.add(this.props.group);
     this.landmarks = opts.prebuilt?.landmarks ?? buildLandmarks(map, hf);
     this.scene.add(this.landmarks.group);
 
@@ -183,7 +185,12 @@ export class Renderer {
       this.hint("", 0);
       return;
     }
-    // Lazy: the collision index over every building is built on first entry.
+    // Lazy: collision index + life-size props are built on first entry.
+    if (!this.fpvProps) {
+      this.fpvProps = buildProps(this.map, this.hf, 1);
+      this.fpvProps.group.visible = false;
+      this.scene.add(this.fpvProps.group);
+    }
     if (!this.fpv) {
       this.fpv = new FpvMode(this.map, this.hf, this.rig.target, this.rig.theta);
     } else {
@@ -324,7 +331,8 @@ export class Renderer {
       // haze in the sky's horizon color. Landmark plates are billboards sized
       // for the map view — at eye height they wallpaper the horizon, so off.
       this.world.setBlend(0);
-      this.props.visible = true;
+      this.props.group.visible = false;
+      if (this.fpvProps) this.fpvProps.group.visible = true;
       this.world.detail.visible = true;
       this.landmarks.group.visible = false;
       if (!this.scene.fog) this.scene.fog = new THREE.FogExp2(FOG_COLOR, 0.00008);
@@ -338,12 +346,14 @@ export class Renderer {
     }
     if (this.scene.fog) this.scene.fog = null;
     if (this.sky) this.sky.visible = false;
+    if (this.fpvProps) this.fpvProps.group.visible = false;
     this.landmarks.group.visible = true;
     this.controls.update(dt);
 
     const vh = this.rig.viewHeight;
     this.world.setBlend((vh - BLEND_START) / (BLEND_END - BLEND_START));
-    this.props.visible = vh < PROPS_VIEW;
+    this.props.group.visible = vh < PROPS_VIEW;
+    this.props.near.visible = vh < NEAR_PROPS_VIEW;
     this.world.detail.visible = vh < PROPS_VIEW;
     this.landmarks.setViewScale(vh);
 
