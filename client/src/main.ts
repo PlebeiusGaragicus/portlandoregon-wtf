@@ -1,6 +1,8 @@
 import type { GameMap, Snapshot } from "@battle-juice/shared";
 import { Net } from "./net.js";
-import { Renderer } from "./render/index.js";
+import { Renderer, type PrebuiltLayers } from "./render/index.js";
+import { buildProps } from "./render/props.js";
+import { buildWorld } from "./render/world.js";
 
 const joinForm = document.getElementById("join") as HTMLFormElement;
 const nameInput = document.getElementById("name") as HTMLInputElement;
@@ -25,11 +27,17 @@ function updateBanner(s: Snapshot, myPlayerId: string): void {
   bannerEl.style.display = "block";
 }
 
-// The map is served by the game server (large maps are not bundled).
+// The map is served by the game server (large maps are not bundled). World
+// geometry is built as soon as it arrives — while the player is still at the
+// login form — so joining is near-instant.
 const mapPromise: Promise<GameMap> = fetch("/map").then((r) => {
   if (!r.ok) throw new Error(`map fetch failed: ${r.status}`);
   return r.json() as Promise<GameMap>;
 });
+const prebuiltPromise: Promise<{ map: GameMap; layers: PrebuiltLayers }> = mapPromise.then((map) => ({
+  map,
+  layers: { world: buildWorld(map), props: buildProps(map) },
+}));
 
 joinForm.addEventListener("submit", (ev) => {
   ev.preventDefault();
@@ -42,10 +50,11 @@ joinForm.addEventListener("submit", (ev) => {
       joinForm.style.display = "none";
       gameEl.style.display = "block";
       latest = msg.snapshot;
-      mapPromise
-        .then((map) => {
+      prebuiltPromise
+        .then(({ map, layers }) => {
           renderer = new Renderer(canvas, msg.playerId, map, {
             onCommand: (entityId, target) => net.send({ type: "input", entityId, target }),
+            prebuilt: layers,
           });
           if (latest) {
             renderer.pushSnapshot(latest);

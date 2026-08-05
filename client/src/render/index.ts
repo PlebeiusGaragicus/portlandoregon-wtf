@@ -17,9 +17,16 @@ const TACTICAL_HINT =
   "left click/drag select · right click move · WASD pan · wheel zoom · Q/E rotate · R/F tilt · N north";
 const STRATEGIC_HINT = "strategic view — zoom in to command · drag/WASD pan · Q/E rotate · R/F tilt · N north";
 
+export interface PrebuiltLayers {
+  world: WorldLayers;
+  props: THREE.Group;
+}
+
 export interface RendererOpts {
   /** A move order for one selected squad. */
   onCommand: (entityId: string, target: { x: number; y: number }) => void;
+  /** World geometry built ahead of join (login-screen time); reused on rejoin. */
+  prebuilt?: PrebuiltLayers;
 }
 
 /**
@@ -69,9 +76,9 @@ export class Renderer {
     sun.position.set(0.6, 1, 0.35).normalize(); // world-fixed: shading stays put as camera spins
     this.scene.add(hemi, sun);
 
-    this.world = buildWorld(map);
+    this.world = opts.prebuilt?.world ?? buildWorld(map);
     this.scene.add(this.world.group);
-    this.props = buildProps(map);
+    this.props = opts.prebuilt?.props ?? buildProps(map);
     this.scene.add(this.props);
     this.units = new UnitLayer(myPlayerId);
     this.scene.add(this.units.group);

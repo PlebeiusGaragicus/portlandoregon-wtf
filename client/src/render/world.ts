@@ -2,6 +2,14 @@ import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import type { Building, GameMap, StreetEdge, WaterBody } from "@battle-juice/shared";
 
+/** Growing vertex-soup accumulator — direct buffer writes, no per-feature
+ * BufferGeometry/merge round-trips (those made city load take ~36 s). */
+interface Soup {
+  pos: number[];
+  nrm: number[];
+  col?: number[];
+}
+
 const GROUND_COLOR = 0x262c36; // city-block base
 const WATER_COLOR = 0x1b2f42; // deep river blue
 const PARK_COLOR = 0x2c4434; // greenspace
@@ -49,8 +57,7 @@ export function buildWorld(map: GameMap): WorldLayers {
   const streetMat = new THREE.MeshLambertMaterial({ color: STREET_COLOR, side: THREE.DoubleSide });
   for (const mesh of buildStreetTiles(map.edges, streetMat)) group.add(mesh);
 
-  const built = buildBuildingTiles(map.buildings, () => true);
-  for (const mesh of built.meshes) group.add(mesh);
+  for (const mesh of buildBuildingTiles(map.buildings)) group.add(mesh);
 
   const streetNear = new THREE.Color(STREET_COLOR);
   const streetFar = new THREE.Color(0x5a6478); // brighter so the grid reads from altitude
@@ -110,30 +117,51 @@ function buildTrails(trails: { polyline: [number, number][] }[]): THREE.Mesh | n
   return new THREE.Mesh(merged, new THREE.MeshLambertMaterial({ color: TRAIL_COLOR, side: THREE.DoubleSide }));
 }
 
-/** Street ribbons, merged per tile (keyed by segment midpoint). */
-function buildStreetTiles(edges: StreetEdge[], mat: THREE.MeshLambertMaterial): THREE.Mesh[] {
-  const tiles = new Map<number, THREE.BufferGeometry[]>();
-  for (const edge of edges) {
-    const geo = ribbon(edge.polyline, edge.width);
-    if (!geo) continue;
-    const [mx, my] = edge.polyline[Math.floor(edge.polyline.length / 2)]!;
-    const key = tileKey(mx, my);
-    const list = tiles.get(key);
-    if (list) list.push(geo);
-    else tiles.set(key, [geo]);
+/** Turn a soup into a mesh (normals constant-up when nrm is empty). */
+function soupMesh(soup: Soup, material: THREE.Material): THREE.Mesh {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(soup.pos, 3));
+  if (soup.nrm.length) {
+    geo.setAttribute("normal", new THREE.Float32BufferAttribute(soup.nrm, 3));
+  } else {
+    const up = new Float32Array(soup.pos.length);
+    for (let i = 1; i < up.length; i += 3) up[i] = 1;
+    geo.setAttribute("normal", new THREE.BufferAttribute(up, 3));
   }
-  const meshes: THREE.Mesh[] = [];
-  for (const parts of tiles.values()) {
-    const merged = mergeGeometries(parts);
-    for (const p of parts) p.dispose();
-    meshes.push(new THREE.Mesh(merged, mat));
-  }
-  return meshes;
+  if (soup.col) geo.setAttribute("color", new THREE.Float32BufferAttribute(soup.col, 3));
+  return new THREE.Mesh(geo, material);
 }
 
-/** Triangle-strip ribbon along a polyline with mitered joints. */
+/** Street ribbons, written straight into per-tile buffers (all normals up). */
+function buildStreetTiles(edges: StreetEdge[], mat: THREE.MeshLambertMaterial): THREE.Mesh[] {
+  const tiles = new Map<number, Soup>();
+  for (const edge of edges) {
+    const [mx, my] = edge.polyline[Math.floor(edge.polyline.length / 2)]!;
+    const key = tileKey(mx, my);
+    let soup = tiles.get(key);
+    if (!soup) tiles.set(key, (soup = { pos: [], nrm: [] }));
+    pushRibbon(soup.pos, edge.polyline, edge.width, STREET_Y);
+  }
+  return [...tiles.values()].map((soup) => soupMesh(soup, mat));
+}
+
+/** Legacy single-geometry ribbon (trails only — low count). */
 function ribbon(polyline: [number, number][], width: number, atY = STREET_Y): THREE.BufferGeometry | null {
   if (polyline.length < 2) return null;
+  const pos: number[] = [];
+  pushRibbon(pos, polyline, width, atY);
+  if (pos.length === 0) return null;
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  const up = new Float32Array(pos.length);
+  for (let i = 1; i < up.length; i += 3) up[i] = 1;
+  geo.setAttribute("normal", new THREE.BufferAttribute(up, 3));
+  return geo;
+}
+
+/** Flat mitered ribbon along a polyline, appended to a position array. */
+function pushRibbon(pos: number[], polyline: [number, number][], width: number, atY: number): void {
+  if (polyline.length < 2) return;
   const half = width / 2;
   const left: [number, number][] = [];
   const right: [number, number][] = [];
@@ -157,66 +185,81 @@ function ribbon(polyline: [number, number][], width: number, atY = STREET_Y): TH
     right.push([px - (nx / nlen) * half, py - (ny / nlen) * half]);
   }
 
-  const positions: number[] = [];
   for (let i = 0; i < polyline.length - 1; i++) {
     const quad = [left[i]!, right[i]!, right[i + 1]!, left[i + 1]!];
     for (const idx of [0, 1, 2, 0, 2, 3]) {
       const [wx, wy] = quad[idx]!;
-      positions.push(wx, atY, -wy);
+      pos.push(wx, atY, -wy);
     }
   }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
-  geo.computeVertexNormals();
-  return geo;
 }
 
-/** Buildings merged per tile (keyed by first footprint vertex). */
-function buildBuildingTiles(
-  buildings: Building[],
-  keep: (b: Building) => boolean,
-): { meshes: THREE.Mesh[]; material: THREE.MeshLambertMaterial } {
-  const tiles = new Map<number, THREE.BufferGeometry[]>();
+/** Buildings written straight into per-tile buffers (keyed by first vertex). */
+function buildBuildingTiles(buildings: Building[]): THREE.Mesh[] {
+  // Palette colors as flat rgb triples, resolved once.
+  const palettes = new Map<string, number[][]>();
+  for (const [use, hexes] of Object.entries(USE_TINTS)) {
+    palettes.set(use, hexes.map((h) => {
+      const c = new THREE.Color(h);
+      return [c.r, c.g, c.b];
+    }));
+  }
+  const tiles = new Map<number, Soup>();
   for (const b of buildings) {
-    if (!keep(b)) continue;
-    const geo = prism(b);
-    if (!geo) continue;
+    if (b.footprint.length < 3) continue;
     const [fx, fy] = b.footprint[0]!;
     const key = tileKey(fx, fy);
-    const list = tiles.get(key);
-    if (list) list.push(geo);
-    else tiles.set(key, [geo]);
+    let soup = tiles.get(key);
+    if (!soup) tiles.set(key, (soup = { pos: [], nrm: [], col: [] }));
+    const palette = palettes.get(b.use ?? "other") ?? palettes.get("other")!;
+    pushPrism(soup, b, palette[b.id % palette.length]!);
   }
   const material = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
-  const meshes: THREE.Mesh[] = [];
-  for (const parts of tiles.values()) {
-    const merged = mergeGeometries(parts);
-    for (const p of parts) p.dispose();
-    meshes.push(new THREE.Mesh(merged, material));
-  }
-  return { meshes, material };
+  return [...tiles.values()].map((soup) => soupMesh(soup, material));
 }
 
-function prism(b: Building): THREE.BufferGeometry | null {
-  if (b.footprint.length < 3) return null;
-  const shape = new THREE.Shape(b.footprint.map(([x, y]) => new THREE.Vector2(x, y)));
-  for (const hole of b.holes ?? []) {
-    shape.holes.push(new THREE.Path(hole.map(([x, y]) => new THREE.Vector2(x, y))));
-  }
-  const geo = new THREE.ExtrudeGeometry(shape, { depth: b.height, bevelEnabled: false });
-  // Shape XY is world XY; extrusion +z becomes scene +y (up), shape y -> -z.
-  geo.rotateX(-Math.PI / 2);
+/**
+ * One building: earcut roof at height + a wall quad per ring edge, appended
+ * directly to the tile soup. Winding conventions (outer CCW, holes CW) make
+ * one wall formula serve both: (dy, -dx) is outward for CCW and points into
+ * the courtyard for CW holes — exactly the visible side each time.
+ */
+function pushPrism(soup: Soup, b: Building, rgb: number[]): void {
+  const h = b.height;
+  const rings = [b.footprint, ...(b.holes ?? [])];
+  const before = soup.pos.length;
 
-  const palette = USE_TINTS[b.use ?? "other"] ?? USE_TINTS["other"]!;
-  const tint = new THREE.Color(palette[b.id % palette.length]!);
-  const count = geo.getAttribute("position").count;
-  const colors = new Float32Array(count * 3);
-  for (let i = 0; i < count; i++) {
-    colors[i * 3] = tint.r;
-    colors[i * 3 + 1] = tint.g;
-    colors[i * 3 + 2] = tint.b;
+  // Walls.
+  for (const ring of rings) {
+    for (let i = 0; i < ring.length; i++) {
+      const [ax, ay] = ring[i]!;
+      const [bx, by] = ring[(i + 1) % ring.length]!;
+      const dx = bx - ax;
+      const dy = by - ay;
+      const len = Math.hypot(dx, dy);
+      if (len < 1e-9) continue;
+      const nx = dy / len;
+      const nz = dx / len; // scene-frame z component of the outward normal
+      // Two triangles: (A, B, B_top), (A, B_top, A_top) — outward-facing.
+      soup.pos.push(ax, 0, -ay, bx, 0, -by, bx, h, -by, ax, 0, -ay, bx, h, -by, ax, h, -ay);
+      for (let v = 0; v < 6; v++) soup.nrm.push(nx, 0, nz);
+    }
   }
-  geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-  geo.deleteAttribute("uv"); // merge requires consistent attributes; uv unused
-  return geo;
+
+  // Roof: earcut over outer + holes (indices into the concatenated rings).
+  const outerV = b.footprint.map(([x, y]) => new THREE.Vector2(x, y));
+  const holesV = (b.holes ?? []).map((ring) => ring.map(([x, y]) => new THREE.Vector2(x, y)));
+  const flat: THREE.Vector2[] = outerV.concat(...holesV);
+  const triangles = THREE.ShapeUtils.triangulateShape(outerV, holesV);
+  for (const tri of triangles) {
+    for (const idx of tri) {
+      const v = flat[idx];
+      if (!v) continue;
+      soup.pos.push(v.x, h, -v.y);
+      soup.nrm.push(0, 1, 0);
+    }
+  }
+
+  const added = (soup.pos.length - before) / 3;
+  for (let v = 0; v < added; v++) soup.col!.push(rgb[0]!, rgb[1]!, rgb[2]!);
 }
