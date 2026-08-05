@@ -72,6 +72,9 @@ export class Renderer {
   private skyBody: THREE.Mesh | null = null;
   private skyBodyMat: THREE.MeshBasicMaterial | null = null;
   private fpvProps: PropLayers | null = null;
+  /** FPV distance culling: small geometry hidden past its threshold. */
+  private fpvCull: { obj: THREE.Object3D; x: number; z: number; range: number }[] = [];
+  private fpvCullDirty = false;
   private fpv: FpvMode | null = null;
   private fpvOn = false;
   private fpvHint: HTMLDivElement;
@@ -256,6 +259,22 @@ export class Renderer {
       this.fpvProps.glow.visible = false;
       this.fpvProps.setNight(this.daynight.night);
       this.scene.add(this.fpvProps.group, this.fpvProps.glow);
+      // Distance-cull registry: 1 km prop/paint tiles vanish once they're too
+      // far to read; the altitude fog swallows the transition.
+      const seen = new Set<THREE.Object3D>();
+      const register = (root: THREE.Object3D, range: number): void => {
+        root.traverse((o) => {
+          if (!(o instanceof THREE.Mesh) || seen.has(o)) return;
+          seen.add(o);
+          if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere();
+          const c = o.geometry.boundingSphere!.center;
+          this.fpvCull.push({ obj: o, x: c.x, z: c.z, range: range + o.geometry.boundingSphere!.radius });
+        });
+      };
+      register(this.fpvProps.near, 2200); // street furniture: unreadable past 2 km
+      register(this.fpvProps.group, 3200); // trees/street lights
+      register(this.fpvProps.glow, 3800);
+      register(this.world.detail, 2400); // sidewalks/paint
     }
     // Enter skydiving from roughly the map camera's altitude — dramatic from
     // street zoom, capped so strategic view doesn't mean a minute of freefall.
@@ -310,9 +329,10 @@ export class Renderer {
     }
     const dn = this.daynight;
     this.skyBody.visible = true;
-    this.skyBody.position.copy(this.camera.position).addScaledVector(dn.lightDir, SKY_R * 0.88);
+    const bodyDist = this.camera.far * 0.78;
+    this.skyBody.position.copy(this.camera.position).addScaledVector(dn.lightDir, bodyDist);
     this.skyBody.quaternion.copy(this.camera.quaternion);
-    const size = dn.day ? 2600 : 1500;
+    const size = bodyDist * (dn.day ? 0.148 : 0.085);
     this.skyBody.scale.set(size, size, 1);
     this.skyBodyMat!.color.copy(dn.lightColor).multiplyScalar(dn.day ? 1 : 1.25);
   }
@@ -449,16 +469,34 @@ export class Renderer {
       const aspect = (this.canvas.clientWidth || 1) / (this.canvas.clientHeight || 1);
       this.actors.setListener({ x: this.fpv.x, y: this.fpv.y });
       this.actors.update(dt, now / 1000, { x: this.fpv.x, y: this.fpv.y }, this.daynight.night);
-      this.fpv.apply(this.camera, aspect);
+      // Draw distance scales with altitude: short and hazy at street level
+      // (nearby blocks occlude everything anyway), the whole city from the
+      // air. Fog density is tied to the far plane so the cutoff hides in haze.
+      const altAbove = this.fpv.z - this.ground(this.fpv.x, this.fpv.y);
+      const far = Math.min(30000, Math.max(5500, 5500 + altAbove * 55));
+      this.fpv.apply(this.camera, aspect, far);
+      (this.scene.fog as THREE.FogExp2).density = 1.7 / far;
+      this.sky!.scale.setScalar((far * 0.85) / SKY_R);
       this.compass.style.setProperty("--rot", `${this.fpv.yaw}rad`);
       this.sky!.position.copy(this.camera.position);
       this.updateSkyBody();
+      const cx = this.camera.position.x;
+      const cz = this.camera.position.z;
+      for (const e of this.fpvCull) {
+        e.obj.visible = (e.x - cx) ** 2 + (e.z - cz) ** 2 < e.range * e.range;
+      }
+      this.fpvCullDirty = true;
       this.applyDayNight(this.fpv.x, this.fpv.y, this.fpv.z, true);
       this.webgl.render(this.scene, this.camera);
       requestAnimationFrame(() => this.frame());
       return;
     }
     if (this.scene.fog) this.scene.fog = null;
+    if (this.fpvCullDirty) {
+      // world.detail children are shared with the map view — restore them.
+      for (const e of this.fpvCull) e.obj.visible = true;
+      this.fpvCullDirty = false;
+    }
     if (this.sky) this.sky.visible = false;
     if (this.skyBody) this.skyBody.visible = false;
     this.props.glow.visible = true;

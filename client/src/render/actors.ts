@@ -10,9 +10,10 @@ import { radialGlowTexture } from "./props.js";
 // area and periodically return to the station and disappear.
 
 const MAX_FIRE = 9;
-const MAX_POLICE = 7;
-const MAX_AMBULANCE = 5;
-const CAP = MAX_FIRE + MAX_POLICE + MAX_AMBULANCE;
+const MAX_POLICE = 30;
+const MAX_AMBULANCE_DAY = 40;
+const MAX_AMBULANCE_NIGHT = 20;
+const CAP = MAX_FIRE + MAX_POLICE + MAX_AMBULANCE_DAY;
 
 const SPEED_MIN = 14; // m/s — code 3 through city streets
 const SPEED_MAX = 21;
@@ -146,7 +147,7 @@ export class Actors {
   }
 
   update(dt: number, timeSec: number, focus: { x: number; y: number }, night = 0): void {
-    this.spawn(focus, dt);
+    this.spawn(focus, dt, night);
 
     for (const v of this.vehicles) v.patience -= dt;
     this.vehicles = this.vehicles.filter((v) => this.advance(v, dt, focus));
@@ -193,13 +194,26 @@ export class Actors {
 
   // ---- population ----------------------------------------------------------
 
-  private spawn(focus: { x: number; y: number }, dt: number): void {
+  private spawn(focus: { x: number; y: number }, dt: number, night: number): void {
     this.respawnCooldown -= dt;
     if (this.respawnCooldown > 0) return;
     const count = (k: (v: Vehicle) => boolean): number => this.vehicles.filter(k).length;
     const nFire = count((v) => v.kind === "engine" || v.kind === "truck");
     const nPol = count((v) => v.kind === "police");
     const nAmb = count((v) => v.kind === "ambulance");
+    const maxAmb = night > 0.5 ? MAX_AMBULANCE_NIGHT : MAX_AMBULANCE_DAY;
+
+    // Nightfall thins the ambulance fleet: extras head back to a hospital.
+    if (nAmb > maxAmb) {
+      let extra = nAmb - maxAmb;
+      for (const v of this.vehicles) {
+        if (extra <= 0) break;
+        if (v.kind === "ambulance" && v.mode === "roam") {
+          v.mode = "return";
+          extra--;
+        }
+      }
+    }
 
     const near = (fs: Facility[]): Facility[] =>
       fs.filter((f) => Math.hypot(f.x - focus.x, f.y - focus.y) < SPAWN_NEAR);
@@ -215,13 +229,16 @@ export class Actors {
         ? homes[Math.floor(Math.random() * homes.length)]!
         : this.randomFacilityNear(focus);
       if (h) spawned = this.spawnAt("police", h, /* homeless */ true);
-    } else if (nAmb < MAX_AMBULANCE) {
+    } else if (nAmb < maxAmb) {
       const homes = near(this.ambHomes);
-      const h = homes[Math.floor(Math.random() * homes.length)];
-      if (h) spawned = this.spawnAt("ambulance", h);
+      const h = homes.length
+        ? homes[Math.floor(Math.random() * homes.length)]!
+        : this.randomFacilityNear(focus); // no hospital in range: post up anyway
+      if (h) spawned = this.spawnAt("ambulance", h, !homes.length);
     }
-    // Stagger arrivals so a fresh view doesn't materialize a whole fleet.
-    this.respawnCooldown = spawned ? 0.9 + Math.random() * 2.5 : 1.5;
+    // Stagger arrivals — but fill a big deficit briskly after a view change.
+    const deficit = MAX_FIRE - nFire + (MAX_POLICE - nPol) + (maxAmb - nAmb);
+    this.respawnCooldown = spawned ? (deficit > 12 ? 0.25 : 0.9 + Math.random() * 2.5) : 1.5;
   }
 
   private randomFacilityNear(focus: { x: number; y: number }): Facility | null {

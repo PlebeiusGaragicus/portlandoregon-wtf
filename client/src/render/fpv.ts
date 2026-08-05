@@ -335,7 +335,7 @@ export class FpvMode {
     }
   }
 
-  apply(cam: THREE.PerspectiveCamera, aspect: number): void {
+  apply(cam: THREE.PerspectiveCamera, aspect: number, far = 30000): void {
     const eye = toScene(this.x, this.y, this.z + EYE);
     cam.position.copy(eye);
     const cp = Math.cos(this.pitch);
@@ -348,7 +348,7 @@ export class FpvMode {
     cam.fov = 70;
     cam.aspect = aspect;
     cam.near = 0.3;
-    cam.far = 30000;
+    cam.far = far;
     cam.updateProjectionMatrix();
   }
 }
