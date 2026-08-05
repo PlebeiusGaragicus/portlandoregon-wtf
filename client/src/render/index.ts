@@ -583,7 +583,13 @@ export class Renderer {
     }
 
     const alt = this.fpvOn ? ` · ▲${Math.round(fz)} m` : "";
-    const label = `${dn.day ? "☀" : "☾"} ${dn.clock}${alt}`;
+    // Focus position, world meters + WGS84 — so a screenshot pins the exact
+    // spot for debugging (world x/y feed rig.target / fpv.place directly).
+    const o = this.map.meta.origin;
+    const lat = o.lat + fy / 111320;
+    const lon = o.lon + fx / (111320 * Math.cos((lat * Math.PI) / 180));
+    const pos = ` · ${Math.round(fx)}E ${Math.round(fy)}N · ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+    const label = `${dn.day ? "☀" : "☾"} ${dn.clock}${alt}${pos}`;
     if (this.hudClock.textContent !== label) this.hudClock.textContent = label;
   }
 
