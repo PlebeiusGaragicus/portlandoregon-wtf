@@ -1,4 +1,5 @@
 import type { ClientMsg, ServerMsg } from "@battle-juice/shared";
+import { wsUrl } from "./server.js";
 
 export interface NetHandlers {
   onWelcome: (msg: Extract<ServerMsg, { type: "welcome" }>) => void;
@@ -11,8 +12,7 @@ export class Net {
   private socket: WebSocket;
 
   constructor(handlers: NetHandlers) {
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    this.socket = new WebSocket(`${proto}://${location.host}/ws`);
+    this.socket = new WebSocket(wsUrl("/ws"));
     this.socket.onmessage = (ev) => {
       const msg = JSON.parse(ev.data as string) as ServerMsg;
       if (msg.type === "welcome") handlers.onWelcome(msg);

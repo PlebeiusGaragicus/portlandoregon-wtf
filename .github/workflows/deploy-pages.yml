@@ -1,0 +1,55 @@
+name: deploy-pages
+
+# Only main deploys. Day-to-day work happens on dev; a PR merged into main is
+# what publishes. workflow_dispatch is the manual re-deploy escape hatch.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never let two deploys race; queue instead, and don't cancel one mid-publish.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build client
+        # The Pages site is served from play.internal.invalid but the game lives on
+        # the deployment, so the server origin is baked in at build time. Override
+        # it with a repo variable if the deployment ever moves.
+        env:
+          VITE_SERVER_ORIGIN: ${{ vars.VITE_SERVER_ORIGIN || 'https://game.internal.invalid' }}
+        run: npm run build -w client
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: client/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

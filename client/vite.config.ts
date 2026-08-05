@@ -6,6 +6,9 @@ const gamePort = process.env.GAME_PORT ?? "4000";
 
 export default defineConfig({
   root: "src",
+  // src/public holds files copied verbatim into dist — notably CNAME, which
+  // GitHub Pages needs on every deploy or the custom domain gets cleared.
+  publicDir: "public",
   build: {
     outDir: "../dist",
     emptyOutDir: true,

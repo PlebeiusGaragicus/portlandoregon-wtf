@@ -15,6 +15,32 @@ const PORT = Number(process.env.PORT ?? 4000);
 const REPO_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "../..");
 const clientDist = join(fileURLToPath(new URL(".", import.meta.url)), "../../client/dist");
 
+// The frontend is hosted on GitHub Pages (play.internal.invalid), a different
+// origin from this server — so /map and /heightmap need CORS headers, and the
+// WebSocket upgrade needs its own Origin check (WS is exempt from CORS, so the
+// browser will happily let a foreign page connect; we say no here instead).
+// ALLOWED_ORIGINS (comma-separated) extends the list without a code change.
+const ALLOWED_ORIGINS = new Set(
+  [
+    "https://play.internal.invalid",
+    "https://game.internal.invalid",
+    ...(process.env.ALLOWED_ORIGINS ?? "").split(",").map((o) => o.trim()),
+  ].filter(Boolean),
+);
+
+const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/;
+
+/** No Origin header at all = same-origin fetch or a non-browser client. */
+function allowedOrigin(origin: string | undefined): boolean {
+  return !origin || ALLOWED_ORIGINS.has(origin) || LOCAL_ORIGIN.test(origin);
+}
+
+/** Echo the caller's origin when we trust it (never `*` — the map is gated). */
+function corsHeaders(origin: string | undefined): Record<string, string> {
+  if (!origin || !allowedOrigin(origin)) return {};
+  return { "access-control-allow-origin": origin, vary: "Origin" };
+}
+
 const MIME: Record<string, string> = {
   ".html": "text/html",
   ".js": "text/javascript",
@@ -26,6 +52,15 @@ const MIME: Record<string, string> = {
 
 const httpServer = createServer((req, res) => {
   const url = (req.url ?? "/").split("?")[0] ?? "/";
+  const cors = corsHeaders(req.headers.origin);
+  // Plain GETs don't preflight today, but answer OPTIONS anyway so adding a
+  // header to a client fetch later doesn't silently break the Pages build.
+  if (req.method === "OPTIONS") {
+    res
+      .writeHead(204, { ...cors, "access-control-allow-methods": "GET, OPTIONS", "access-control-max-age": "86400" })
+      .end();
+    return;
+  }
   if (url === "/healthz") {
     res.writeHead(200, { "content-type": "text/plain" }).end("ok");
     return;
@@ -33,6 +68,7 @@ const httpServer = createServer((req, res) => {
   // The active map as pre-gzipped JSON; browsers decompress transparently.
   if (url === "/map") {
     res.writeHead(200, {
+      ...cors,
       "content-type": "application/json",
       "content-encoding": "gzip",
       "cache-control": "no-cache",
@@ -48,6 +84,7 @@ const httpServer = createServer((req, res) => {
       return;
     }
     res.writeHead(200, {
+      ...cors,
       "content-type": "application/octet-stream",
       "content-encoding": "gzip",
       "cache-control": "no-cache",
@@ -72,7 +109,11 @@ const httpServer = createServer((req, res) => {
 });
 
 const room = new Room(loadedMap.map);
-const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
+const wss = new WebSocketServer({
+  server: httpServer,
+  path: "/ws",
+  verifyClient: (info: { origin?: string }) => allowedOrigin(info.origin),
+});
 
 function send(socket: WebSocket, msg: ServerMsg): void {
   socket.send(JSON.stringify(msg));

@@ -7,6 +7,7 @@ import { Renderer } from "./render/index.js";
 import { buildLandmarks } from "./render/landmarks.js";
 import { buildProps } from "./render/props.js";
 import { buildWorld } from "./render/world.js";
+import { apiUrl } from "./server.js";
 
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const loadingEl = document.getElementById("loading") as HTMLDivElement;
@@ -21,10 +22,10 @@ async function status(text: string): Promise<void> {
 
 async function boot(): Promise<void> {
   await status("downloading Portland…");
-  const heightPromise: Promise<Heightfield | null> = fetch("/heightmap")
+  const heightPromise: Promise<Heightfield | null> = fetch(apiUrl("/heightmap"))
     .then(async (r) => (r.ok ? decodeHeightfield(await r.arrayBuffer()) : null))
     .catch(() => null);
-  const res = await fetch("/map");
+  const res = await fetch(apiUrl("/map"));
   if (!res.ok) throw new Error(`map fetch failed: ${res.status}`);
   await status("unpacking the city…");
   const map = (await res.json()) as GameMap;

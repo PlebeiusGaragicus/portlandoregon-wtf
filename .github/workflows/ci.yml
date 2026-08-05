@@ -1,0 +1,41 @@
+name: ci
+
+# Validates without publishing: every PR aimed at main, plus direct pushes to
+# dev. Make this a required status check on main so a client that doesn't even
+# build can't reach the deploy workflow.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck all workspaces
+        run: npm run typecheck --workspaces
+
+      - name: Build client
+        # Same origin the deploy job bakes in, so CI exercises the real Pages
+        # build rather than a same-origin variant that only works locally.
+        env:
+          VITE_SERVER_ORIGIN: ${{ vars.VITE_SERVER_ORIGIN || 'https://game.internal.invalid' }}
+        run: npm run build -w client
