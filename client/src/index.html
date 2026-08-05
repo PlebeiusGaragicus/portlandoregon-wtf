@@ -20,6 +20,24 @@
         cursor: grab;
         touch-action: none;
       }
+      #fpvhint {
+        position: fixed;
+        left: 50%;
+        bottom: 2.2rem;
+        transform: translateX(-50%);
+        padding: 0.5rem 0.9rem;
+        border-radius: 8px;
+        background: rgba(16, 19, 25, 0.78);
+        color: #c8d0dd;
+        font-size: 0.85rem;
+        letter-spacing: 0.02em;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.4s ease;
+        z-index: 6;
+        white-space: nowrap;
+      }
+      #fpvhint.show { opacity: 1; }
       #marquee {
         position: fixed;
         border: 1px solid rgba(255, 216, 79, 0.9);

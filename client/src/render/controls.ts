@@ -25,6 +25,8 @@ export interface ControlDelegate {
  * In strategic view (far zoom) left drag pans instead and selection is off.
  */
 export class Controls {
+  /** False while FPV mode owns the input (all handlers become inert). */
+  active = true;
   private thetaGoal = 0;
   private keys = new Set<string>();
   private pointer: { x: number; y: number; button: number; mode: "idle" | "maybe" | "pan" | "marquee" } | null = null;
@@ -44,6 +46,7 @@ export class Controls {
 
     this.listen(canvas, "contextmenu", (e: MouseEvent) => e.preventDefault());
     this.listen(canvas, "pointerdown", (e: PointerEvent) => {
+      if (!this.active) return;
       if (e.button === 1) {
         this.pointer = { x: e.clientX, y: e.clientY, button: 1, mode: "pan" };
       } else if (e.button === 0) {
@@ -54,6 +57,7 @@ export class Controls {
       canvas.setPointerCapture(e.pointerId);
     });
     this.listen(canvas, "pointermove", (e: PointerEvent) => {
+      if (!this.active) return;
       const p = this.pointer;
       if (!p) return;
       if (p.mode === "maybe") {
@@ -69,6 +73,7 @@ export class Controls {
       }
     });
     this.listen(canvas, "pointerup", (e: PointerEvent) => {
+      if (!this.active) return;
       const p = this.pointer;
       this.pointer = null;
       this.marqueeEl.style.display = "none";
@@ -86,13 +91,15 @@ export class Controls {
     });
     // Right click never drags: dispatch on the raw event.
     this.listen(canvas, "pointerdown", (e: PointerEvent) => {
-      if (e.button === 2 && !this.delegate.isStrategic()) this.delegate.dispatchAt(e.clientX, e.clientY);
+      if (e.button === 2 && this.active && !this.delegate.isStrategic()) this.delegate.dispatchAt(e.clientX, e.clientY);
     });
     this.listen(canvas, "wheel", (e: WheelEvent) => {
       e.preventDefault();
+      if (!this.active) return;
       this.delegate.zoomAt(e.clientX, e.clientY, Math.pow(1.1, e.deltaY / 100));
     });
     this.listen(window, "keydown", (e: KeyboardEvent) => {
+      if (!this.active) return;
       const k = e.key.toLowerCase();
       if (e.repeat) return;
       if (k === "q") this.thetaGoal -= SNAP;
@@ -113,6 +120,7 @@ export class Controls {
 
   /** Advance tweens, held-key panning and tilting. dt in seconds. */
   update(dt: number): void {
+    if (!this.active) return;
     const d = this.thetaGoal - this.rig.theta;
     if (Math.abs(d) < 1e-4) this.rig.theta = this.thetaGoal;
     else this.rig.theta += d * Math.min(1, dt * TWEEN_RATE);

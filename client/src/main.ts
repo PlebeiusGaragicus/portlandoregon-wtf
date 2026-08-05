@@ -37,7 +37,9 @@ async function boot(): Promise<void> {
   const landmarks = buildLandmarks(map, hf);
 
   await status("ready");
-  new Renderer(canvas, map, { prebuilt: { world, props, landmarks }, heightfield: hf });
+  const renderer = new Renderer(canvas, map, { prebuilt: { world, props, landmarks }, heightfield: hf });
+  // Dev/debug handle (headless smoke tests steer the camera through this).
+  (window as unknown as Record<string, unknown>)["__bj"] = { renderer };
   loadingEl.classList.add("done");
 }
 
