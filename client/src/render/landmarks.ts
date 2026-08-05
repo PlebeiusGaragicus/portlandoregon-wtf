@@ -1,7 +1,6 @@
 import * as THREE from "three";
 import { heightAt, type Building, type GameMap, type Heightfield, type Landmark } from "@battle-juice/shared";
 import { toScene } from "./camera.js";
-import { radialGlowTexture } from "./props.js";
 import { LANDMARK_THEMES } from "./world.js";
 
 // Civic landmarks (fire stations, police, hospitals, city halls). The
@@ -12,7 +11,6 @@ import { LANDMARK_THEMES } from "./world.js";
 const PLATE_CLEARANCE = 3; // m above the roof — the label belongs to the building
 const MIN_PLATE_H = 8; // m — floor for flat/short buildings
 const PAD_RADIUS = 12; // m, unmatched landmarks only
-const GLOW_SIZE = 85; // m — soft civic beacon, readable from strategic zoom
 
 /** Zoom (viewHeight, m) past which plates are dropped — labels are a
  * close-up detail; from district height the tinted prism is the marker. */
@@ -33,29 +31,7 @@ export function buildLandmarks(map: GameMap, hf?: Heightfield | null): LandmarkL
 
   const pads = new THREE.Group();
   const plates = new THREE.Group();
-  const glows = new THREE.Group();
-  group.add(pads, plates, glows);
-
-  // Colored beacon per landmark: a soft additive halo in the civic color
-  // (fire red, police blue...) hovering at the roof — spottable at any zoom
-  // without reading as a game marker.
-  const glowTex = radialGlowTexture();
-  const glowMats = new Map<Landmark["kind"], THREE.SpriteMaterial>();
-  const glowMat = (kind: Landmark["kind"]): THREE.SpriteMaterial => {
-    let mat = glowMats.get(kind);
-    if (!mat) {
-      mat = new THREE.SpriteMaterial({
-        map: glowTex,
-        color: LANDMARK_THEMES[kind].building,
-        blending: THREE.AdditiveBlending,
-        transparent: true,
-        opacity: 0.55,
-        depthWrite: false,
-      });
-      glowMats.set(kind, mat);
-    }
-    return mat;
-  };
+  group.add(pads, plates);
 
   const padGeo = new THREE.CircleGeometry(PAD_RADIUS, 24).rotateX(-Math.PI / 2);
   const padMats = new Map<Landmark["kind"], THREE.MeshBasicMaterial>();
@@ -87,10 +63,6 @@ export function buildLandmarks(map: GameMap, hf?: Heightfield | null): LandmarkL
       pads.add(pad);
     }
     plates.add(plate(m, anchor[0]!, anchor[1]!, h));
-    const glow = new THREE.Sprite(glowMat(m.kind));
-    glow.scale.set(GLOW_SIZE, GLOW_SIZE, 1);
-    glow.position.copy(toScene(anchor[0]!, anchor[1]!, h + 4));
-    glows.add(glow);
   }
 
   plates.renderOrder = 4;

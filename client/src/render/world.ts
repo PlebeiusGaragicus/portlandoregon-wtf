@@ -639,6 +639,9 @@ function buildBuildingTiles(
     }));
   }
   const tiles = new Map<number, Soup>();
+  // Landmark prisms get their own soup per kind: an emissive material makes
+  // the building itself glow in its civic color, day and night.
+  const lmSoups = new Map<Landmark["kind"], Soup>();
   for (const b of buildings) {
     if (b.footprint.length < 3) continue;
     const [fx, fy] = b.footprint[0]!;
@@ -660,7 +663,9 @@ function buildBuildingTiles(
     cy /= b.footprint.length;
     const landmarkKind = landmarks.get(b.id);
     if (landmarkKind) {
-      pushPrism(soup, b, LANDMARK_RGB.get(landmarkKind)!, base);
+      let ls = lmSoups.get(landmarkKind);
+      if (!ls) lmSoups.set(landmarkKind, (ls = { pos: [], nrm: [], col: [] }));
+      pushPrism(ls, b, LANDMARK_RGB.get(landmarkKind)!, base);
       continue;
     }
     // Tint keyed on a coarse spatial hash, not the part id: the footprint DB
@@ -674,7 +679,21 @@ function buildBuildingTiles(
     pushPrism(soup, b, palette[hash % palette.length]!, base);
   }
   const material = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
-  return [...tiles.values()].map((soup) => soupMesh(soup, material));
+  const meshes = [...tiles.values()].map((soup) => soupMesh(soup, material));
+  for (const [kind, soup] of lmSoups) {
+    meshes.push(
+      soupMesh(
+        soup,
+        new THREE.MeshLambertMaterial({
+          vertexColors: true,
+          flatShading: true,
+          emissive: new THREE.Color(LANDMARK_THEMES[kind].building),
+          emissiveIntensity: 0.42,
+        }),
+      ),
+    );
+  }
+  return meshes;
 }
 
 /**
