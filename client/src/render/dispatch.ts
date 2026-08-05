@@ -61,6 +61,9 @@ export class Dispatch {
   incidents: Incident[] = [];
   group = new THREE.Group();
   private glowTex = radialGlowTexture();
+  /** Burn-sim probe: is a real fire still active near (x, y)? Fire calls
+   * stay open (and crews keep working) until this says no. */
+  hasFireNear: ((x: number, y: number, r: number) => boolean) | null = null;
 
   constructor(
     /** Random drivable point within `range` of a focus, or null. */
@@ -129,6 +132,9 @@ export class Dispatch {
 
     for (const inc of this.incidents) {
       inc.t -= dt;
+      // A fire call is not over until the fire is: top the clock up while
+      // buildings still burn near the scene.
+      if (inc.kind === "fire" && this.hasFireNear?.(inc.x, inc.y, 300)) inc.t = Math.max(inc.t, 30);
       // Fire flicker.
       if (inc.glow) {
         const gm = inc.glow.material as THREE.SpriteMaterial;

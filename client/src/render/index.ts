@@ -144,6 +144,7 @@ export class Renderer {
     this.scene.add(this.fire.group);
     this.fire.onNewFire = (x, y) => this.actors.reportFire(x, y, this.ground(x, y));
     this.fire.onCollapse = (bi) => this.fpv?.markCollapsed(bi);
+    this.actors.hasFireNear = (x, y, r) => this.fire.hasFireNear(x, y, r);
     this.actors.onFireIncident = (x, y) => this.fire.igniteNear(x, y, 90);
     this.actors.onTankFire = (x, y) => {
       const bi = this.fire.randomTargetNear(x, y, 45, 320);

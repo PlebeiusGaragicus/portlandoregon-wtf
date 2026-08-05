@@ -232,8 +232,13 @@ export class Actors {
     if (pos && !this.audio) this.initSiren();
   }
 
+  /** Burn-sim probe (renderer wires it): active fire near (x, y)? Keeps
+   * crews and fire calls on scene until the fire is actually out. */
+  hasFireNear: ((x: number, y: number, r: number) => boolean) | null = null;
+
   update(dt: number, timeSec: number, focus: { x: number; y: number }, night = 0, hour = 12): void {
     this.spawn(focus, dt, night, hour);
+    this.dispatch.hasFireNear = this.hasFireNear;
     this.dispatch.update(dt, timeSec, focus, this.vehicles);
 
     for (const v of this.vehicles) v.patience -= dt;
@@ -526,9 +531,14 @@ export class Actors {
     } else if (v.mode === "onscene") {
       v.sceneT -= dt;
       if (v.sceneT <= 0) {
-        v.goal = null;
-        v.mode = v.home ? "return" : "roam";
-        v.patience = 40 + Math.random() * 60;
+        // Fire apparatus doesn't pack up while the fire's still going.
+        if ((v.kind === "engine" || v.kind === "truck") && this.hasFireNear?.(v.x, v.y, 130)) {
+          v.sceneT = 20 + Math.random() * 20;
+        } else {
+          v.goal = null;
+          v.mode = v.home ? "return" : "roam";
+          v.patience = 40 + Math.random() * 60;
+        }
       }
     }
 

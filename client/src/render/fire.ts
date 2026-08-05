@@ -22,7 +22,7 @@ import { CYCLES_PER_DAY } from "./daynight.js";
 const REAL_PER_GAME_H = 3600 / CYCLES_PER_DAY;
 
 const SMOKE_MAX = 2000;
-const GLOW_MAX = 1400;
+const GLOW_MAX = 2600;
 const EMBER_MAX = 130;
 const SPREAD_TICK = 4; // real s between spread rolls per burning building
 const TREE_IGNITE_R = 14; // m from a burning building
@@ -248,6 +248,8 @@ export class FireSim {
   private treeColor = new THREE.Color();
   /** Everything that has pancaked — FPV consumes this to open collision. */
   readonly collapsed: number[] = [];
+  /** Emission clocks for the merged neighborhood sky plumes. */
+  private plumeClocks = new Map<number, number>();
 
   private smoke: BillboardPool;
   private glow: BillboardPool;
@@ -525,7 +527,7 @@ export class FireSim {
     this.fireballs.push({
       x, y, z,
       t: 0,
-      life: 6 + Math.random() * 6,
+      life: 18 + Math.random() * 18,
       size,
       tryClock: 0.4,
       subs,
@@ -622,6 +624,15 @@ export class FireSim {
 
   get activeFires(): number {
     return this.burns.size;
+  }
+
+  /** Any building actively burning within r of (x, y) — keeps crews and
+   * incidents on scene until the fire is actually out. */
+  hasFireNear(x: number, y: number, r: number): boolean {
+    for (const b of this.burns.values()) {
+      if (Math.hypot(b.x - x, b.y - y) < r) return true;
+    }
+    return false;
   }
 
   // ---- simulation ----------------------------------------------------------
@@ -749,9 +760,21 @@ export class FireSim {
     const wx = Math.cos(this.windDir);
     const wy = Math.sin(this.windDir);
 
+    // Shared sky plumes: burns in the same ~110 m neighborhood pool their
+    // smoke into one column (weighted centroid, summed rate).
+    const plumes = new Map<number, { x: number; y: number; grey: number; top: number; rate: number }>();
+
     // Buildings.
     for (const burn of [...this.burns.values()]) {
-      burn.t += dt;
+      // Mutual radiation: nearby fires feed each other — a cluster burns
+      // hotter, faster, and jumps farther. THE conflagration feedback loop.
+      let heat = 0;
+      for (const other of this.burns.values()) {
+        if (other.bi === burn.bi) continue;
+        const d = Math.hypot(other.x - burn.x, other.y - burn.y);
+        if (d < 90) heat += other.intensity * (1 - d / 90);
+      }
+      burn.t += dt * (1 + Math.min(0.8, heat * 0.15));
       const f = burn.t / burn.dur;
       if (f >= 1) {
         this.burnOut(burn);
@@ -797,8 +820,9 @@ export class FireSim {
       burn.spreadClock -= dt;
       if (burn.spreadClock <= 0 && f > 0.04 && burn.intensity > 0.2 && !burn.suppressed) {
         burn.spreadClock = SPREAD_TICK * (0.7 + Math.random() * 0.6);
-        const reach = 14 + this.windSpeed * 2.2 + burn.size * 0.4;
-        const baseP = (burn.wood ? 0.028 : 0.016) * burn.intensity;
+        const feed = 1 + Math.min(2.5, heat * 0.6);
+        const reach = 14 + this.windSpeed * 2.2 + burn.size * 0.4 + Math.min(12, heat * 3);
+        const baseP = (burn.wood ? 0.028 : 0.016) * burn.intensity * feed;
         this.nearBuildings(burn.x, burn.y, reach, (bi, d) => {
           if (bi === burn.bi || this.status[bi] !== 0) return;
           const dx = (this.cx[bi]! - burn.x) / (d || 1);
@@ -821,7 +845,7 @@ export class FireSim {
       if (burn.intensity * burn.size > 7 && !burn.suppressed) {
         burn.emberClock -= dt;
         if (burn.emberClock <= 0 && this.embers.length < EMBER_MAX) {
-          burn.emberClock = 2.5 + Math.random() * 5 / Math.max(0.3, burn.intensity);
+          burn.emberClock = (2.5 + Math.random() * 5 / Math.max(0.3, burn.intensity)) / (1 + heat * 0.4);
           this.embers.push({
             x: burn.x + (Math.random() - 0.5) * burn.size,
             y: burn.y + (Math.random() - 0.5) * burn.size,
@@ -835,12 +859,18 @@ export class FireSim {
         }
       }
 
-      // Smoke: tall black buoyant plume off the burning cells.
+      // Smoke, two-part: a THICK dark base boiling right off the burning
+      // cells (short-lived, high alpha), while the tall sky column is emitted
+      // by the shared plume cluster below — nearby fires merge into ONE
+      // column instead of forty (fill-rate is the FPV killer).
+      const grey = burn.suppressed
+        ? 0.5 // steam-white while the crew works it
+        : burn.wood
+          ? 0.09 + Math.random() * 0.06
+          : 0.045 + Math.random() * 0.05; // commercial: near-black
       burn.smokeClock -= dt;
       if (burn.smokeClock <= 0 && burn.intensity > 0.02) {
-        const rate = burn.smoky * (0.8 + burn.intensity * 3.4) * (0.6 + burn.size / 9);
-        burn.smokeClock = 1 / rate;
-        // Emit from a random burning cell so the column tracks the blob.
+        burn.smokeClock = 0.55 / Math.max(0.15, burn.intensity * burn.smoky);
         let src: FireCell | null = null;
         for (let tries = 0; tries < 4 && !src; tries++) {
           const c = burn.cells[Math.floor(Math.random() * burn.cells.length)]!;
@@ -849,20 +879,56 @@ export class FireSim {
         const sx = src ? src.x : burn.x;
         const sy = src ? src.y : burn.y;
         const sz = src ? Math.max(src.z + 2, burn.z) : burn.z + 2;
-        const grey = burn.suppressed
-          ? 0.5 // steam-white while the crew works it
-          : burn.wood
-            ? 0.09 + Math.random() * 0.06
-            : 0.045 + Math.random() * 0.05; // commercial: near-black column
         this.spawnPuff(
           sx, sy, sz,
-          wx * this.windSpeed * 0.25, wy * this.windSpeed * 0.25,
-          8 + Math.random() * 7 + burn.size * 0.1,
-          6 + burn.size * 0.55, 3.6 + burn.smoky * 1.6, grey,
-          24 + Math.random() * 20 + burn.smoky * 6,
-          0.68,
+          wx * this.windSpeed * 0.15, wy * this.windSpeed * 0.15,
+          3.5 + Math.random() * 2.5,
+          5 + burn.size * 0.4, 1.8, grey,
+          4 + Math.random() * 3,
+          0.85,
         );
       }
+      // Contribute to the shared plume for this neighborhood.
+      if (burn.intensity > 0.02) {
+        const rate = burn.smoky * (0.8 + burn.intensity * 3.4) * (0.6 + burn.size / 9);
+        const pk = Math.floor(burn.y / 110) * 8192 + Math.floor(burn.x / 110);
+        const acc = plumes.get(pk);
+        if (acc) {
+          acc.x += burn.x * rate;
+          acc.y += burn.y * rate;
+          acc.grey += grey * rate;
+          acc.top = Math.max(acc.top, burn.z);
+          acc.rate += rate;
+        } else {
+          plumes.set(pk, { x: burn.x * rate, y: burn.y * rate, grey: grey * rate, top: burn.z, rate });
+        }
+      }
+    }
+
+    // Emit the merged sky columns: rate is CAPPED per cluster — a whole
+    // burning block makes one column of fewer, larger, more opaque puffs
+    // instead of forty overlapping plumes.
+    for (const [pk, acc] of plumes) {
+      const w = acc.rate;
+      const rate = Math.min(3.2, w);
+      let clock = (this.plumeClocks.get(pk) ?? 0) - dt;
+      if (clock <= 0) {
+        clock = Math.max(clock + 1 / rate, -0.5);
+        const px = acc.x / w + (Math.random() - 0.5) * 8;
+        const py = acc.y / w + (Math.random() - 0.5) * 8;
+        this.spawnPuff(
+          px, py, acc.top + 5,
+          wx * this.windSpeed * 0.3, wy * this.windSpeed * 0.3,
+          9 + Math.random() * 6 + Math.min(6, w * 0.4),
+          12 + Math.sqrt(w) * 9, 4.5, acc.grey / w,
+          26 + Math.random() * 18,
+          0.75,
+        );
+      }
+      this.plumeClocks.set(pk, clock);
+    }
+    for (const pk of this.plumeClocks.keys()) {
+      if (!plumes.has(pk)) this.plumeClocks.delete(pk);
     }
 
     // Fireballs: roil, try to catch fuel, gutter out.
@@ -1004,19 +1070,28 @@ export class FireSim {
         if (c.i < 0.03) continue;
         const cf = 0.75 + 0.25 * Math.sin(this.time * 11 + ci * 2.7 + burn.bi) * Math.sin(this.time * 23 + ci);
         const colH = c.z + (c.top - c.z) * Math.min(1, c.i * 1.15);
-        const s = (3.4 + c.i * (5.5 + burn.height * 0.16)) * cf;
+        const s = (4.2 + c.i * (7 + burn.height * 0.2)) * cf;
         // Base fire at the fuel, tongue partway up the column, tip licking the top.
-        this.glow.push(c.fx, c.fy, c.z + s * 0.35, s, 1, 0.44, 0.1, 0.8 * c.i * cf);
-        this.glow.push(c.fx, c.fy, c.z + (colH - c.z) * 0.55, s * 0.85, 1, 0.3, 0.05, 0.5 * c.i * cf);
-        this.glow.push(c.fx, c.fy, colH, s * 0.6, 1, 0.2, 0.03, 0.3 * c.i * cf);
+        this.glow.push(c.fx, c.fy, c.z + s * 0.35, s, 1, 0.46, 0.11, 0.95 * c.i * cf);
+        this.glow.push(c.fx, c.fy, c.z + (colH - c.z) * 0.55, s * 0.85, 1, 0.32, 0.06, 0.65 * c.i * cf);
+        this.glow.push(c.fx, c.fy, colH, s * 0.6, 1, 0.22, 0.03, 0.45 * c.i * cf);
       }
-      // Heavily involved: one merged body of flame over the roof — the
-      // building reads engulfed, not dotted.
+      // Heavily involved: the whole structure is a mass of flame — every cell
+      // gets a second, larger fire body plus a stacked central inferno.
       if (burn.intensity > 0.45) {
         const k = (burn.intensity - 0.45) / 0.55;
-        const s = burn.size * (0.8 + k * 0.9) * flick;
-        this.glow.push(burn.x, burn.y, burn.z + burn.height * 0.15, s, 1, 0.4, 0.08, 0.55 * k * flick);
-        this.glow.push(burn.x, burn.y, burn.z + s * 0.4, s * 1.3, 1, 0.24, 0.04, 0.3 * k * flick);
+        for (let ci = 0; ci < burn.cells.length; ci++) {
+          const c = burn.cells[ci]!;
+          if (c.i < 0.25) continue;
+          const cf = 0.7 + 0.3 * Math.sin(this.time * 9 + ci * 4.1 + burn.bi * 2);
+          const s = (7 + burn.height * 0.3 + burn.size * 0.35) * cf * k;
+          this.glow.push(c.fx, c.fy, c.z + s * 0.4, s, 1, 0.42, 0.09, 0.7 * k * cf);
+          this.glow.push(c.fx, c.fy, c.z + s * 0.9, s * 0.75, 1, 0.28, 0.05, 0.45 * k * cf);
+        }
+        const s = burn.size * (1 + k * 1.2) * flick;
+        this.glow.push(burn.x, burn.y, burn.z + burn.height * 0.15, s, 1, 0.42, 0.09, 0.7 * k * flick);
+        this.glow.push(burn.x, burn.y, burn.z + s * 0.35, s * 1.25, 1, 0.3, 0.05, 0.5 * k * flick);
+        this.glow.push(burn.x, burn.y, burn.z + s * 0.75, s * 1.5, 1, 0.22, 0.03, 0.3 * k * flick);
       }
     }
     for (const fb of this.fireballs) {
