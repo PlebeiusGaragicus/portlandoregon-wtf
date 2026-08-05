@@ -24,7 +24,9 @@ export type LayerKey =
   | "marklines"
   | "meters"
   | "furniture"
-  | "bikeparking";
+  | "bikeparking"
+  | "calming"
+  | "hydrants";
 
 const RLIS = "https://services2.arcgis.com/McQ0OlIABe29rJJy/arcgis/rest/services";
 // Metro regional GIS (classic MapServer, same query API as portlandmaps).
@@ -235,6 +237,24 @@ export const LAYERS: LayerSpec[] = [
     service: TRANSPORT,
     idSeed: 62,
     namePattern: /^bicycle parking$/i,
+    fields: [],
+    populationChecks: [],
+  },
+  {
+    key: "calming",
+    // Speed bumps/cushions (point features).
+    service: TRANSPORT,
+    idSeed: 55,
+    namePattern: /^traffic calming features$/i,
+    fields: [],
+    populationChecks: [],
+  },
+  {
+    key: "hydrants",
+    // Water Bureau's PUBLIC hydrant layer (never the Fire MDT ops service).
+    service: "https://www.portlandmaps.com/arcgis/rest/services/Public/Utilities_Water/MapServer",
+    idSeed: 0,
+    namePattern: /^hydrants$/i,
     fields: [],
     populationChecks: [],
   },

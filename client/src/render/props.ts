@@ -18,7 +18,7 @@ type Tree = Extract<Prop, { kind: "tree" }>;
 type Sign = Extract<Prop, { kind: "sign" }>;
 type Signal = Extract<Prop, { kind: "signal" }>;
 type Light = Extract<Prop, { kind: "light" }>;
-type Simple = Extract<Prop, { kind: "meter" | "furniture" | "bikerack" }>;
+type Simple = Extract<Prop, { kind: "meter" | "furniture" | "bikerack" | "bump" | "hydrant" }>;
 
 /** All decorative props, tiled into InstancedMeshes per prop family. */
 export function buildProps(map: GameMap, hf?: Heightfield | null): THREE.Group {
@@ -26,13 +26,23 @@ export function buildProps(map: GameMap, hf?: Heightfield | null): THREE.Group {
   const group = new THREE.Group();
   const byTile = new Map<
     number,
-    { trees: Tree[]; signs: Sign[]; signals: Signal[]; lights: Light[]; meters: Simple[]; furniture: Simple[]; racks: Simple[] }
+    {
+      trees: Tree[];
+      signs: Sign[];
+      signals: Signal[];
+      lights: Light[];
+      meters: Simple[];
+      furniture: Simple[];
+      racks: Simple[];
+      bumps: Simple[];
+      hydrants: Simple[];
+    }
   >();
   for (const p of map.props) {
     const key = Math.floor(p.y / TILE) * 4096 + Math.floor(p.x / TILE);
     let bucket = byTile.get(key);
     if (!bucket) {
-      bucket = { trees: [], signs: [], signals: [], lights: [], meters: [], furniture: [], racks: [] };
+      bucket = { trees: [], signs: [], signals: [], lights: [], meters: [], furniture: [], racks: [], bumps: [], hydrants: [] };
       byTile.set(key, bucket);
     }
     if (p.kind === "tree") bucket.trees.push(p);
@@ -41,7 +51,9 @@ export function buildProps(map: GameMap, hf?: Heightfield | null): THREE.Group {
     else if (p.kind === "light") bucket.lights.push(p);
     else if (p.kind === "meter") bucket.meters.push(p);
     else if (p.kind === "furniture") bucket.furniture.push(p);
-    else bucket.racks.push(p);
+    else if (p.kind === "bikerack") bucket.racks.push(p);
+    else if (p.kind === "bump") bucket.bumps.push(p);
+    else bucket.hydrants.push(p);
   }
 
   // Shared geometries/materials across all tiles.
@@ -72,6 +84,13 @@ export function buildProps(map: GameMap, hf?: Heightfield | null): THREE.Group {
   const benchMat = new THREE.MeshLambertMaterial({ color: 0x6a5946, ...flat });
   const rackGeo = new THREE.TorusGeometry(0.4, 0.055, 5, 10, Math.PI);
   const rackMat = new THREE.MeshLambertMaterial({ color: 0x8a919c });
+  // Speed cushion: a squashed asphalt disc lying in the lane.
+  const bumpGeo = new THREE.CylinderGeometry(1.6, 1.75, 0.22, 10);
+  const bumpMat = new THREE.MeshLambertMaterial({ color: 0x4a4744, ...flat });
+  // Hydrant: squat barrel + bonnet, classic red.
+  const hydrantGeo = new THREE.CylinderGeometry(0.14, 0.17, 0.6, 6);
+  const hydrantCapGeo = new THREE.SphereGeometry(0.15, 6, 4);
+  const hydrantMat = new THREE.MeshLambertMaterial({ color: 0xb33327, ...flat });
 
   const m = new THREE.Matrix4();
   const q = new THREE.Quaternion();
@@ -163,6 +182,26 @@ export function buildProps(map: GameMap, hf?: Heightfield | null): THREE.Group {
         racks.setMatrixAt(i, m);
       });
       group.add(racks);
+    }
+    if (bucket.bumps.length) {
+      const bumps = new THREE.InstancedMesh(bumpGeo, bumpMat, bucket.bumps.length);
+      bucket.bumps.forEach((s, i) => {
+        m.makeTranslation(toScene(s.x, s.y, g(s.x, s.y) + 0.32));
+        bumps.setMatrixAt(i, m);
+      });
+      group.add(bumps);
+    }
+    if (bucket.hydrants.length) {
+      const barrels = new THREE.InstancedMesh(hydrantGeo, hydrantMat, bucket.hydrants.length);
+      const caps = new THREE.InstancedMesh(hydrantCapGeo, hydrantMat, bucket.hydrants.length);
+      bucket.hydrants.forEach((s, i) => {
+        const gz = g(s.x, s.y);
+        m.makeTranslation(toScene(s.x, s.y, gz + 0.3));
+        barrels.setMatrixAt(i, m);
+        m.makeTranslation(toScene(s.x, s.y, gz + 0.62));
+        caps.setMatrixAt(i, m);
+      });
+      group.add(barrels, caps);
     }
   }
   return group;

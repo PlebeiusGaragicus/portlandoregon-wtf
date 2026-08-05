@@ -91,7 +91,7 @@
       "nodes": 65433,
       "edges": 84087,
       "buildings": 538519,
-      "props": 387276,
+      "props": 405582,
       "water": 2,
       "parks": 11807,
       "trails": 20158,
@@ -105,7 +105,7 @@
   },
   "bakedMap": {
     "file": "data/maps/portland.json.gz",
-    "kind": "gz-asset (138.9 MB raw, 30.3 MB gz)",
+    "kind": "gz-asset (139.6 MB raw, 30.5 MB gz)",
     "meta": {
       "name": "portland",
       "sourceDate": "2026-08-04",
@@ -119,7 +119,7 @@
     "nodes": 65433,
     "edges": 84087,
     "buildings": 538519,
-    "props": 387276,
+    "props": 405582,
     "water": 2,
     "landmarks": {
       "count": 76,

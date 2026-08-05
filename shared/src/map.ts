@@ -72,7 +72,9 @@ export type Prop =
   | { kind: "light"; x: number; y: number }
   | { kind: "meter"; x: number; y: number }
   | { kind: "furniture"; x: number; y: number }
-  | { kind: "bikerack"; x: number; y: number };
+  | { kind: "bikerack"; x: number; y: number }
+  | { kind: "bump"; x: number; y: number }
+  | { kind: "hydrant"; x: number; y: number };
 
 /** Render-only trail polyline (parks paths, regional corridors). */
 export interface Trail {

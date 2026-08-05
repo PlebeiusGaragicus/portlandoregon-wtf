@@ -1,5 +1,5 @@
 {
-  "resolvedAt": "2026-08-05T05:03:12.230Z",
+  "resolvedAt": "2026-08-05T05:23:56.015Z",
   "layers": {
     "streets": {
       "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/68",
@@ -140,18 +140,32 @@
       "name": "Bicycle Parking",
       "maxRecordCount": 200,
       "citywideCount": 8337
+    },
+    "calming": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/55",
+      "id": 55,
+      "name": "Traffic Calming Features",
+      "maxRecordCount": 200,
+      "citywideCount": 3373
+    },
+    "hydrants": {
+      "url": "https://www.portlandmaps.com/arcgis/rest/services/Public/Utilities_Water/MapServer/0",
+      "id": 0,
+      "name": "Hydrants",
+      "maxRecordCount": 2000,
+      "citywideCount": 14962
     }
   },
   "trees": {
     "status": "resolved",
     "candidates": [
       {
-        "title": "Parks Tree Inventory",
-        "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/220"
-      },
-      {
         "title": "Vegetation",
         "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/31"
+      },
+      {
+        "title": "Parks Tree Inventory",
+        "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/220"
       },
       {
         "title": "Heritage Trees",

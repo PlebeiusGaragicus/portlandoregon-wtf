@@ -104,8 +104,10 @@ tools/map-extract`, then re-run build-map.
 **DONE**: sidewalks (`/77`, 52,692 baked), pavement marking areas (`/200`,
 crosswalks/stop bars, colored by the AreaStyle domain), pavement marking
 lines (`/201`, 65k yellow centerlines), parking meters (`/58`), street
-furniture (`/1398`), bicycle parking (`/62`) — all in the zoom-gated
-`detail` group / props.
+furniture (`/1398`), bicycle parking (`/62`), traffic-calming speed cushions (`/55`, 3,373)
+and Water Bureau hydrants (`Public/Utilities_Water/0`, 14,933 — the public
+layer, never the Fire MDT ops service) — all in the zoom-gated `detail`
+group / props.
 
 Still available: curbs (`/74`, 118k — subtle at our scale), bike network
 (`/75`) and speed limits (`/225`) as gameplay attributes, drinking

@@ -735,10 +735,12 @@ function transformProps(rect: Rect): Prop[] {
   }
 
   // Street-level point dressing: same shape, three more kinds.
-  const simplePoints: { key: string; kind: "meter" | "furniture" | "bikerack" }[] = [
+  const simplePoints: { key: string; kind: "meter" | "furniture" | "bikerack" | "bump" | "hydrant" }[] = [
     { key: "meters", kind: "meter" },
     { key: "furniture", kind: "furniture" },
     { key: "bikeparking", kind: "bikerack" },
+    { key: "calming", kind: "bump" },
+    { key: "hydrants", kind: "hydrant" },
   ];
   for (const { key, kind } of simplePoints) {
     const raw = readRaw(key);
