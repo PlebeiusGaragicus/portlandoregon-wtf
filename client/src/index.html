@@ -156,6 +156,27 @@
         transition: opacity 0.4s ease;
       }
       #loading.done { opacity: 0; pointer-events: none; }
+      /* Offline state: the spinner would otherwise keep turning forever behind
+         an error nobody can act on. */
+      #loading.offline .spin { display: none; }
+      #loading.offline #loading-status { color: #e0a044; }
+      #offline { display: none; flex-direction: column; align-items: center; gap: 0.9rem; max-width: 30rem; text-align: center; }
+      #loading.offline #offline { display: flex; }
+      #offline p { margin: 0; color: #9aa4b5; font-size: 0.9rem; line-height: 1.5; }
+      #offline button {
+        font: inherit;
+        font-size: 0.9rem;
+        padding: 0.5rem 1.2rem;
+        border-radius: 8px;
+        border: 1px solid #3a4150;
+        background: #222936;
+        color: #e6e6e6;
+        cursor: pointer;
+      }
+      #offline button:hover { background: #2c3444; }
+      #offline button:disabled { opacity: 0.5; cursor: default; }
+      #offline button:focus-visible { outline: 2px solid #4f7cff; outline-offset: 2px; }
+      #retry-note { font-variant-numeric: tabular-nums; min-height: 1.2em; }
       #loading .spin {
         width: 3rem;
         height: 3rem;
@@ -177,6 +198,11 @@
       <div class="spin"></div>
       <h1>Battle Juice</h1>
       <p id="loading-status">contacting server…</p>
+      <div id="offline">
+        <p id="offline-detail"></p>
+        <button id="retry" type="button">Try again</button>
+        <p id="retry-note"></p>
+      </div>
     </div>
     <script type="module" src="./main.ts"></script>
   </body>
