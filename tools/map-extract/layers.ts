@@ -18,7 +18,13 @@ export type LayerKey =
   | "rails"
   | "railyards"
   | "maxlines"
-  | "maxstops";
+  | "maxstops"
+  | "sidewalks"
+  | "markareas"
+  | "marklines"
+  | "meters"
+  | "furniture"
+  | "bikeparking";
 
 const RLIS = "https://services2.arcgis.com/McQ0OlIABe29rJJy/arcgis/rest/services";
 // Metro regional GIS (classic MapServer, same query API as portlandmaps).
@@ -179,6 +185,58 @@ export const LAYERS: LayerSpec[] = [
     fields: ["STATUS", "TYPE", "LINE", "STATION"],
     populationChecks: ["TYPE", "STATION"],
     where: () => `STATUS = 'Existing'`,
+  },
+  // Street-level dressing (PBOT asset layers; Portland city limits only).
+  {
+    key: "sidewalks",
+    service: TRANSPORT,
+    idSeed: 77,
+    namePattern: /^sidewalks$/i,
+    fields: [],
+    populationChecks: [],
+  },
+  {
+    key: "markareas",
+    // Painted pavement shapes: crosswalk ladders, stop bars, islands.
+    // AreaStyle domain gives the paint color (WF white / YF yellow).
+    service: TRANSPORT,
+    idSeed: 200,
+    namePattern: /^pavement marking area$/i,
+    fields: ["AreaStyle"],
+    populationChecks: [],
+  },
+  {
+    key: "marklines",
+    // Lane centerlines (LineStyle domain: all yellow variants).
+    service: TRANSPORT,
+    idSeed: 201,
+    namePattern: /^pavement marking lines$/i,
+    fields: ["LineStyle"],
+    populationChecks: [],
+  },
+  {
+    key: "meters",
+    service: TRANSPORT,
+    idSeed: 58,
+    namePattern: /^parking meters$/i,
+    fields: [],
+    populationChecks: [],
+  },
+  {
+    key: "furniture",
+    service: TRANSPORT,
+    idSeed: 1398,
+    namePattern: /^street furniture$/i,
+    fields: [],
+    populationChecks: [],
+  },
+  {
+    key: "bikeparking",
+    service: TRANSPORT,
+    idSeed: 62,
+    namePattern: /^bicycle parking$/i,
+    fields: [],
+    populationChecks: [],
   },
 ];
 

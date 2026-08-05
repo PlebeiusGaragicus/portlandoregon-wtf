@@ -18,23 +18,30 @@ type Tree = Extract<Prop, { kind: "tree" }>;
 type Sign = Extract<Prop, { kind: "sign" }>;
 type Signal = Extract<Prop, { kind: "signal" }>;
 type Light = Extract<Prop, { kind: "light" }>;
+type Simple = Extract<Prop, { kind: "meter" | "furniture" | "bikerack" }>;
 
 /** All decorative props, tiled into InstancedMeshes per prop family. */
 export function buildProps(map: GameMap, hf?: Heightfield | null): THREE.Group {
   const g = hf ? (x: number, y: number): number => heightAt(hf, x, y) : (): number => 0;
   const group = new THREE.Group();
-  const byTile = new Map<number, { trees: Tree[]; signs: Sign[]; signals: Signal[]; lights: Light[] }>();
+  const byTile = new Map<
+    number,
+    { trees: Tree[]; signs: Sign[]; signals: Signal[]; lights: Light[]; meters: Simple[]; furniture: Simple[]; racks: Simple[] }
+  >();
   for (const p of map.props) {
     const key = Math.floor(p.y / TILE) * 4096 + Math.floor(p.x / TILE);
     let bucket = byTile.get(key);
     if (!bucket) {
-      bucket = { trees: [], signs: [], signals: [], lights: [] };
+      bucket = { trees: [], signs: [], signals: [], lights: [], meters: [], furniture: [], racks: [] };
       byTile.set(key, bucket);
     }
     if (p.kind === "tree") bucket.trees.push(p);
     else if (p.kind === "sign") bucket.signs.push(p);
     else if (p.kind === "signal") bucket.signals.push(p);
-    else bucket.lights.push(p);
+    else if (p.kind === "light") bucket.lights.push(p);
+    else if (p.kind === "meter") bucket.meters.push(p);
+    else if (p.kind === "furniture") bucket.furniture.push(p);
+    else bucket.racks.push(p);
   }
 
   // Shared geometries/materials across all tiles.
@@ -56,6 +63,15 @@ export function buildProps(map: GameMap, hf?: Heightfield | null): THREE.Group {
   const lightHeadGeo = new THREE.SphereGeometry(0.45, 6, 5);
   const lightPoleMat = new THREE.MeshLambertMaterial({ color: 0x555b66 });
   const lightHeadMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0 }); // warm glow, unlit
+  // Street-level dressing points (real PBOT assets, stylized shapes).
+  const meterGeo = new THREE.CylinderGeometry(0.05, 0.05, 1.3, 5);
+  const meterHeadGeo = new THREE.BoxGeometry(0.24, 0.32, 0.12);
+  const meterMat = new THREE.MeshLambertMaterial({ color: 0x7b828d });
+  const meterHeadMat = new THREE.MeshLambertMaterial({ color: 0x3d434d, ...flat });
+  const benchGeo = new THREE.BoxGeometry(1.5, 0.45, 0.55);
+  const benchMat = new THREE.MeshLambertMaterial({ color: 0x6a5946, ...flat });
+  const rackGeo = new THREE.TorusGeometry(0.4, 0.055, 5, 10, Math.PI);
+  const rackMat = new THREE.MeshLambertMaterial({ color: 0x8a919c });
 
   const m = new THREE.Matrix4();
   const q = new THREE.Quaternion();
@@ -116,6 +132,37 @@ export function buildProps(map: GameMap, hf?: Heightfield | null): THREE.Group {
         heads.setMatrixAt(i, m);
       });
       group.add(poles, heads);
+    }
+    if (bucket.meters.length) {
+      const poles = new THREE.InstancedMesh(meterGeo, meterMat, bucket.meters.length);
+      const heads = new THREE.InstancedMesh(meterHeadGeo, meterHeadMat, bucket.meters.length);
+      bucket.meters.forEach((s, i) => {
+        const gz = g(s.x, s.y);
+        m.makeTranslation(toScene(s.x, s.y, gz + 0.65));
+        poles.setMatrixAt(i, m);
+        q.setFromAxisAngle(up, jitter(i) * Math.PI);
+        m.compose(toScene(s.x, s.y, gz + 1.4), q, one);
+        heads.setMatrixAt(i, m);
+      });
+      group.add(poles, heads);
+    }
+    if (bucket.furniture.length) {
+      const benches = new THREE.InstancedMesh(benchGeo, benchMat, bucket.furniture.length);
+      bucket.furniture.forEach((s, i) => {
+        q.setFromAxisAngle(up, jitter(i) * Math.PI);
+        m.compose(toScene(s.x, s.y, g(s.x, s.y) + 0.25), q, one);
+        benches.setMatrixAt(i, m);
+      });
+      group.add(benches);
+    }
+    if (bucket.racks.length) {
+      const racks = new THREE.InstancedMesh(rackGeo, rackMat, bucket.racks.length);
+      bucket.racks.forEach((s, i) => {
+        q.setFromAxisAngle(up, jitter(i) * Math.PI);
+        m.compose(toScene(s.x, s.y, g(s.x, s.y) + 0.42), q, one);
+        racks.setMatrixAt(i, m);
+      });
+      group.add(racks);
     }
   }
   return group;

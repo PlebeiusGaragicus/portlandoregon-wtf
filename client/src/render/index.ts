@@ -176,6 +176,7 @@ export class Renderer {
     const vh = this.rig.viewHeight;
     this.world.setBlend((vh - BLEND_START) / (BLEND_END - BLEND_START));
     this.props.visible = vh < PROPS_VIEW;
+    this.world.detail.visible = vh < PROPS_VIEW;
     this.landmarks.setViewScale(vh);
 
     this.applyCamera();

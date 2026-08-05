@@ -69,7 +69,10 @@ export type Prop =
   | { kind: "tree"; x: number; y: number; size: 1 | 2 | 3 }
   | { kind: "sign"; x: number; y: number; rot: number; sign: "stop" | "street-name" | "other" }
   | { kind: "signal"; x: number; y: number }
-  | { kind: "light"; x: number; y: number };
+  | { kind: "light"; x: number; y: number }
+  | { kind: "meter"; x: number; y: number }
+  | { kind: "furniture"; x: number; y: number }
+  | { kind: "bikerack"; x: number; y: number };
 
 /** Render-only trail polyline (parks paths, regional corridors). */
 export interface Trail {
@@ -92,6 +95,20 @@ export interface RailStop {
   y: number;
   kind: "max" | "streetcar" | "wes";
   name: string;
+}
+
+/** Painted pavement area (crosswalk ladder, stop bar, island). */
+export interface MarkingArea {
+  id: number;
+  rings: [number, number][][];
+  style: "white" | "yellow";
+}
+
+/** Painted lane line. */
+export interface MarkingLine {
+  id: number;
+  polyline: [number, number][];
+  style: "white" | "yellow";
 }
 
 /** Named civic point of interest, drawn with a label. */
@@ -133,4 +150,10 @@ export interface GameMap {
   railYards?: WaterBody[];
   /** Rail transit stops (render-only). */
   railStops?: RailStop[];
+  /** Sidewalk polygons (render-only; Portland city limits). */
+  sidewalks?: WaterBody[];
+  /** Painted pavement shapes — crosswalks, stop bars, islands (render-only). */
+  markingAreas?: MarkingArea[];
+  /** Painted lane centerlines (render-only). */
+  markingLines?: MarkingLine[];
 }

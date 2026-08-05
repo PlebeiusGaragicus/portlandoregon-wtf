@@ -91,18 +91,21 @@
       "nodes": 65433,
       "edges": 84087,
       "buildings": 538519,
-      "props": 375775,
+      "props": 387276,
       "water": 2,
       "parks": 11807,
       "trails": 20158,
       "rails": 3181,
       "railYards": 22,
-      "railStops": 159
+      "railStops": 159,
+      "sidewalks": 52692,
+      "markingAreas": 3394,
+      "markingLines": 65068
     }
   },
   "bakedMap": {
     "file": "data/maps/portland.json.gz",
-    "kind": "gz-asset (125.9 MB raw, 27.4 MB gz)",
+    "kind": "gz-asset (138.9 MB raw, 30.3 MB gz)",
     "meta": {
       "name": "portland",
       "sourceDate": "2026-08-04",
@@ -116,7 +119,7 @@
     "nodes": 65433,
     "edges": 84087,
     "buildings": 538519,
-    "props": 375775,
+    "props": 387276,
     "water": 2,
     "landmarks": {
       "count": 76,

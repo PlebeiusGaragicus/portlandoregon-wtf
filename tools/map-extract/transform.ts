@@ -7,6 +7,8 @@ import { join } from "node:path";
 import type {
   Building,
   GameMap,
+  MarkingArea,
+  MarkingLine,
   Prop,
   RailLine,
   RailStop,
@@ -460,7 +462,7 @@ function transformBuildings(
   return { list, heightUnit, cells };
 }
 
-function transformPolys(key: "water" | "parks" | "railyards", rect: Rect): WaterBody[] {
+function transformPolys(key: "water" | "parks" | "railyards" | "sidewalks", rect: Rect): WaterBody[] {
   const water = readRaw(key);
   if (!water) return [];
   const bodies: WaterBody[] = [];
@@ -595,6 +597,67 @@ function transformRailStops(rect: Rect): RailStop[] {
   return stops;
 }
 
+/** Painted pavement shapes/lines, fine simplification (they're small). */
+function transformMarkings(rect: Rect): { areas: MarkingArea[]; lines: MarkingLine[] } {
+  const areas: MarkingArea[] = [];
+  const lines: MarkingLine[] = [];
+  const areaRaw = readRaw("markareas");
+  if (areaRaw) {
+    for (const f of areaRaw.features) {
+      if (!f.geometry) continue;
+      const style = String(f.properties["AreaStyle"] ?? "WF") === "YF" ? "yellow" : "white";
+      const polys: [number, number][][][] =
+        f.geometry.type === "Polygon"
+          ? [f.geometry.coordinates as [number, number][][]]
+          : (f.geometry.coordinates as [number, number][][][]);
+      for (const rings of polys) {
+        const clipped = rings
+          .map((ring) => {
+            const local = ring.map(([lon, lat]) => toLocal(lon, lat));
+            return simplify(clipRingToRect(local, rect), 0.3).map(
+              ([x, y]): [number, number] => [round1(x), round1(y)],
+            );
+          })
+          .filter((ring) => ring.length >= 3);
+        if (clipped.length === 0 || clipped[0]!.length < 3) continue;
+        const outer = ensureWinding(clipped[0]!, true);
+        const holes = clipped.slice(1).map((r) => ensureWinding(r, false));
+        areas.push({ id: areas.length, rings: [outer, ...holes], style });
+      }
+    }
+  }
+  const lineRaw = readRaw("marklines");
+  if (lineRaw) {
+    for (const f of lineRaw.features) {
+      if (!f.geometry) continue;
+      // LineStyle domain is exclusively yellow variants (centerlines).
+      const style = "yellow" as const;
+      const polys: [number, number][][] =
+        f.geometry.type === "LineString"
+          ? [f.geometry.coordinates as [number, number][]]
+          : (f.geometry.coordinates as [number, number][][]);
+      for (const line of polys) {
+        let run: Pt[] = [];
+        const flush = (): void => {
+          if (run.length >= 2) {
+            const simple = simplify(run, 0.5).map(([x, y]): [number, number] => [round1(x), round1(y)]);
+            if (simple.length >= 2) lines.push({ id: lines.length, polyline: simple, style });
+          }
+          run = [];
+        };
+        for (const [lon, lat] of line) {
+          const p = toLocal(lon, lat);
+          if (inRect(p, rect)) run.push(p);
+          else flush();
+        }
+        flush();
+      }
+    }
+  }
+  console.log(`  markings: ${areas.length} areas, ${lines.length} lines in play area`);
+  return { areas, lines };
+}
+
 // Candidate size fields for street trees (exact schema discovered at runtime).
 const TREE_SIZE_FIELDS = ["DBH", "DIAMETER", "TREE_DBH", "TRUNKDIAM", "DIAMETER_BREAST_HEIGHT"];
 
@@ -671,6 +734,25 @@ function transformProps(rect: Rect): Prop[] {
     console.log(`  lights: ${count} in play area`);
   }
 
+  // Street-level point dressing: same shape, three more kinds.
+  const simplePoints: { key: string; kind: "meter" | "furniture" | "bikerack" }[] = [
+    { key: "meters", kind: "meter" },
+    { key: "furniture", kind: "furniture" },
+    { key: "bikeparking", kind: "bikerack" },
+  ];
+  for (const { key, kind } of simplePoints) {
+    const raw = readRaw(key);
+    if (!raw) continue;
+    let count = 0;
+    for (const f of raw.features) {
+      const p = pointOf(f);
+      if (!p) continue;
+      props.push({ kind, x: round1(p[0]), y: round1(p[1]) });
+      count++;
+    }
+    console.log(`  ${key}: ${count} in play area`);
+  }
+
   return props;
 }
 
@@ -702,6 +784,8 @@ async function main(): Promise<void> {
   const rails = transformRails(rect);
   const railYards = transformPolys("railyards", rect);
   const railStops = transformRailStops(rect);
+  const sidewalks = transformPolys("sidewalks", rect);
+  const markings = transformMarkings(rect);
 
   const map: GameMap = {
     meta: {
@@ -722,6 +806,9 @@ async function main(): Promise<void> {
     rails,
     railYards,
     railStops,
+    sidewalks,
+    markingAreas: markings.areas,
+    markingLines: markings.lines,
   };
 
   mkdirSync(processedDir(), { recursive: true });
@@ -749,6 +836,9 @@ async function main(): Promise<void> {
       rails: rails.length,
       railYards: railYards.length,
       railStops: railStops.length,
+      sidewalks: sidewalks.length,
+      markingAreas: markings.areas.length,
+      markingLines: markings.lines.length,
     },
   };
   writeFileSync(MANIFEST_FILE, JSON.stringify(manifest, null, 2) + "\n");

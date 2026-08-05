@@ -30,7 +30,12 @@ const TRAIL_COLOR = 0x6b5f4c; // dirt path
 const STREET_COLOR = 0x3a4150; // asphalt
 const WATER_Y = 0.1; // between ground and streets
 const PARK_Y = 0.18;
+const SIDEWALK_COLOR = 0x555c66; // concrete, lighter than asphalt
+const SIDEWALK_Y = 0.22;
 const STREET_Y = 0.28; // lift above ground to avoid z-fighting
+const MARK_WHITE = 0xb9c0c8; // painted pavement markings
+const MARK_YELLOW = 0xc2a53a;
+const MARK_Y = 0.33;
 const TRAIL_Y = 0.36;
 
 // Palette variants per normalized building use — true-to-life variety:
@@ -87,6 +92,9 @@ const TILE = 1000; // meters
 
 export interface WorldLayers {
   group: THREE.Group;
+  /** Street-level dressing (sidewalks, pavement paint) — hidden when zoomed
+   * out, like props (subpixel there anyway). */
+  detail: THREE.Group;
   /** Zoom-driven cosmetics (street tint brightens from altitude). */
   setBlend(f: number): void;
 }
@@ -132,10 +140,36 @@ export function buildWorld(map: GameMap, hf?: Heightfield | null): WorldLayers {
   for (const m of map.landmarks ?? []) for (const id of m.buildingIds ?? []) landmarkBuildings.set(id, m.kind);
   for (const mesh of buildBuildingTiles(map.buildings, landmarkBuildings, ground)) group.add(mesh);
 
+  // Street-level dressing, in its own zoom-gated group.
+  const detail = new THREE.Group();
+  group.add(detail);
+  for (const mesh of drapedPolyTiles(
+    (map.sidewalks ?? []).map((s) => ({ rings: s.rings, color: SIDEWALK_COLOR })),
+    SIDEWALK_Y,
+    ground,
+  )) detail.add(mesh);
+  for (const mesh of drapedPolyTiles(
+    (map.markingAreas ?? []).map((a) => ({ rings: a.rings, color: a.style === "yellow" ? MARK_YELLOW : MARK_WHITE })),
+    MARK_Y,
+    ground,
+  )) detail.add(mesh);
+  {
+    const laneTiles = new Map<number, Soup>();
+    for (const l of map.markingLines ?? []) {
+      const [mx, my] = l.polyline[Math.floor(l.polyline.length / 2)]!;
+      let soup = laneTiles.get(tileKey(mx, my));
+      if (!soup) laneTiles.set(tileKey(mx, my), (soup = { pos: [], nrm: [] }));
+      pushRibbon(soup.pos, l.polyline, 0.35, MARK_Y, ground);
+    }
+    const laneMat = new THREE.MeshLambertMaterial({ color: MARK_YELLOW, side: THREE.DoubleSide });
+    for (const soup of laneTiles.values()) detail.add(soupMesh(soup, laneMat));
+  }
+
   const streetNear = new THREE.Color(STREET_COLOR);
   const streetFar = new THREE.Color(0x5a6478); // brighter so the grid reads from altitude
   return {
     group,
+    detail,
     setBlend(f: number): void {
       const t = Math.min(1, Math.max(0, f));
       streetMat.color.lerpColors(streetNear, streetFar, t);
@@ -272,6 +306,69 @@ function buildTerrainTiles(map: GameMap, hf: Heightfield): THREE.Mesh[] {
       geo.setIndex(index);
       meshes.push(new THREE.Mesh(geo, mat));
     }
+  }
+  return meshes;
+}
+
+const DRAPE_EDGE = 25; // m — subdivide small-poly triangles down to this
+const DRAPE_N_CAP = 16;
+
+/**
+ * Small polygons (sidewalk strips, painted markings) draped onto terrain and
+ * bucketed into 1 km tile meshes, one material per color. Earcut is safe
+ * here — these are compact, clean shapes, unlike the clipped river rings.
+ */
+function drapedPolyTiles(
+  bodies: { rings: [number, number][][]; color: number }[],
+  yOff: number,
+  ground: GroundFn,
+): THREE.Mesh[] {
+  // color -> tile -> soup
+  const byColor = new Map<number, Map<number, Soup>>();
+  for (const body of bodies) {
+    const outer = body.rings[0];
+    if (!outer || outer.length < 3) continue;
+    let tiles = byColor.get(body.color);
+    if (!tiles) byColor.set(body.color, (tiles = new Map()));
+    const key = tileKey(outer[0]![0], outer[0]![1]);
+    let soup = tiles.get(key);
+    if (!soup) tiles.set(key, (soup = { pos: [], nrm: [] }));
+
+    const outerV = outer.map(([x, y]) => new THREE.Vector2(x, y));
+    const holesV = body.rings.slice(1).filter((r) => r.length >= 3).map((r) => r.map(([x, y]) => new THREE.Vector2(x, y)));
+    const flat: THREE.Vector2[] = outerV.concat(...holesV);
+    for (const tri of THREE.ShapeUtils.triangulateShape(outerV, holesV)) {
+      const a = flat[tri[0]!];
+      const b = flat[tri[1]!];
+      const c = flat[tri[2]!];
+      if (!a || !b || !c) continue;
+      const maxEdge = Math.max(a.distanceTo(b), b.distanceTo(c), c.distanceTo(a));
+      const n = Math.max(1, Math.min(DRAPE_N_CAP, Math.ceil(maxEdge / DRAPE_EDGE)));
+      const P = (i: number, j: number): [number, number] => [
+        a.x + ((b.x - a.x) * i + (c.x - a.x) * j) / n,
+        a.y + ((b.y - a.y) * i + (c.y - a.y) * j) / n,
+      ];
+      const emit = (p: [number, number]): void => {
+        soup!.pos.push(p[0], yOff + ground(p[0], p[1]), -p[1]);
+      };
+      for (let i = 0; i < n; i++) {
+        for (let j = 0; j < n - i; j++) {
+          emit(P(i, j));
+          emit(P(i + 1, j));
+          emit(P(i, j + 1));
+          if (j < n - i - 1) {
+            emit(P(i + 1, j));
+            emit(P(i + 1, j + 1));
+            emit(P(i, j + 1));
+          }
+        }
+      }
+    }
+  }
+  const meshes: THREE.Mesh[] = [];
+  for (const [color, tiles] of byColor) {
+    const mat = new THREE.MeshLambertMaterial({ color, side: THREE.DoubleSide });
+    for (const soup of tiles.values()) meshes.push(soupMesh(soup, mat));
   }
   return meshes;
 }

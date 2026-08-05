@@ -1,5 +1,5 @@
 {
-  "resolvedAt": "2026-08-05T03:51:16.002Z",
+  "resolvedAt": "2026-08-05T05:03:12.230Z",
   "layers": {
     "streets": {
       "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/68",
@@ -98,6 +98,48 @@
       "name": "Light rail, street car and WES stops",
       "maxRecordCount": 1000,
       "citywideCount": 189
+    },
+    "sidewalks": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/77",
+      "id": 77,
+      "name": "Sidewalks",
+      "maxRecordCount": 200,
+      "citywideCount": 51397
+    },
+    "markareas": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/200",
+      "id": 200,
+      "name": "Pavement Marking Area",
+      "maxRecordCount": 200,
+      "citywideCount": 3363
+    },
+    "marklines": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/201",
+      "id": 201,
+      "name": "Pavement Marking Lines",
+      "maxRecordCount": 200,
+      "citywideCount": 64498
+    },
+    "meters": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/58",
+      "id": 58,
+      "name": "Parking Meters",
+      "maxRecordCount": 200,
+      "citywideCount": 2135
+    },
+    "furniture": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/1398",
+      "id": 1398,
+      "name": "Street Furniture",
+      "maxRecordCount": 200,
+      "citywideCount": 1029
+    },
+    "bikeparking": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/62",
+      "id": 62,
+      "name": "Bicycle Parking",
+      "maxRecordCount": 200,
+      "citywideCount": 8337
     }
   },
   "trees": {

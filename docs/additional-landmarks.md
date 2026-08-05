@@ -101,11 +101,16 @@ tools/map-extract`, then re-run build-map.
 
 ### Street-level dressing (cheap Pattern A adds)
 
-Sidewalks (`/77`), curbs (`/74`), bike network (`/75`), speed limits
-(`/225`), parking meters (`/58`), street furniture (`/1398`), drinking
+**DONE**: sidewalks (`/77`, 52,692 baked), pavement marking areas (`/200`,
+crosswalks/stop bars, colored by the AreaStyle domain), pavement marking
+lines (`/201`, 65k yellow centerlines), parking meters (`/58`), street
+furniture (`/1398`), bicycle parking (`/62`) — all in the zoom-gated
+`detail` group / props.
+
+Still available: curbs (`/74`, 118k — subtle at our scale), bike network
+(`/75`) and speed limits (`/225`) as gameplay attributes, drinking
 fountains (`COP_OpenData_Utilities/84`), heritage trees
-(`COP_OpenData_Environment/26`, 463) — all on the COP Transportation /
-Environment / Utilities services.
+(`COP_OpenData_Environment/26`, 463).
 
 ### Curiosities (no gameplay use, worth knowing)
 
