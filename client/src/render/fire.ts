@@ -134,9 +134,9 @@ interface Tree {
  * with normal blending the body is essentially opaque — fire you cannot see
  * through, unlike the additive glow halos.
  */
-function flameTexture(size = 128): THREE.CanvasTexture {
+function flameAtlas(): THREE.CanvasTexture {
   const cv = document.createElement("canvas");
-  cv.width = cv.height = size;
+  cv.width = cv.height = 256;
   const ctx = cv.getContext("2d")!;
   ctx.globalCompositeOperation = "lighter";
   const blob = (x: number, y: number, r: number, rgb: string, a: number) => {
@@ -149,31 +149,37 @@ function flameTexture(size = 128): THREE.CanvasTexture {
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
   };
-  const S = size / 128;
-  // Body: turbulent orange-red mass, wide at the base, narrowing to the tip.
-  for (let i = 0; i < 85; i++) {
-    const t = Math.pow(Math.random(), 0.85); // bias toward the base
-    const y = (118 - t * 102) * S;
-    const w = 30 * (1 - t * 0.72) * S;
-    const x = 64 * S + (Math.random() - 0.5) * 2 * w;
-    const r = (15 * (1 - t * 0.55) + 4 + Math.random() * 5) * S;
-    blob(x, y, r, `255,${Math.round(70 + (1 - t) * 80)},18`, 0.5);
-  }
-  // Inner body: bright orange near the axis.
-  for (let i = 0; i < 34; i++) {
-    const t = Math.random() * 0.72;
-    const y = (116 - t * 95) * S;
-    const x = 64 * S + (Math.random() - 0.5) * 26 * (1 - t * 0.6) * S;
-    const r = (11 * (1 - t * 0.45) + 3) * S;
-    blob(x, y, r, "255,176,52", 0.6);
-  }
-  // Core: white-yellow heart low in the flame.
-  for (let i = 0; i < 16; i++) {
-    const t = Math.random() * 0.4;
-    const y = (112 - t * 80) * S;
-    const x = 64 * S + (Math.random() - 0.5) * 15 * S;
-    const r = (8 * (1 - t * 0.4) + 2.5) * S;
-    blob(x, y, r, "255,242,190", 0.75);
+  // Four DIFFERENT flames in a 2x2 grid — cells pick one per instance so a
+  // burning block isn't the same sprite copy-pasted. Colors sit between the
+  // old ghost-glow and the cartoon sticker: deep red body, orange heart,
+  // only a small warm core.
+  for (let cell = 0; cell < 4; cell++) {
+    const ox = (cell & 1) * 128;
+    const oy = (cell >> 1) * 128;
+    const lean = (Math.random() - 0.5) * 22; // each flame leans differently
+    const axis = (t: number) => ox + 64 + lean * t;
+    for (let i = 0; i < 80; i++) {
+      const t = Math.pow(Math.random(), 0.85);
+      const y = oy + 118 - t * 100;
+      const w = 29 * (1 - t * 0.7);
+      const x = axis(t) + (Math.random() - 0.5) * 2 * w;
+      const r = 14 * (1 - t * 0.55) + 4 + Math.random() * 5;
+      blob(x, y, r, `255,${Math.round(52 + (1 - t) * 70)},14`, 0.42);
+    }
+    for (let i = 0; i < 30; i++) {
+      const t = Math.random() * 0.7;
+      const y = oy + 116 - t * 92;
+      const x = axis(t) + (Math.random() - 0.5) * 24 * (1 - t * 0.6);
+      const r = 10 * (1 - t * 0.45) + 3;
+      blob(x, y, r, "255,148,42", 0.5);
+    }
+    for (let i = 0; i < 10; i++) {
+      const t = Math.random() * 0.32;
+      const y = oy + 112 - t * 70;
+      const x = axis(t) + (Math.random() - 0.5) * 12;
+      const r = 6.5 * (1 - t * 0.4) + 2;
+      blob(x, y, r, "255,214,138", 0.6);
+    }
   }
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -183,9 +189,19 @@ function flameTexture(size = 128): THREE.CanvasTexture {
 // The renderer uses a logarithmic depth buffer: raw ShaderMaterials MUST
 // include three's logdepthbuf chunks or their fragments lose every depth
 // test and silently vanish.
-function billboardMaterial(tex: THREE.Texture, blending: THREE.Blending, useMapColor = false): THREE.ShaderMaterial {
+function billboardMaterial(
+  tex: THREE.Texture,
+  blending: THREE.Blending,
+  useMapColor = false,
+  uvScale = 1,
+  worldFixed = false,
+): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     uniforms: { map: { value: tex } },
+    // worldFixed: the quad stands in the WORLD (vertical, yawed by iRot)
+    // instead of turning to face the camera — crossed pairs of these read as
+    // a 3D flame when you orbit, not a Doom sprite.
+    side: worldFixed ? THREE.DoubleSide : THREE.FrontSide,
     vertexShader: `
       #include <common>
       #include <logdepthbuf_pars_vertex>
@@ -193,15 +209,20 @@ function billboardMaterial(tex: THREE.Texture, blending: THREE.Blending, useMapC
       attribute float iSize;
       attribute vec3 iColor;
       attribute float iAlpha;
+      attribute vec2 iUv;
+      attribute float iRot;
       varying vec2 vUv;
       varying vec3 vC;
       varying float vA;
       void main() {
-        vUv = uv;
+        vUv = uv * ${uvScale.toFixed(4)} + iUv;
         vC = iColor;
         vA = iAlpha;
-        vec4 mv = modelViewMatrix * vec4(iPos, 1.0);
-        mv.xy += position.xy * iSize;
+        ${worldFixed
+          ? `vec3 off = vec3(position.x * cos(iRot), position.y, position.x * sin(iRot)) * iSize;
+        vec4 mv = modelViewMatrix * vec4(iPos + off, 1.0);`
+          : `vec4 mv = modelViewMatrix * vec4(iPos, 1.0);
+        mv.xy += position.xy * iSize;`}
         gl_Position = projectionMatrix * mv;
         #include <logdepthbuf_vertex>
       }`,
@@ -216,7 +237,7 @@ function billboardMaterial(tex: THREE.Texture, blending: THREE.Blending, useMapC
         #include <logdepthbuf_fragment>
         vec4 t = texture2D(map, vUv);
         ${useMapColor
-          ? "gl_FragColor = vec4(t.rgb * vC, vA * min(1.0, t.a * 1.35));"
+          ? "gl_FragColor = vec4(t.rgb * vC, vA * min(1.0, t.a * 1.15));"
           : "gl_FragColor = vec4(vC, vA * t.a);"}
         if (gl_FragColor.a < 0.003) discard;
       }`,
@@ -233,10 +254,20 @@ class BillboardPool {
   private size: THREE.InstancedBufferAttribute;
   private color: THREE.InstancedBufferAttribute;
   private alpha: THREE.InstancedBufferAttribute;
+  private iuv: THREE.InstancedBufferAttribute;
+  private irot: THREE.InstancedBufferAttribute;
   private geo: THREE.InstancedBufferGeometry;
   private n = 0;
 
-  constructor(cap: number, tex: THREE.Texture, blending: THREE.Blending, renderOrder: number, useMapColor = false) {
+  constructor(
+    cap: number,
+    tex: THREE.Texture,
+    blending: THREE.Blending,
+    renderOrder: number,
+    useMapColor = false,
+    atlasDim = 1,
+    worldFixed = false,
+  ) {
     const plane = new THREE.PlaneGeometry(1, 1);
     this.geo = new THREE.InstancedBufferGeometry();
     this.geo.index = plane.index;
@@ -246,11 +277,15 @@ class BillboardPool {
     this.size = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
     this.color = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
     this.alpha = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
+    this.iuv = new THREE.InstancedBufferAttribute(new Float32Array(cap * 2), 2);
+    this.irot = new THREE.InstancedBufferAttribute(new Float32Array(cap), 1);
     this.geo.setAttribute("iPos", this.pos);
     this.geo.setAttribute("iSize", this.size);
     this.geo.setAttribute("iColor", this.color);
     this.geo.setAttribute("iAlpha", this.alpha);
-    this.mesh = new THREE.Mesh(this.geo, billboardMaterial(tex, blending, useMapColor));
+    this.geo.setAttribute("iUv", this.iuv);
+    this.geo.setAttribute("iRot", this.irot);
+    this.mesh = new THREE.Mesh(this.geo, billboardMaterial(tex, blending, useMapColor, 1 / atlasDim, worldFixed));
     this.mesh.frustumCulled = false;
     this.mesh.renderOrder = renderOrder;
   }
@@ -259,14 +294,20 @@ class BillboardPool {
     this.n = 0;
   }
 
-  push(x: number, y: number, z: number, size: number, r: number, g: number, b: number, a: number): void {
+  push(
+    x: number, y: number, z: number, size: number,
+    r: number, g: number, b: number, a: number,
+    u = 0, v = 0, rot = 0,
+  ): void {
     if (this.n >= this.size.count) return;
     const i = this.n++;
-    const v = toScene(x, y, z);
-    this.pos.setXYZ(i, v.x, v.y, v.z);
+    const sv = toScene(x, y, z);
+    this.pos.setXYZ(i, sv.x, sv.y, sv.z);
     this.size.setX(i, size);
     this.color.setXYZ(i, r, g, b);
     this.alpha.setX(i, a);
+    this.iuv.setXY(i, u, v);
+    this.irot.setX(i, rot);
   }
 
   end(): void {
@@ -275,6 +316,8 @@ class BillboardPool {
     this.size.needsUpdate = true;
     this.color.needsUpdate = true;
     this.alpha.needsUpdate = true;
+    this.iuv.needsUpdate = true;
+    this.irot.needsUpdate = true;
   }
 }
 
@@ -359,7 +402,7 @@ export class FireSim {
     const tex = radialGlowTexture();
     // Draw order: light halos under the solid flame bodies, smoke on top.
     this.glow = new BillboardPool(GLOW_MAX, tex, THREE.AdditiveBlending, 40);
-    this.flames = new BillboardPool(FLAME_MAX, flameTexture(), THREE.NormalBlending, 41, true);
+    this.flames = new BillboardPool(FLAME_MAX, flameAtlas(), THREE.NormalBlending, 41, true, 2, true);
     this.smoke = new BillboardPool(SMOKE_MAX, tex, THREE.NormalBlending, 42);
     this.group.add(this.glow.mesh, this.flames.mesh, this.smoke.mesh);
   }
@@ -1110,6 +1153,17 @@ export class FireSim {
     this.writeBillboards(focus);
   }
 
+  /** One flame = two crossed world-fixed quads, each a DIFFERENT atlas
+   * variant: orbiting the fire shows changing structure, not a rotating
+   * cardboard cutout, and no two fires read identical. */
+  private pushFlame(x: number, y: number, z: number, s: number, a: number, variant: number, yaw: number): void {
+    const aa = Math.min(1, a);
+    const v1 = variant & 3;
+    const v2 = (variant + 1 + (variant >> 2)) & 3;
+    this.flames.push(x, y, z, s, 1, 1, 1, aa * 0.82, (v1 & 1) * 0.5, (v1 >> 1) * 0.5, yaw);
+    this.flames.push(x, y, z, s * 0.94, 1, 1, 1, aa * 0.7, (v2 & 1) * 0.5, (v2 >> 1) * 0.5, yaw + Math.PI / 2);
+  }
+
   private writeBillboards(focus: { x: number; y: number }): void {
     const RANGE = 9000;
     this.glow.begin();
@@ -1124,7 +1178,7 @@ export class FireSim {
       if (dist > CELL_FLAME_LOD) {
         // Far away: one aggregate flame — the pixels wouldn't resolve cells.
         const s = burn.size * (0.9 + burn.intensity) * flick;
-        this.flames.push(burn.x, burn.y, burn.z - 2 + s * 0.44, s, 1, 1, 1, Math.min(1, burn.intensity * 1.6));
+        this.pushFlame(burn.x, burn.y, burn.z - 2 + s * 0.44, s, burn.intensity * 1.5, burn.bi, burn.bi * 0.7);
         this.glow.push(burn.x, burn.y, burn.z + 2, s * 2, 1, 0.35, 0.07, 0.4 * burn.intensity * flick);
         continue;
       }
@@ -1132,13 +1186,16 @@ export class FireSim {
       if (burn.intensity > 0.05) {
         this.glow.push(burn.x, burn.y, burn.z + 2, burn.size * (1.3 + burn.intensity), 1, 0.4, 0.1, 0.45 * burn.intensity * flick);
       }
-      // Localized flame bodies per burning cell, base ON the fuel.
+      // Localized flame bodies per burning cell, base ON the fuel. Size
+      // breathes only slightly; the FLICKER lives in brightness/alpha.
       for (let ci = 0; ci < burn.cells.length; ci++) {
         const c = burn.cells[ci]!;
         if (c.i < 0.03) continue;
-        const cf = 0.75 + 0.25 * Math.sin(this.time * 11 + ci * 2.7 + burn.bi) * Math.sin(this.time * 23 + ci);
-        const s = (5 + c.i * (8 + burn.height * 0.22)) * cf;
-        this.flames.push(c.fx, c.fy, c.z + s * 0.42, s, 1, 1, 1, Math.min(1, c.i * 1.5) * (0.8 + 0.2 * cf));
+        const szf = 0.93 + 0.07 * Math.sin(this.time * 6 + ci * 2.7 + burn.bi);
+        const alf = 0.72 + 0.28 * Math.sin(this.time * 13 + ci * 3.1 + burn.bi) * Math.sin(this.time * 23 + ci);
+        const s = (5 + c.i * (8 + burn.height * 0.22)) * szf;
+        this.pushFlame(c.fx, c.fy, c.z + s * 0.42, s, c.i * 1.35 * alf, burn.bi + ci, burn.bi * 1.3 + ci * 0.9);
+        this.glow.push(c.fx, c.fy, c.z + s * 0.55, s * 1.5, 1, 0.42, 0.1, 0.32 * c.i * alf);
       }
       // Heavily involved: bigger flame bodies over every cell plus a central
       // inferno rooted in the structure — a raging mass, not a glow ball.
@@ -1147,26 +1204,24 @@ export class FireSim {
         for (let ci = 0; ci < burn.cells.length; ci++) {
           const c = burn.cells[ci]!;
           if (c.i < 0.25) continue;
-          const cf = 0.7 + 0.3 * Math.sin(this.time * 9 + ci * 4.1 + burn.bi * 2);
-          const s = (9 + burn.height * 0.35 + burn.size * 0.4) * cf * k;
-          this.flames.push(c.fx, c.fy, c.z + s * 0.42, s, 1, 1, 1, Math.min(1, 0.9 * k * cf + 0.15));
+          const szf = 0.92 + 0.08 * Math.sin(this.time * 5 + ci * 4.1 + burn.bi * 2);
+          const alf = 0.7 + 0.3 * Math.sin(this.time * 9 + ci * 4.1 + burn.bi * 2);
+          const s = (9 + burn.height * 0.35 + burn.size * 0.4) * szf * k;
+          this.pushFlame(c.fx, c.fy, c.z + s * 0.42, s, (0.75 * k + 0.15) * alf, burn.bi + ci * 2 + 1, burn.bi * 0.6 + ci * 1.7);
         }
-        const sC = burn.size * (1.1 + k * 1.3) * flick;
-        this.flames.push(
-          burn.x, burn.y,
-          burn.z - burn.height * 0.35 + sC * 0.44, sC,
-          1, 1, 1, Math.min(1, 0.3 + k * 0.9),
-        );
+        const sC = burn.size * (1.1 + k * 1.3) * (0.94 + 0.06 * flick);
+        this.pushFlame(burn.x, burn.y, burn.z - burn.height * 0.35 + sC * 0.44, sC, 0.3 + k * 0.8 * flick, burn.bi * 3, burn.bi * 2.1);
       }
     }
     for (const fb of this.fireballs) {
       if (Math.hypot(fb.x - focus.x, fb.y - focus.y) > RANGE) continue;
       const k = 1 - fb.t / fb.life;
       this.glow.push(fb.x, fb.y, fb.z + fb.size * 0.3, fb.size * 1.6 * (0.5 + k * 0.5), 1, 0.32, 0.05, 0.4 * k);
+      let si = 0;
       for (const sub of fb.subs) {
         const fl = 0.6 + 0.4 * Math.sin(this.time * 12 + sub.seed) * Math.sin(this.time * 27 + sub.seed * 3);
-        const s = fb.size * (0.55 + 0.45 * fl) * (0.55 + k * 0.45);
-        this.flames.push(fb.x + sub.ox, fb.y + sub.oy, fb.z - 1 + s * 0.44, s, 1, 1, 1, Math.min(1, k * 1.4 * (0.5 + fl * 0.5)));
+        const s = fb.size * (0.62 + 0.18 * fl) * (0.55 + k * 0.45);
+        this.pushFlame(fb.x + sub.ox, fb.y + sub.oy, fb.z - 1 + s * 0.44, s, k * 1.25 * (0.55 + fl * 0.45), si++, sub.seed);
       }
     }
     // Embers: white-hot core inside an orange halo — brands you can track
@@ -1185,7 +1240,7 @@ export class FireSim {
       const a = Math.sin(f * Math.PI);
       const gz = this.terrain(t.x, t.y);
       const s = 7 + 5 * a;
-      this.flames.push(t.x, t.y, gz + s * 0.44, s, 1, 1, 1, Math.min(1, a * 1.3));
+      this.pushFlame(t.x, t.y, gz + s * 0.44, s, a * 1.2, ti, ti * 0.63);
       this.glow.push(t.x, t.y, gz + 4, s * 1.5, 1, 0.38, 0.08, 0.5 * a);
     }
     for (const fl of this.flashes) {
