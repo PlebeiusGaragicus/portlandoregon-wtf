@@ -19,6 +19,10 @@ concurrency:
 
 jobs:
   build:
+    # Publishing belongs to the abvstudio fork; this repo is where the game is
+    # developed and has Pages disabled. Without this guard every push to main
+    # here would fail on the deploy step and train us to ignore red builds.
+    if: github.repository == 'abvstudio-net/battle-juice'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -46,6 +50,7 @@ jobs:
 
   deploy:
     needs: build
+    if: github.repository == 'abvstudio-net/battle-juice'
     runs-on: ubuntu-latest
     environment:
       name: github-pages
