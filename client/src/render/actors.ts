@@ -136,6 +136,10 @@ export class Actors {
     this.body.castShadow = true;
     const barMat = new THREE.MeshBasicMaterial(); // unlit: lightbars burn through any hour
     this.bar = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), barMat, CAP);
+    // Instance matrices place vehicles all over the city, but three.js culls
+    // an InstancedMesh by its raw geometry bounds (a 1 m box at the origin) —
+    // never cull these, or the fleet only renders near the map's SW corner.
+    this.body.frustumCulled = this.bar.frustumCulled = false;
     this.body.count = this.bar.count = 0;
     this.group.add(this.body, this.bar);
   }
