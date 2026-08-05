@@ -3,7 +3,9 @@ import type { GameMap } from "@battle-juice/shared";
 // Translucent minimap overlay: prerendered streets + water base, live view
 // quad and unit dots. Click or drag jumps the camera.
 
-const WIDTH_PX = 260;
+// Backing resolution matches the hover-expanded size; CSS scales it down
+// to its resting size (and back up on hover).
+const WIDTH_PX = 520;
 
 export class Minimap {
   readonly el: HTMLCanvasElement;

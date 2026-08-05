@@ -149,7 +149,13 @@ export class Renderer {
     this.compass = document.createElement("div");
     this.compass.id = "compass";
     this.compass.innerHTML = "<span>N</span>";
-    this.compass.addEventListener("click", () => this.controls.faceNorth());
+    this.compass.addEventListener("click", () => {
+      if (this.fpvOn && this.fpv) {
+        this.fpv.yaw = Math.round(this.fpv.yaw / (2 * Math.PI)) * 2 * Math.PI;
+      } else {
+        this.controls.faceNorth();
+      }
+    });
     parent.appendChild(this.compass);
 
     this.map = map;
@@ -161,6 +167,10 @@ export class Renderer {
     parent.appendChild(this.fadeEl);
     this.hudClock = document.createElement("div");
     this.hudClock.id = "hudclock";
+    this.hudClock.title = "Advance 3 hours";
+    this.hudClock.addEventListener("click", () => {
+      this.daynight.offsetT = (this.daynight.offsetT + 3 / 24) % 1;
+    });
     parent.appendChild(this.hudClock);
     this.hudScale = document.createElement("div");
     this.hudScale.id = "hudscale";
@@ -231,7 +241,6 @@ export class Renderer {
       if (document.pointerLockElement === this.canvas) document.exitPointerLock();
       this.controls.active = true;
       this.minimap.el.style.display = "";
-      this.compass.style.display = "";
       this.hudScale.style.display = "";
       this.hint("", 0);
       return;
@@ -256,7 +265,6 @@ export class Renderer {
     this.fpvOn = true;
     this.controls.active = false;
     this.minimap.el.style.display = "none";
-    this.compass.style.display = "none";
     this.hudScale.style.display = "none";
     this.lockPointer();
     this.hint("WASD move · Shift sprint · Space jump · double-Space fly (Space up, C down) · V exit", 6000);
@@ -302,7 +310,7 @@ export class Renderer {
     this.skyBody.quaternion.copy(this.camera.quaternion);
     const size = dn.day ? 2600 : 1500;
     this.skyBody.scale.set(size, size, 1);
-    this.skyBodyMat!.color.copy(dn.lightColor).multiplyScalar(dn.day ? 1 : 0.85);
+    this.skyBodyMat!.color.copy(dn.lightColor).multiplyScalar(dn.day ? 1 : 1.25);
   }
 
   private skyColor = new THREE.Color();
@@ -435,6 +443,7 @@ export class Renderer {
       this.ensureSky().visible = true;
       const aspect = (this.canvas.clientWidth || 1) / (this.canvas.clientHeight || 1);
       this.fpv.apply(this.camera, aspect);
+      this.compass.style.setProperty("--rot", `${this.fpv.yaw}rad`);
       this.sky!.position.copy(this.camera.position);
       this.updateSkyBody();
       this.applyDayNight(this.fpv.x, this.fpv.y, this.fpv.z, true);
@@ -516,7 +525,8 @@ export class Renderer {
       this.fpvProps?.setNight(dn.night);
     }
 
-    const label = `${dn.day ? "☀" : "☾"} ${dn.clock}`;
+    const alt = this.fpvOn ? ` · ▲${Math.round(fz)} m` : "";
+    const label = `${dn.day ? "☀" : "☾"} ${dn.clock}${alt}`;
     if (this.hudClock.textContent !== label) this.hudClock.textContent = label;
   }
 

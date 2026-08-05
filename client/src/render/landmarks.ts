@@ -14,7 +14,7 @@ const PAD_RADIUS = 12; // m, unmatched landmarks only
 
 /** Zoom (viewHeight, m) past which plates are dropped — labels are a
  * close-up detail; from district height the tinted prism is the marker. */
-const LABEL_MAX_VIEW = 1500;
+const LABEL_MAX_VIEW = 800;
 
 export interface LandmarkLayer {
   group: THREE.Group;

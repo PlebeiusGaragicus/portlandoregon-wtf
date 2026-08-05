@@ -28,6 +28,8 @@ const MOON = new THREE.Color(0xa8bfe8);
 export class DayNight {
   /** Debug: pin the cycle time (0..1); null follows the real clock. */
   overrideT: number | null = null;
+  /** User-applied time skip (cycle fraction) — the clock button adds 3h. */
+  offsetT = 0;
   /** In-game time of day, 0 = midnight .. 1. */
   t = 0;
   clock = "00:00";
@@ -51,7 +53,7 @@ export class DayNight {
     const d = new Date(nowMs);
     const midnight = new Date(nowMs).setHours(0, 0, 0, 0);
     const cycleMs = 86_400_000 / CYCLES_PER_DAY;
-    this.t = this.overrideT ?? ((nowMs - midnight) % cycleMs) / cycleMs;
+    this.t = this.overrideT ?? (((nowMs - midnight) % cycleMs) / cycleMs + this.offsetT) % 1;
 
     const mins = Math.floor(this.t * 24 * 60);
     this.clock = `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`;
@@ -90,8 +92,8 @@ export class DayNight {
     } else {
       // Bright moonlight: cool, hard, plenty to see (and cast shadows) by.
       this.lightColor.copy(MOON);
-      this.lightIntensity = 0.2 + 0.6 * horizonFade;
-      this.hemiIntensity = 0.3;
+      this.lightIntensity = 0.35 + 0.85 * horizonFade;
+      this.hemiIntensity = 0.38;
       this.night = 1;
     }
 
