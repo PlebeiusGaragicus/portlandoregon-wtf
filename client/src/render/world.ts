@@ -8,6 +8,7 @@ import {
   type Landmark,
   type RailLine,
   type RailStop,
+  type RoadClass,
   type StreetEdge,
   type WaterBody,
 } from "@battle-juice/shared";
@@ -38,7 +39,12 @@ const SIDEWALK_COLOR = 0x555c66; // concrete, lighter than asphalt
 // its slope-scaled term varies per triangle, so distinct biases between
 // near-coplanar layers tear into sawtooth patches on steep grazing views.
 const SIDEWALK_Y = 0.03;
+const CURB_H = 0.14; // raised concrete: sidewalk tops sit a curb above grade
 const STREET_Y = 0.09;
+// Rendered curb-to-curb widths, wider than the baked graph widths: the paved
+// roadway should fill its right-of-way up to the sidewalks, leaving only a
+// planting strip. (edge.width stays the sim/graph number.)
+const RENDER_WIDTH: Record<RoadClass, number> = { arterial: 17, collector: 13.5, local: 11, alley: 5, path: 2.5 };
 const MARK_WHITE = 0xb9c0c8; // painted pavement markings
 const MARK_YELLOW = 0xc2a53a;
 const MARK_Y = 0.15;
@@ -172,6 +178,7 @@ export function buildWorld(map: GameMap, hf?: Heightfield | null): WorldLayers {
     (map.sidewalks ?? []).map((s) => ({ rings: s.rings, color: SIDEWALK_COLOR })),
     SIDEWALK_Y,
     ground,
+    CURB_H,
   )) detail.add(mesh);
   for (const mesh of drapedPolyTiles(
     (map.markingAreas ?? []).map((a) => ({ rings: a.rings, color: a.style === "yellow" ? MARK_YELLOW : MARK_WHITE })),
@@ -347,6 +354,9 @@ function drapedPolyTiles(
   bodies: { rings: [number, number][][]; color: number }[],
   yOff: number,
   ground: GroundFn,
+  /** Extrude tops this far above grade with skirt walls along the rings —
+   * raised concrete slabs (sidewalks) instead of flat paint. */
+  curb = 0,
 ): THREE.Mesh[] {
   // color -> tile -> soup
   const byColor = new Map<number, Map<number, Soup>>();
@@ -374,7 +384,8 @@ function drapedPolyTiles(
         a.y + ((b.y - a.y) * i + (c.y - a.y) * j) / n,
       ];
       const emit = (p: [number, number]): void => {
-        soup!.pos.push(p[0], yOff + ground(p[0], p[1]), -p[1]);
+        soup!.pos.push(p[0], yOff + curb + ground(p[0], p[1]), -p[1]);
+        if (curb) soup!.nrm.push(0, 1, 0);
       };
       for (let i = 0; i < n; i++) {
         for (let j = 0; j < n - i; j++) {
@@ -385,6 +396,44 @@ function drapedPolyTiles(
             emit(P(i + 1, j));
             emit(P(i + 1, j + 1));
             emit(P(i, j + 1));
+          }
+        }
+      }
+    }
+    if (curb) {
+      // Skirt walls along every ring edge, sunk below grade so slopes never
+      // open a gap under the slab.
+      const lo = yOff - 0.4;
+      const hi = yOff + curb;
+      for (const ring of body.rings) {
+        if (ring.length < 3) continue;
+        for (let i = 0; i < ring.length; i++) {
+          const [x1, y1] = ring[i]!;
+          const [x2, y2] = ring[(i + 1) % ring.length]!;
+          const len = Math.hypot(x2 - x1, y2 - y1);
+          if (len < 1e-6) continue;
+          const nx = (y2 - y1) / len;
+          const ny = -(x2 - x1) / len;
+          const segs = Math.max(1, Math.ceil(len / 12));
+          for (let k = 0; k < segs; k++) {
+            const ax = x1 + ((x2 - x1) * k) / segs;
+            const ay = y1 + ((y2 - y1) * k) / segs;
+            const bx = x1 + ((x2 - x1) * (k + 1)) / segs;
+            const by = y1 + ((y2 - y1) * (k + 1)) / segs;
+            const ga = ground(ax, ay);
+            const gb = ground(bx, by);
+            const wall: [number, number, number][] = [
+              [ax, ga + lo, ay],
+              [bx, gb + lo, by],
+              [bx, gb + hi, by],
+              [ax, ga + lo, ay],
+              [bx, gb + hi, by],
+              [ax, ga + hi, ay],
+            ];
+            for (const [wx, wh, wy] of wall) {
+              soup.pos.push(wx, wh, -wy);
+              soup.nrm.push(nx, 0, -ny);
+            }
           }
         }
       }
@@ -523,7 +572,7 @@ function buildStreetTiles(
     let soup = tiles.get(key);
     if (!soup) tiles.set(key, (soup = { pos: [], nrm: [] }));
     const span = edge.struct === "bridge" || overWater(edge.polyline);
-    pushRibbon(soup.pos, edge.polyline, edge.width, STREET_Y, ground, cell, span);
+    pushRibbon(soup.pos, edge.polyline, RENDER_WIDTH[edge.class] ?? edge.width, STREET_Y, ground, cell, span);
   }
   return [...tiles.values()].map((soup) => soupMesh(soup, mat));
 }
