@@ -23,15 +23,15 @@ export interface RendererOpts {
 }
 
 /**
- * Three.js renderer: orthographic tilt-shift camera over the baked map, with
- * a tactical (command) mode and a read-only strategic mode at far zoom.
+ * Three.js renderer: perspective tilted camera over the baked map, with a
+ * tactical (command) mode and a read-only strategic mode at far zoom.
  */
 export class Renderer {
   readonly playerId: string;
 
   private webgl: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
-  private camera = new THREE.OrthographicCamera();
+  private camera = new THREE.PerspectiveCamera();
   private rig: CameraRig;
   private controls: Controls;
   private units: UnitLayer;
@@ -58,7 +58,9 @@ export class Renderer {
     opts: RendererOpts,
   ) {
     this.playerId = myPlayerId;
-    this.webgl = new THREE.WebGLRenderer({ canvas, antialias: true });
+    // Log depth: a perspective frustum spanning tens of km would otherwise
+    // z-fight the street ribbons floating 0.1 m over the ground.
+    this.webgl = new THREE.WebGLRenderer({ canvas, antialias: true, logarithmicDepthBuffer: true });
     this.webgl.setPixelRatio(window.devicePixelRatio);
     this.scene.background = new THREE.Color(0x14171c);
 

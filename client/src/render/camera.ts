@@ -11,13 +11,17 @@ export function toWorldXY(v: THREE.Vector3): { x: number; y: number } {
   return { x: v.x, y: -v.z };
 }
 
-const MIN_VIEW_HEIGHT = 60; // meters visible vertically at max zoom-in
-const CAMERA_DIST = 8000; // orthographic: any comfortably large constant
+const MIN_VIEW_HEIGHT = 150; // meters visible vertically at max zoom-in
+const MAX_VIEW_HEIGHT = 12000; // hard zoom-out cap (minimap covers the rest)
+const FOV_DEG = 35; // narrow-ish perspective: depth without fisheye
+const HALF_FOV = (FOV_DEG * Math.PI) / 360;
 
 /**
- * Orthographic camera rig: a ground-plane target, a continuous azimuth theta,
- * a fixed elevation tilt, and zoom expressed as visible meters (viewHeight).
- * Snap rotation is purely input policy — theta itself is continuous.
+ * Perspective camera rig: a ground-plane target, a continuous azimuth theta,
+ * a variable elevation tilt, and zoom expressed as visible meters at the
+ * target (viewHeight). Snap rotation is purely input policy — theta itself
+ * is continuous. Tilt is zoom-coupled: far zoom eases toward top-down so the
+ * frustum never grazes the horizon.
  */
 export class CameraRig {
   target: { x: number; y: number };
@@ -26,6 +30,7 @@ export class CameraRig {
   tilt = (55 * Math.PI) / 180; // elevation angle above the ground (variable)
   static readonly MIN_TILT = (25 * Math.PI) / 180;
   static readonly MAX_TILT = (80 * Math.PI) / 180;
+  private static readonly FAR_MIN_TILT = (50 * Math.PI) / 180;
   private mapW: number;
   private mapH: number;
   private lastAspect = 16 / 9;
@@ -36,29 +41,47 @@ export class CameraRig {
     this.mapH = map.meta.height;
   }
 
+  /** Camera-to-target distance that shows viewHeight meters at the target. */
+  private dist(vh = this.viewHeight): number {
+    return vh / (2 * Math.tan(HALF_FOV));
+  }
+
+  /** Lowest allowed tilt at this zoom — rises toward top-down when far out. */
+  private minTiltFor(vh: number): number {
+    const t = Math.min(1, Math.max(0, (vh - 2000) / (MAX_VIEW_HEIGHT - 2000)));
+    return CameraRig.MIN_TILT + t * (CameraRig.FAR_MIN_TILT - CameraRig.MIN_TILT);
+  }
+
   /**
-   * Half-extents of the view's ground footprint, exact for the current
-   * rotation — the whole footprint stays inside the map, so no blank space
-   * shows, while edge areas remain viewable up close.
+   * Half-extents of the view's ground footprint for the current rotation and
+   * tilt (conservative: the far edge, where perspective is widest). Keeping
+   * this inside the map means no blank space at any screen edge.
    */
   private viewExtents(vh = this.viewHeight): { ex: number; ey: number } {
-    const hw = (vh * this.lastAspect) / 2; // screen-right half-extent on the ground
-    const hf = vh / (2 * Math.sin(this.tilt)); // screen-up half-extent
+    const d = this.dist(vh);
+    const h = d * Math.sin(this.tilt); // camera height
+    const back = d * Math.cos(this.tilt); // horizontal setback from target
+    const fFar = h / Math.tan(this.tilt - HALF_FOV) - back;
+    const fNear = back - h / Math.tan(this.tilt + HALF_FOV);
+    const slantFar = h / Math.sin(this.tilt - HALF_FOV);
+    const halfW = this.lastAspect * Math.tan(HALF_FOV) * slantFar * Math.cos(HALF_FOV);
+    const fwd = Math.max(fFar, fNear);
     const c = Math.abs(Math.cos(this.theta));
     const s = Math.abs(Math.sin(this.theta));
-    return { ex: c * hw + s * hf, ey: s * hw + c * hf };
+    return { ex: c * halfW + s * fwd, ey: s * halfW + c * fwd };
   }
 
-  /** Largest viewHeight whose footprint still fits inside the map. */
-  private maxViewHeightFit(): number {
-    const { ex, ey } = this.viewExtents(1); // extents per meter of viewHeight
-    return Math.min(this.mapW / (2 * ex), this.mapH / (2 * ey));
-  }
-
-  /** Keep zoom and target such that the view never leaves the map. */
+  /** Keep zoom, tilt and target such that the view never leaves the map. */
   private constrain(): void {
-    this.viewHeight = Math.min(this.maxViewHeightFit(), Math.max(MIN_VIEW_HEIGHT, this.viewHeight));
-    const { ex, ey } = this.viewExtents();
+    this.viewHeight = Math.min(MAX_VIEW_HEIGHT, Math.max(MIN_VIEW_HEIGHT, this.viewHeight));
+    this.tilt = Math.min(CameraRig.MAX_TILT, Math.max(this.minTiltFor(this.viewHeight), this.tilt));
+    let { ex, ey } = this.viewExtents();
+    // Extents are linear in viewHeight at fixed tilt, so one shrink pass fits.
+    const shrink = Math.min(1, this.mapW / (2 * ex), this.mapH / (2 * ey));
+    if (shrink < 1) {
+      this.viewHeight = Math.max(MIN_VIEW_HEIGHT, this.viewHeight * shrink);
+      ({ ex, ey } = this.viewExtents());
+    }
     const clampAxis = (v: number, half: number, dim: number): number =>
       2 * half >= dim ? dim / 2 : Math.min(dim - half, Math.max(half, v));
     this.target.x = clampAxis(this.target.x, ex, this.mapW);
@@ -75,33 +98,30 @@ export class CameraRig {
     return { x: Math.cos(this.theta), y: Math.sin(this.theta) };
   }
 
-  apply(cam: THREE.OrthographicCamera, aspect: number): void {
+  apply(cam: THREE.PerspectiveCamera, aspect: number): void {
     this.lastAspect = aspect;
     this.constrain(); // every frame: zoom, tilt, pan can all push out of fit
     const f = this.forward();
-    const horiz = CAMERA_DIST * Math.cos(this.tilt);
+    const d = this.dist();
+    const horiz = d * Math.cos(this.tilt);
     const camX = this.target.x - f.x * horiz;
     const camY = this.target.y - f.y * horiz;
-    const camH = CAMERA_DIST * Math.sin(this.tilt);
+    const camH = d * Math.sin(this.tilt);
 
     cam.position.copy(toScene(camX, camY, camH));
     cam.up.set(0, 1, 0);
     cam.lookAt(toScene(this.target.x, this.target.y, 0));
 
-    const halfH = this.viewHeight / 2;
-    const halfW = halfH * aspect;
-    cam.left = -halfW;
-    cam.right = halfW;
-    cam.top = halfH;
-    cam.bottom = -halfH;
-    cam.near = 1;
-    cam.far = CAMERA_DIST * 2 + 1000;
+    cam.fov = FOV_DEG;
+    cam.aspect = aspect;
+    cam.near = Math.max(1, d * 0.02);
+    cam.far = d * 8;
     cam.updateProjectionMatrix();
   }
 
   /** Drag the map by a screen-pixel delta (the ground follows the pointer). */
   panScreen(dxPx: number, dyPx: number, canvasHeightPx: number): void {
-    const mpp = this.viewHeight / canvasHeightPx; // meters per pixel
+    const mpp = this.viewHeight / canvasHeightPx; // meters per pixel at target
     const f = this.forward();
     const r = this.right();
     // Vertical screen distance foreshortens ground-forward motion by sin(tilt).
@@ -120,11 +140,14 @@ export class CameraRig {
   }
 
   zoomBy(factor: number): void {
-    this.viewHeight = Math.min(this.maxViewHeightFit(), Math.max(MIN_VIEW_HEIGHT, this.viewHeight * factor));
+    this.viewHeight = Math.min(MAX_VIEW_HEIGHT, Math.max(MIN_VIEW_HEIGHT, this.viewHeight * factor));
   }
 
   tiltBy(delta: number): void {
-    this.tilt = Math.min(CameraRig.MAX_TILT, Math.max(CameraRig.MIN_TILT, this.tilt + delta));
+    this.tilt = Math.min(
+      CameraRig.MAX_TILT,
+      Math.max(this.minTiltFor(this.viewHeight), this.tilt + delta),
+    );
     this.constrain();
   }
 

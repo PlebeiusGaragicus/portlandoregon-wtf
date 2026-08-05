@@ -52,9 +52,22 @@ interface RawEdge {
   cls: RoadClass;
 }
 
-function buildGraph(streets: GeoJsonCollection): { edges: RawEdge[]; nodePos: Map<number, Pt> } {
+interface RawGraph {
+  edges: RawEdge[];
+  nodePos: Map<number, Pt>;
+  nodeZ: Map<number, Set<number>>;
+}
+
+function buildGraph(streets: GeoJsonCollection): RawGraph {
   const edges: RawEdge[] = [];
   const nodePos = new Map<number, Pt>();
+  const nodeZ = new Map<number, Set<number>>();
+  const addZ = (id: number, z: unknown): void => {
+    let s = nodeZ.get(id);
+    if (!s) nodeZ.set(id, (s = new Set()));
+    const n = Number(z ?? NaN);
+    s.add(Number.isFinite(n) ? n : 1); // missing ZLEV = ground
+  };
   let skipped = 0;
   for (const feat of streets.features) {
     const p = feat.properties;
@@ -71,6 +84,8 @@ function buildGraph(streets: GeoJsonCollection): { edges: RawEdge[]; nodePos: Ma
     }
     nodePos.set(f, line[0]!);
     nodePos.set(t, line[line.length - 1]!);
+    addZ(f, p["F_ZLEV"]);
+    addZ(t, p["T_ZLEV"]);
     edges.push({
       f,
       t,
@@ -80,7 +95,84 @@ function buildGraph(streets: GeoJsonCollection): { edges: RawEdge[]; nodePos: Ma
     });
   }
   if (skipped) console.log(`  streets: skipped ${skipped} segments without node ids/geometry`);
-  return { edges, nodePos };
+  return { edges, nodePos, nodeZ };
+}
+
+const WELD_DIST = 2; // m — coincident-junction tolerance across id namespaces
+
+/**
+ * The street layer carries several disjoint node-id namespaces (Portland
+ * proper vs. neighboring jurisdictions), so physically continuous streets
+ * never share an id at the city limits and the graph splits into two huge
+ * "components". Weld nodes that sit at the same ground position but belong
+ * to different components — matching ZLEV only, so grade-separated
+ * crossings (overpasses) are never fused.
+ */
+function weldJurisdictions(g: RawGraph): void {
+  const parent = new Map<number, number>();
+  const find = (a: number): number => {
+    let root = a;
+    while (parent.get(root) !== root) root = parent.get(root)!;
+    while (parent.get(a) !== root) {
+      const next = parent.get(a)!;
+      parent.set(a, root);
+      a = next;
+    }
+    return root;
+  };
+  const union = (a: number, b: number): void => {
+    if (!parent.has(a)) parent.set(a, a);
+    if (!parent.has(b)) parent.set(b, b);
+    parent.set(find(a), find(b));
+  };
+  for (const e of g.edges) union(e.f, e.t);
+
+  // Alias union-find: welded ids collapse to one canonical id.
+  const alias = new Map<number, number>();
+  const afind = (a: number): number => {
+    while (alias.has(a) && alias.get(a) !== a) a = alias.get(a)!;
+    return a;
+  };
+
+  const cellKey = (cx: number, cy: number): string => `${cx}:${cy}`;
+  const grid = new Map<string, number[]>();
+  for (const [id, p] of g.nodePos) {
+    const key = cellKey(Math.floor(p[0] / WELD_DIST), Math.floor(p[1] / WELD_DIST));
+    const bucket = grid.get(key);
+    if (bucket) bucket.push(id);
+    else grid.set(key, [id]);
+  }
+
+  let welds = 0;
+  for (const [id, p] of g.nodePos) {
+    const kc = Math.floor(p[0] / WELD_DIST);
+    const kr = Math.floor(p[1] / WELD_DIST);
+    for (let r = kr - 1; r <= kr + 1; r++) {
+      for (let c = kc - 1; c <= kc + 1; c++) {
+        for (const other of grid.get(cellKey(c, r)) ?? []) {
+          if (other <= id) continue; // each pair once
+          // Pre-weld components: weld every junction between two originally
+          // separate networks, never within one network (same-position nodes
+          // there are intentional, e.g. divided carriageways).
+          if (find(other) === find(id)) continue;
+          const q = g.nodePos.get(other)!;
+          if (Math.hypot(p[0] - q[0], p[1] - q[1]) > WELD_DIST) continue;
+          const za = g.nodeZ.get(id);
+          const zb = g.nodeZ.get(other);
+          if (za && zb && ![...za].some((z) => zb.has(z))) continue; // grade-separated
+          const a = afind(id);
+          const b = afind(other);
+          if (a !== b) alias.set(b, a);
+          welds++;
+        }
+      }
+    }
+  }
+  for (const e of g.edges) {
+    e.f = afind(e.f);
+    e.t = afind(e.t);
+  }
+  if (welds) console.log(`  streets: welded ${welds} cross-jurisdiction junctions`);
 }
 
 /** Union-find dominant connected component check (fatal if fragmented). */
@@ -136,7 +228,9 @@ function dominantComponent(edges: RawEdge[]): Set<number> {
 }
 
 function transformStreets(streets: GeoJsonCollection, rect: Rect) {
-  const { edges: rawEdges } = buildGraph(streets);
+  const graph = buildGraph(streets);
+  weldJurisdictions(graph);
+  const rawEdges = graph.edges;
   const keepNodes = dominantComponent(rawEdges);
   const connected = rawEdges.filter((e) => keepNodes.has(e.f) && keepNodes.has(e.t));
 
