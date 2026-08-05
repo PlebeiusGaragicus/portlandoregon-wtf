@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { ENTITY_RADIUS, SQUAD_POP, SQUAD_SPACING, TICK_MS, type GameMap, type Snapshot } from "@battle-juice/shared";
 import { CameraRig, toWorldXY } from "./camera.js";
 import { Controls, type ControlDelegate } from "./controls.js";
+import { buildLandmarks, type LandmarkLayer } from "./landmarks.js";
 import { Minimap } from "./minimap.js";
 import { buildProps } from "./props.js";
 import { UnitLayer } from "./units.js";
@@ -16,6 +17,7 @@ const STRATEGIC_VIEW = 4500; // above: read-only map navigation, no orders
 export interface PrebuiltLayers {
   world: WorldLayers;
   props: THREE.Group;
+  landmarks: LandmarkLayer;
 }
 
 export interface RendererOpts {
@@ -40,6 +42,7 @@ export class Renderer {
   private units: UnitLayer;
   private world: WorldLayers;
   private props: THREE.Group;
+  private landmarks: LandmarkLayer;
   private minimap: Minimap;
   private compass: HTMLDivElement;
   private hud: HTMLDivElement;
@@ -77,6 +80,8 @@ export class Renderer {
     this.scene.add(this.world.group);
     this.props = opts.prebuilt?.props ?? buildProps(map);
     this.scene.add(this.props);
+    this.landmarks = opts.prebuilt?.landmarks ?? buildLandmarks(map);
+    this.scene.add(this.landmarks.group);
     this.units = new UnitLayer(myPlayerId);
     this.scene.add(this.units.group);
 
@@ -257,6 +262,7 @@ export class Renderer {
     this.world.setBlend((vh - BLEND_START) / (BLEND_END - BLEND_START));
     this.props.visible = vh < PROPS_VIEW;
     this.units.setViewScale(Math.max(1, vh / 800));
+    this.landmarks.setViewScale(vh);
 
     // Cursor telegraphs whether commands are possible at this zoom
     // (grab = navigate-only strategic view).

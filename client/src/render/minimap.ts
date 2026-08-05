@@ -104,6 +104,16 @@ export class Minimap {
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
+
+    // Fire stations: small red squares, baked into the base layer.
+    for (const m of this.map.landmarks ?? []) {
+      const [px, py] = this.px(m.x, m.y);
+      ctx.fillStyle = "#e02b1d";
+      ctx.fillRect(px - 1.8, py - 1.8, 3.6, 3.6);
+      ctx.strokeStyle = "rgba(255, 190, 180, 0.8)";
+      ctx.lineWidth = 0.6;
+      ctx.strokeRect(px - 1.8, py - 1.8, 3.6, 3.6);
+    }
   }
 
   /**

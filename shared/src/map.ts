@@ -74,6 +74,23 @@ export interface Trail {
   polyline: [number, number][];
 }
 
+/** Named civic point of interest (fire stations today), drawn with a label. */
+export interface Landmark {
+  id: number;
+  kind: "fire-station";
+  /** Short map label, e.g. "Station 12". */
+  label: string;
+  /** Full name from the source, e.g. "Portland Fire Station 12". */
+  name: string;
+  address: string;
+  x: number;
+  y: number;
+  /** Footprint cluster the landmark occupies — those prisms are painted as
+   * the landmark. A list because the footprint DB splits one hall into
+   * several prisms. Absent/empty when no footprint matched. */
+  buildingIds?: number[];
+}
+
 export interface GameMap {
   meta: MapMeta;
   nodes: StreetNode[];
@@ -88,4 +105,6 @@ export interface GameMap {
   parks?: WaterBody[];
   /** Trails (render-only). */
   trails?: Trail[];
+  /** Labeled civic landmarks (absent on maps baked before landmarks). */
+  landmarks?: Landmark[];
 }

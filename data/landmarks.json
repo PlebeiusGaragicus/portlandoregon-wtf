@@ -1,0 +1,316 @@
+{
+  "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/0/query",
+  "scrapedAt": "2026-08-05",
+  "landmarks": [
+    {
+      "kind": "fire-station",
+      "ref": "1",
+      "label": "Station 1",
+      "name": "Portland Fire Station 1",
+      "address": "55 SW Ash St, Portland, OR",
+      "lat": 45.52182340924504,
+      "lon": -122.67071921178008,
+      "source": "https://www.portland.gov/fire/station-1"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "2",
+      "label": "Station 2",
+      "name": "Portland Fire Station 2",
+      "address": "4800 NE 122nd Ave, Portland, OR",
+      "lat": 45.55768341747476,
+      "lon": -122.53666355635391,
+      "source": "https://www.portland.gov/fire/station-2"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "3",
+      "label": "Station 3",
+      "name": "Portland Fire Station 3",
+      "address": "1715 NW Johnson St, Portland, OR",
+      "lat": 45.528803396668984,
+      "lon": -122.68873053563463,
+      "source": "https://www.portland.gov/fire/station-3"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "4",
+      "label": "Station 4",
+      "name": "Portland Fire Station 4",
+      "address": "511 SW College St, Portland, OR",
+      "lat": 45.50980522318592,
+      "lon": -122.68297421034573,
+      "source": "https://www.portland.gov/fire/station-4"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "5",
+      "label": "Station 5",
+      "name": "Portland Fire Station 5",
+      "address": "1505 SW Dewitt St, Portland, OR",
+      "lat": 45.480404866968456,
+      "lon": -122.69328208178695,
+      "source": "https://www.portland.gov/fire/station-5"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "6",
+      "label": "Station 6",
+      "name": "Portland Fire Station 6",
+      "address": "3660 NW Front Ave, Portland, OR",
+      "lat": 45.54887492148168,
+      "lon": -122.70600760172874,
+      "source": "https://www.portland.gov/fire/station-6"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "7",
+      "label": "Station 7",
+      "name": "Portland Fire Station 7",
+      "address": "1500 SE 122nd Ave, Portland, OR",
+      "lat": 45.5126125407876,
+      "lon": -122.5372265089829,
+      "source": "https://www.portland.gov/fire/station-7"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "8",
+      "label": "Station 8",
+      "name": "Portland Fire Station 8",
+      "address": "7134 N Maryland Ave, Portland, OR",
+      "lat": 45.575068188819735,
+      "lon": -122.68062464965213,
+      "source": "https://www.portland.gov/fire/station-8"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "9",
+      "label": "Station 9",
+      "name": "Portland Fire Station 9",
+      "address": "1706 SE Cesar E Chavez Blvd, Portland, OR",
+      "lat": 45.51063280825819,
+      "lon": -122.62241214747644,
+      "source": "https://www.portland.gov/fire/station-9"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "10",
+      "label": "Station 10",
+      "name": "Portland Fire Station 10",
+      "address": "451 SW Taylors Ferry Rd, Portland, OR",
+      "lat": 45.46347391946487,
+      "lon": -122.68324955296347,
+      "source": "https://www.portland.gov/fire/station-10"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "11",
+      "label": "Station 11",
+      "name": "Portland Fire Station 11",
+      "address": "5707 SE 92nd Ave, Portland, OR",
+      "lat": 45.48114729986992,
+      "lon": -122.56894898520729,
+      "source": "https://www.portland.gov/fire/station-11"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "12",
+      "label": "Station 12",
+      "name": "Portland Fire Station 12",
+      "address": "8645 NE Sandy Blvd, Portland, OR",
+      "lat": 45.55465448149232,
+      "lon": -122.57397226546139,
+      "source": "https://www.portland.gov/fire/station-12"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "13",
+      "label": "Station 13",
+      "name": "Portland Fire Station 13",
+      "address": "926 NE Weidler St, Portland, OR",
+      "lat": 45.53413071016041,
+      "lon": -122.65589145081712,
+      "source": "https://www.portland.gov/fire/station-13"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "14",
+      "label": "Station 14",
+      "name": "Portland Fire Station 14",
+      "address": "1905 NE Killingsworth St, Portland, OR",
+      "lat": 45.56303730251439,
+      "lon": -122.64574098038334,
+      "source": "https://www.portland.gov/fire/station-14"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "15",
+      "label": "Station 15",
+      "name": "Portland Fire Station 15",
+      "address": "1920 SW Spring St, Portland, OR",
+      "lat": 45.508997788755885,
+      "lon": -122.69881337370728,
+      "source": "https://www.portland.gov/fire/station-15"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "16",
+      "label": "Station 16",
+      "name": "Portland Fire Station 16",
+      "address": "1715 SW Skyline Blvd, Portland, OR",
+      "lat": 45.5108430293036,
+      "lon": -122.73593929811231,
+      "source": "https://www.portland.gov/fire/station-16"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "17",
+      "label": "Station 17",
+      "name": "Portland Fire Station 17",
+      "address": "848 N Tomahawk Island Dr, Portland, OR",
+      "lat": 45.609720733840845,
+      "lon": -122.67584098781353,
+      "source": "https://www.portland.gov/fire/station-17"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "18",
+      "label": "Station 18",
+      "name": "Portland Fire Station 18",
+      "address": "8720 SW 30th Ave, Portland, OR",
+      "lat": 45.462061238188355,
+      "lon": -122.70752848004747,
+      "source": "https://www.portland.gov/fire/station-18"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "19",
+      "label": "Station 19",
+      "name": "Portland Fire Station 19",
+      "address": "7301 E Burnside St, Portland, OR",
+      "lat": 45.52320982563866,
+      "lon": -122.58767577226988,
+      "source": "https://www.portland.gov/fire/station-19"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "20",
+      "label": "Station 20",
+      "name": "Portland Fire Station 20",
+      "address": "2235 SE Bybee Blvd, Portland, OR",
+      "lat": 45.4743166956824,
+      "lon": -122.64207896668663,
+      "source": "https://www.portland.gov/fire/station-20"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "21",
+      "label": "Station 21",
+      "name": "Portland Fire Station 21",
+      "address": "5 SE Madison St, Portland, OR",
+      "lat": 45.51318897591541,
+      "lon": -122.66824965682578,
+      "source": "https://www.portland.gov/fire/station-21"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "22",
+      "label": "Station 22",
+      "name": "Portland Fire Station 22",
+      "address": "7205 N Alta Ave, Portland, OR",
+      "lat": 45.59012662582491,
+      "lon": -122.75683904966004,
+      "source": "https://www.portland.gov/fire/station-22"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "23",
+      "label": "Station 23",
+      "name": "Portland Fire Station 23",
+      "address": "2915 SE 13th Pl, Portland, OR",
+      "lat": 45.50189860711694,
+      "lon": -122.6525716808706,
+      "source": "https://www.portland.gov/fire/station-23"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "24",
+      "label": "Station 24",
+      "name": "Portland Fire Station 24",
+      "address": "4515 N Maryland Ave, Portland, OR",
+      "lat": 45.55577260880087,
+      "lon": -122.68145814879354,
+      "source": "https://www.portland.gov/fire/station-24"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "25",
+      "label": "Station 25",
+      "name": "Portland Fire Station 25",
+      "address": "5211 SE Mall St, Portland, OR",
+      "lat": 45.49154830125704,
+      "lon": -122.60862113038625,
+      "source": "https://www.portland.gov/fire/station-25"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "26",
+      "label": "Station 26",
+      "name": "Portland Fire Station 26",
+      "address": "5247 N Lombard St, Portland, OR",
+      "lat": 45.58217642600996,
+      "lon": -122.72262293554694,
+      "source": "https://www.portland.gov/fire/station-26"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "27",
+      "label": "Station 27",
+      "name": "Portland Fire Station 27",
+      "address": "3130 NW Skyline Blvd, Portland, OR",
+      "lat": 45.544846714300256,
+      "lon": -122.76067951009475,
+      "source": "https://www.portland.gov/fire/station-27"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "28",
+      "label": "Station 28",
+      "name": "Portland Fire Station 28",
+      "address": "5540 NE Sandy Blvd, Portland, OR",
+      "lat": 45.54151373146704,
+      "lon": -122.60585321168843,
+      "source": "https://www.portland.gov/fire/station-28"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "29",
+      "label": "Station 29",
+      "name": "Portland Fire Station 29",
+      "address": "13310 SE Foster Rd, Portland, OR",
+      "lat": 45.47649876597158,
+      "lon": -122.52646327343933,
+      "source": "https://www.portland.gov/fire/station-29"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "30",
+      "label": "Station 30",
+      "name": "Portland Fire Station 30",
+      "address": "13313 NE San Rafael St, Portland, OR",
+      "lat": 45.537445534731724,
+      "lon": -122.52592773110457,
+      "source": "https://www.portland.gov/fire/station-30"
+    },
+    {
+      "kind": "fire-station",
+      "ref": "31",
+      "label": "Station 31",
+      "name": "Portland Fire Station 31",
+      "address": "1927 SE 174th Ave, Portland, OR",
+      "lat": 45.508668191240645,
+      "lon": -122.48511904102139,
+      "source": "https://www.portland.gov/fire/station-31"
+    }
+  ]
+}

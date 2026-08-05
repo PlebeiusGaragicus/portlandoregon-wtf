@@ -6,12 +6,27 @@ import { join } from "node:path";
 import { gzipSync } from "node:zlib";
 import type { GameMap } from "@battle-juice/shared";
 import { MANIFEST_FILE, MAP_NAME, MAP_OUT_FILE, MAPS_ASSET_DIR, processedDir } from "./config.js";
+import { bakeLandmarks } from "./landmarks.js";
 
 const TS_MODULE_LIMIT = 8 * 1024 * 1024; // beyond this, bake as a gz asset
 
 const coreFile = join(processedDir(), `${MAP_NAME}-core.json`);
-const json = readFileSync(coreFile, "utf8");
-const map = JSON.parse(json) as GameMap;
+const map = JSON.parse(readFileSync(coreFile, "utf8")) as GameMap;
+
+// Landmarks join here (separate source from the ArcGIS core) — reprojected
+// and clipped to the same play area.
+const marks = bakeLandmarks(map.meta.width, map.meta.height, map.buildings);
+map.landmarks = marks.landmarks;
+console.log(
+  `landmarks: ${marks.landmarks.length} in play area` +
+    (marks.outside ? ` (${marks.outside} outside, dropped)` : "") +
+    `, ${marks.landmarks.length - marks.unmatched.length} matched to a building` +
+    (marks.unmatched.length ? ` (no footprint: ${marks.unmatched.join(", ")})` : "") +
+    (marks.suspicious.length ? ` (cluster under 250 m², verify: ${marks.suspicious.join(", ")})` : "") +
+    (marks.source ? ` — ${marks.source}` : " — none (data/landmarks.json missing)"),
+);
+
+const json = JSON.stringify(map);
 
 let outDesc: string;
 let outFile: string;
@@ -43,6 +58,12 @@ manifest["bakedMap"] = {
   buildings: map.buildings.length,
   props: map.props.length,
   water: map.water?.length ?? 0,
+  landmarks: {
+    count: marks.landmarks.length,
+    matchedToBuilding: marks.landmarks.length - marks.unmatched.length,
+    source: marks.source,
+    scrapedAt: marks.scrapedAt,
+  },
 };
 writeFileSync(MANIFEST_FILE, JSON.stringify(manifest, null, 2) + "\n");
 
@@ -50,5 +71,6 @@ console.log(
   `baked ${outFile} [${outDesc}]\n` +
     `  ${map.meta.width}x${map.meta.height} m | nodes ${map.nodes.length} | edges ${map.edges.length} | ` +
     `buildings ${map.buildings.length} | props ${map.props.length} | water ${map.water?.length ?? 0} | ` +
+    `landmarks ${map.landmarks.length} | ` +
     `entries N=${map.entries.north.length} S=${map.entries.south.length}`,
 );

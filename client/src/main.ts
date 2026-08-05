@@ -1,6 +1,7 @@
 import type { GameMap, Snapshot } from "@battle-juice/shared";
 import { Net } from "./net.js";
 import { Renderer, type PrebuiltLayers } from "./render/index.js";
+import { buildLandmarks } from "./render/landmarks.js";
 import { buildProps } from "./render/props.js";
 import { buildWorld } from "./render/world.js";
 
@@ -36,7 +37,7 @@ const mapPromise: Promise<GameMap> = fetch("/map").then((r) => {
 });
 const prebuiltPromise: Promise<{ map: GameMap; layers: PrebuiltLayers }> = mapPromise.then((map) => ({
   map,
-  layers: { world: buildWorld(map), props: buildProps(map) },
+  layers: { world: buildWorld(map), props: buildProps(map), landmarks: buildLandmarks(map) },
 }));
 
 joinForm.addEventListener("submit", (ev) => {

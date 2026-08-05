@@ -47,6 +47,8 @@ export const REPO_ROOT = join(HERE, "..", "..");
 export const DATA_DIR = join(REPO_ROOT, "data");
 export const ENDPOINTS_FILE = join(DATA_DIR, "endpoints.json");
 export const MANIFEST_FILE = join(DATA_DIR, "MANIFEST.json");
+/** Civic landmarks fetched from official city layers, committed — see scrape-landmarks.ts. */
+export const LANDMARKS_FILE = join(DATA_DIR, "landmarks.json");
 export const MAP_OUT_FILE = join(REPO_ROOT, "shared", "src", "maps", `${MAP_NAME}.ts`);
 
 /** Extraction date used for data/raw/{date} and data/processed/{date}. */

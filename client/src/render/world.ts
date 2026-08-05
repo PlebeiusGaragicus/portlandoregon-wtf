@@ -33,6 +33,13 @@ const USE_TINTS: Record<string, number[]> = {
   other: [0x707786, 0x7d8290, 0x8a8578],
 };
 
+// Landmark buildings (fire stations) are painted, not palette-tinted.
+export const LANDMARK_COLOR = 0xd8281a;
+const LANDMARK_RGB = (() => {
+  const c = new THREE.Color(LANDMARK_COLOR);
+  return [c.r, c.g, c.b];
+})();
+
 // Tile size for chunked meshes — one merged mesh per tile so the GPU
 // frustum-culls off-screen chunks. Every building renders at every zoom.
 const TILE = 1000; // meters
@@ -57,7 +64,9 @@ export function buildWorld(map: GameMap): WorldLayers {
   const streetMat = new THREE.MeshLambertMaterial({ color: STREET_COLOR, side: THREE.DoubleSide });
   for (const mesh of buildStreetTiles(map.edges, streetMat)) group.add(mesh);
 
-  for (const mesh of buildBuildingTiles(map.buildings)) group.add(mesh);
+  const landmarkBuildings = new Set<number>();
+  for (const m of map.landmarks ?? []) for (const id of m.buildingIds ?? []) landmarkBuildings.add(id);
+  for (const mesh of buildBuildingTiles(map.buildings, landmarkBuildings)) group.add(mesh);
 
   const streetNear = new THREE.Color(STREET_COLOR);
   const streetFar = new THREE.Color(0x5a6478); // brighter so the grid reads from altitude
@@ -195,7 +204,7 @@ function pushRibbon(pos: number[], polyline: [number, number][], width: number, 
 }
 
 /** Buildings written straight into per-tile buffers (keyed by first vertex). */
-function buildBuildingTiles(buildings: Building[]): THREE.Mesh[] {
+function buildBuildingTiles(buildings: Building[], landmarks: Set<number>): THREE.Mesh[] {
   // Palette colors as flat rgb triples, resolved once.
   const palettes = new Map<string, number[][]>();
   for (const [use, hexes] of Object.entries(USE_TINTS)) {
@@ -211,6 +220,10 @@ function buildBuildingTiles(buildings: Building[]): THREE.Mesh[] {
     const key = tileKey(fx, fy);
     let soup = tiles.get(key);
     if (!soup) tiles.set(key, (soup = { pos: [], nrm: [], col: [] }));
+    if (landmarks.has(b.id)) {
+      pushPrism(soup, b, LANDMARK_RGB);
+      continue;
+    }
     const palette = palettes.get(b.use ?? "other") ?? palettes.get("other")!;
     pushPrism(soup, b, palette[b.id % palette.length]!);
   }

@@ -9,6 +9,7 @@
     "extract": "tsx extract.ts",
     "validate": "tsx validate.ts",
     "transform": "tsx transform.ts",
+    "scrape-landmarks": "tsx scrape-landmarks.ts",
     "build-map": "tsx build.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit"

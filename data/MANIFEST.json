@@ -88,8 +88,8 @@
     "streetEpsilonM": 1,
     "footprintEpsilonM": 0.5,
     "counts": {
-      "nodes": 36912,
-      "edges": 44178,
+      "nodes": 65433,
+      "edges": 84087,
       "buildings": 538519,
       "props": 375775,
       "water": 2,
@@ -99,7 +99,7 @@
   },
   "bakedMap": {
     "file": "data/maps/portland.json.gz",
-    "kind": "gz-asset (118.9 MB raw, 26.0 MB gz)",
+    "kind": "gz-asset (125.5 MB raw, 27.3 MB gz)",
     "meta": {
       "name": "portland",
       "sourceDate": "2026-08-04",
@@ -110,11 +110,17 @@
       "width": 43573,
       "height": 35780
     },
-    "nodes": 36912,
-    "edges": 44178,
+    "nodes": 65433,
+    "edges": 84087,
     "buildings": 538519,
     "props": 375775,
-    "water": 2
+    "water": 2,
+    "landmarks": {
+      "count": 31,
+      "matchedToBuilding": 31,
+      "source": "https://www.portlandmaps.com/arcgis/rest/services/Public/Public_Safety_Places/MapServer/0/query",
+      "scrapedAt": "2026-08-05"
+    }
   },
   "signKeep": {
     "R1010": "stop",
