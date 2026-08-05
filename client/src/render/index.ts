@@ -304,9 +304,21 @@ export class Renderer {
         root.traverse((o) => {
           if (!(o instanceof THREE.Mesh) || seen.has(o)) return;
           seen.add(o);
-          if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere();
-          const c = o.geometry.boundingSphere!.center;
-          this.fpvCull.push({ obj: o, x: c.x, z: c.z, range: range + o.geometry.boundingSphere!.radius });
+          let c: THREE.Vector3;
+          let rad: number;
+          if (o instanceof THREE.InstancedMesh) {
+            // Instanced tiles (trees, hydrants, furniture): the GEOMETRY
+            // sphere sits at the origin — bounds must come from the
+            // instance matrices or the whole tile culls out everywhere.
+            o.computeBoundingSphere();
+            c = o.boundingSphere!.center;
+            rad = o.boundingSphere!.radius;
+          } else {
+            if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere();
+            c = o.geometry.boundingSphere!.center;
+            rad = o.geometry.boundingSphere!.radius;
+          }
+          this.fpvCull.push({ obj: o, x: c.x, z: c.z, range: range + rad });
         });
       };
       register(this.fpvProps.near, 2200); // street furniture: unreadable past 2 km
