@@ -31,12 +31,33 @@ const STREET_COLOR = 0x3a4150; // asphalt
 const WATER_Y = 0.1; // between ground and streets
 const PARK_Y = 0.18;
 const SIDEWALK_COLOR = 0x555c66; // concrete, lighter than asphalt
-const SIDEWALK_Y = 0.22;
-const STREET_Y = 0.28; // lift above ground to avoid z-fighting
+// Draped layers hug the terrain (tiny hovers only), and their stacking is
+// resolved in the DEPTH BUFFER via polygonOffset — decals painted on the
+// ground, not paper sheets floating above it. More negative wins overlap.
+const SIDEWALK_Y = 0.02;
+const STREET_Y = 0.04;
 const MARK_WHITE = 0xb9c0c8; // painted pavement markings
 const MARK_YELLOW = 0xc2a53a;
-const MARK_Y = 0.33;
-const TRAIL_Y = 0.36;
+const MARK_Y = 0.06;
+const TRAIL_Y = 0.08;
+const OFF_SIDEWALK = -1;
+const OFF_STREET = -2;
+const OFF_TRAIL = -3;
+const OFF_MARK = -4;
+const OFF_RAIL = -5;
+const OFF_STOP = -6;
+
+/** Decal-style material: drawn essentially on the terrain surface, pulled
+ * toward the camera in depth so it always wins against the ground mesh. */
+function decalMat(opts: THREE.MeshLambertMaterialParameters, off: number): THREE.MeshLambertMaterial {
+  return new THREE.MeshLambertMaterial({
+    ...opts,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: off,
+    polygonOffsetUnits: off,
+  });
+}
 
 // Palette variants per normalized building use — true-to-life variety:
 // warm single-family, terracotta multi-family, cool commercial/office,
@@ -84,9 +105,9 @@ const RAIL_STYLE: Record<RailLine["kind"], { color: number; width: number }> = {
   wes: { color: 0x8055d9, width: 3.2 },
 };
 const YARD_COLOR = 0x36322b; // ballast/gravel
-const YARD_Y = 0.14; // under streets, over parks
-const RAIL_Y = 0.44; // over streets/trails so crossings read
-const STOP_Y = 0.5;
+const YARD_Y = 0.14; // flat-fallback only (with terrain, yards are painted in)
+const RAIL_Y = 0.1; // over streets/trails so crossings read
+const STOP_Y = 0.12;
 const STOP_RADIUS = 5; // m platform disc
 
 // Tile size for chunked meshes — one merged mesh per tile so the GPU
@@ -129,13 +150,17 @@ export function buildWorld(map: GameMap, hf?: Heightfield | null): WorldLayers {
   // still drape — the ZLEV rule is phase 2.)
   const overWater = waterTester(map.water ?? [], map.meta.width, map.meta.height);
 
-  const trails = buildTrails(map.trails ?? [], ground, overWater);
+  // Terrain cell size lets ribbon vertices land exactly where the ground
+  // surface kinks, so draped decals conform instead of clipping.
+  const cell = hf ? hf.cellSize : Infinity;
+
+  const trails = buildTrails(map.trails ?? [], ground, cell, overWater);
   if (trails) group.add(trails);
 
-  const streetMat = new THREE.MeshLambertMaterial({ color: STREET_COLOR, side: THREE.DoubleSide });
-  for (const mesh of buildStreetTiles(map.edges, streetMat, ground, overWater)) group.add(mesh);
+  const streetMat = decalMat({ color: STREET_COLOR }, OFF_STREET);
+  for (const mesh of buildStreetTiles(map.edges, streetMat, ground, cell, overWater)) group.add(mesh);
 
-  for (const mesh of buildRails(map.rails ?? [], ground, overWater)) group.add(mesh);
+  for (const mesh of buildRails(map.rails ?? [], ground, cell, overWater)) group.add(mesh);
   const stops = buildRailStops(map.railStops ?? [], ground);
   if (stops) group.add(stops);
 
@@ -150,11 +175,13 @@ export function buildWorld(map: GameMap, hf?: Heightfield | null): WorldLayers {
     (map.sidewalks ?? []).map((s) => ({ rings: s.rings, color: SIDEWALK_COLOR })),
     SIDEWALK_Y,
     ground,
+    OFF_SIDEWALK,
   )) detail.add(mesh);
   for (const mesh of drapedPolyTiles(
     (map.markingAreas ?? []).map((a) => ({ rings: a.rings, color: a.style === "yellow" ? MARK_YELLOW : MARK_WHITE })),
     MARK_Y,
     ground,
+    OFF_MARK,
   )) detail.add(mesh);
   {
     const laneTiles = new Map<number, Soup>();
@@ -162,9 +189,9 @@ export function buildWorld(map: GameMap, hf?: Heightfield | null): WorldLayers {
       const [mx, my] = l.polyline[Math.floor(l.polyline.length / 2)]!;
       let soup = laneTiles.get(tileKey(mx, my));
       if (!soup) laneTiles.set(tileKey(mx, my), (soup = { pos: [], nrm: [] }));
-      pushRibbon(soup.pos, l.polyline, 0.35, MARK_Y, ground);
+      pushRibbon(soup.pos, l.polyline, 0.35, MARK_Y, ground, cell);
     }
-    const laneMat = new THREE.MeshLambertMaterial({ color: MARK_YELLOW, side: THREE.DoubleSide });
+    const laneMat = decalMat({ color: MARK_YELLOW }, OFF_MARK);
     for (const soup of laneTiles.values()) detail.add(soupMesh(soup, laneMat));
   }
 
@@ -313,8 +340,8 @@ function buildTerrainTiles(map: GameMap, hf: Heightfield): THREE.Mesh[] {
   return meshes;
 }
 
-const DRAPE_EDGE = 25; // m — subdivide small-poly triangles down to this
-const DRAPE_N_CAP = 16;
+const DRAPE_EDGE = 10; // m — subdivide small-poly triangles down to this
+const DRAPE_N_CAP = 32;
 
 /**
  * Small polygons (sidewalk strips, painted markings) draped onto terrain and
@@ -325,6 +352,7 @@ function drapedPolyTiles(
   bodies: { rings: [number, number][][]; color: number }[],
   yOff: number,
   ground: GroundFn,
+  depthOff: number,
 ): THREE.Mesh[] {
   // color -> tile -> soup
   const byColor = new Map<number, Map<number, Soup>>();
@@ -370,7 +398,7 @@ function drapedPolyTiles(
   }
   const meshes: THREE.Mesh[] = [];
   for (const [color, tiles] of byColor) {
-    const mat = new THREE.MeshLambertMaterial({ color, side: THREE.DoubleSide });
+    const mat = decalMat({ color }, depthOff);
     for (const soup of tiles.values()) meshes.push(soupMesh(soup, mat));
   }
   return meshes;
@@ -458,15 +486,16 @@ function waterTester(
 function buildTrails(
   trails: { polyline: [number, number][] }[],
   ground: GroundFn,
+  cell: number,
   overWater: (p: [number, number][]) => boolean,
 ): THREE.Mesh | null {
   if (trails.length === 0) return null;
   const soup: Soup = { pos: [], nrm: [] };
   for (const t of trails) {
-    pushRibbon(soup.pos, t.polyline, 2.5, TRAIL_Y, ground, overWater(t.polyline));
+    pushRibbon(soup.pos, t.polyline, 2.5, TRAIL_Y, ground, cell, overWater(t.polyline));
   }
   if (soup.pos.length === 0) return null;
-  return soupMesh(soup, new THREE.MeshLambertMaterial({ color: TRAIL_COLOR, side: THREE.DoubleSide }));
+  return soupMesh(soup, decalMat({ color: TRAIL_COLOR }, OFF_TRAIL));
 }
 
 /** Turn a soup into a mesh (normals constant-up when nrm is empty). */
@@ -489,6 +518,7 @@ function buildStreetTiles(
   edges: StreetEdge[],
   mat: THREE.MeshLambertMaterial,
   ground: GroundFn,
+  cell: number,
   overWater: (p: [number, number][]) => boolean,
 ): THREE.Mesh[] {
   const tiles = new Map<number, Soup>();
@@ -499,23 +529,53 @@ function buildStreetTiles(
     let soup = tiles.get(key);
     if (!soup) tiles.set(key, (soup = { pos: [], nrm: [] }));
     const span = edge.struct === "bridge" || overWater(edge.polyline);
-    pushRibbon(soup.pos, edge.polyline, edge.width, STREET_Y, ground, span);
+    pushRibbon(soup.pos, edge.polyline, edge.width, STREET_Y, ground, cell, span);
   }
   return [...tiles.values()].map((soup) => soupMesh(soup, mat));
 }
 
-const RIBBON_STEP = 15; // m — resample so drape tracks terrain triangles
+const RIBBON_STEP = 15; // m — max span between ribbon cross-sections
 
-/** Insert points so no segment exceeds RIBBON_STEP (long straight street
- * segments would otherwise let terrain poke through the draped ribbon). */
-function resample(polyline: [number, number][]): [number, number][] {
+/** Push the segment parameters (0..1) where `u` crosses integer values. */
+function addCrossings(ts: number[], u0: number, u1: number): void {
+  if (u0 === u1) return;
+  const lo = Math.min(u0, u1);
+  const hi = Math.max(u0, u1);
+  for (let k = Math.ceil(lo); k <= Math.floor(hi); k++) {
+    const t = (k - u0) / (u1 - u0);
+    if (t > 1e-4 && t < 1 - 1e-4) ts.push(t);
+  }
+}
+
+/**
+ * Insert points so no span exceeds RIBBON_STEP AND a vertex lands wherever
+ * the segment crosses a terrain grid line (columns, rows, and the cell
+ * anti-diagonals the mesh is triangulated along). Between two such vertices
+ * the terrain surface is planar, so a draped ribbon sampled at them conforms
+ * exactly instead of letting slopes poke through mid-span.
+ */
+function resample(polyline: [number, number][], cell: number): [number, number][] {
   const out: [number, number][] = [polyline[0]!];
   for (let i = 1; i < polyline.length; i++) {
     const [ax, ay] = polyline[i - 1]!;
     const [bx, by] = polyline[i]!;
     const len = Math.hypot(bx - ax, by - ay);
+    const ts: number[] = [];
     const n = Math.ceil(len / RIBBON_STEP);
-    for (let k = 1; k <= n; k++) out.push([ax + ((bx - ax) * k) / n, ay + ((by - ay) * k) / n]);
+    for (let k = 1; k < n; k++) ts.push(k / n);
+    if (Number.isFinite(cell)) {
+      addCrossings(ts, ax / cell, bx / cell);
+      addCrossings(ts, ay / cell, by / cell);
+      addCrossings(ts, (ax + ay) / cell, (bx + by) / cell);
+    }
+    ts.sort((p, q) => p - q);
+    let last = 0;
+    for (const t of ts) {
+      if (t - last < 1e-4) continue;
+      last = t;
+      out.push([ax + (bx - ax) * t, ay + (by - ay) * t]);
+    }
+    out.push([bx, by]);
   }
   return out;
 }
@@ -532,10 +592,11 @@ function pushRibbon(
   width: number,
   atY: number,
   ground: GroundFn,
+  cell: number,
   span = false,
 ): void {
   if (rawPolyline.length < 2) return;
-  const polyline = resample(rawPolyline);
+  const polyline = resample(rawPolyline, cell);
   const half = width / 2;
   const left: [number, number][] = [];
   const right: [number, number][] = [];
@@ -574,16 +635,24 @@ function pushRibbon(
     return Math.max(g, lerp);
   };
 
+  // Two strips with a shared center row: sampling the centerline height too
+  // lets wide roads fold across a terrain crease instead of planking over it
+  // (or being sliced by it).
+  const rows = [left, polyline, right];
   for (let i = 0; i < polyline.length - 1; i++) {
-    const quad: [number, number, number][] = [
-      [...left[i]!, heightOf(i, left[i]![0], left[i]![1])],
-      [...right[i]!, heightOf(i, right[i]![0], right[i]![1])],
-      [...right[i + 1]!, heightOf(i + 1, right[i + 1]![0], right[i + 1]![1])],
-      [...left[i + 1]!, heightOf(i + 1, left[i + 1]![0], left[i + 1]![1])],
-    ];
-    for (const idx of [0, 1, 2, 0, 2, 3]) {
-      const [wx, wy, wh] = quad[idx]!;
-      pos.push(wx, atY + wh, -wy);
+    for (let s = 0; s < 2; s++) {
+      const A = rows[s]!;
+      const B = rows[s + 1]!;
+      const quad: [number, number, number][] = [
+        [...A[i]!, heightOf(i, A[i]![0], A[i]![1])],
+        [...B[i]!, heightOf(i, B[i]![0], B[i]![1])],
+        [...B[i + 1]!, heightOf(i + 1, B[i + 1]![0], B[i + 1]![1])],
+        [...A[i + 1]!, heightOf(i + 1, A[i + 1]![0], A[i + 1]![1])],
+      ];
+      for (const idx of [0, 1, 2, 0, 2, 3]) {
+        const [wx, wy, wh] = quad[idx]!;
+        pos.push(wx, atY + wh, -wy);
+      }
     }
   }
 }
@@ -592,16 +661,17 @@ function pushRibbon(
 function buildRails(
   rails: RailLine[],
   ground: GroundFn,
+  cell: number,
   overWater: (p: [number, number][]) => boolean,
 ): THREE.Mesh[] {
   const soups = new Map<RailLine["kind"], Soup>();
   for (const r of rails) {
     let soup = soups.get(r.kind);
     if (!soup) soups.set(r.kind, (soup = { pos: [], nrm: [] }));
-    pushRibbon(soup.pos, r.polyline, RAIL_STYLE[r.kind].width, RAIL_Y, ground, overWater(r.polyline));
+    pushRibbon(soup.pos, r.polyline, RAIL_STYLE[r.kind].width, RAIL_Y, ground, cell, overWater(r.polyline));
   }
   return [...soups.entries()].map(([kind, soup]) =>
-    soupMesh(soup, new THREE.MeshLambertMaterial({ color: RAIL_STYLE[kind].color, side: THREE.DoubleSide })),
+    soupMesh(soup, decalMat({ color: RAIL_STYLE[kind].color }, OFF_RAIL)),
   );
 }
 
@@ -624,7 +694,7 @@ function buildRailStops(stops: RailStop[], ground: GroundFn): THREE.Mesh | null 
       for (let v = 0; v < 3; v++) soup.col!.push(c.r, c.g, c.b);
     }
   }
-  return soupMesh(soup, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+  return soupMesh(soup, decalMat({ vertexColors: true }, OFF_STOP));
 }
 
 /** Buildings written straight into per-tile buffers (keyed by first vertex). */
