@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { heightAt, raycastHeightfield, type GameMap, type Heightfield } from "@battle-juice/shared";
+import { Actors } from "./actors.js";
 import { CameraRig, toScene, toWorldXY } from "./camera.js";
 import { Controls, type ControlDelegate } from "./controls.js";
 import { DayNight } from "./daynight.js";
@@ -56,6 +57,7 @@ export class Renderer {
   private hemi!: THREE.HemisphereLight;
   private sun!: THREE.DirectionalLight;
   private daynight = new DayNight();
+  private actors!: Actors;
   private lastNight = -1;
   private hudClock!: HTMLDivElement;
   private hudScale!: HTMLDivElement;
@@ -117,6 +119,8 @@ export class Renderer {
     this.scene.add(this.props.group, this.props.glow);
     this.landmarks = opts.prebuilt?.landmarks ?? buildLandmarks(map, hf);
     this.scene.add(this.landmarks.group);
+    this.actors = new Actors(map, hf);
+    this.scene.add(this.actors.group);
 
     this.rig = new CameraRig(map);
     this.rig.viewHeight = START_VIEW;
@@ -395,6 +399,7 @@ export class Renderer {
     this.disposed = true;
     for (const d of this.fpvDisposers) d();
     this.fpvDisposers = [];
+    this.actors.dispose();
     this.fpvHint.remove();
     this.fadeEl.remove();
     this.hudClock.remove();
@@ -442,6 +447,8 @@ export class Renderer {
       if (!this.scene.fog) this.scene.fog = new THREE.FogExp2(0x323e55, 0.00008);
       this.ensureSky().visible = true;
       const aspect = (this.canvas.clientWidth || 1) / (this.canvas.clientHeight || 1);
+      this.actors.setListener({ x: this.fpv.x, y: this.fpv.y });
+      this.actors.update(dt, now / 1000, { x: this.fpv.x, y: this.fpv.y }, this.daynight.night);
       this.fpv.apply(this.camera, aspect);
       this.compass.style.setProperty("--rot", `${this.fpv.yaw}rad`);
       this.sky!.position.copy(this.camera.position);
@@ -482,6 +489,8 @@ export class Renderer {
     ];
     this.minimap.update(corners, []);
 
+    this.actors.setListener(null);
+    this.actors.update(dt, now / 1000, this.rig.target, this.daynight.night);
     this.applyDayNight(this.rig.target.x, this.rig.target.y, this.ground(this.rig.target.x, this.rig.target.y), vh < SHADOW_MAX_VIEW);
     this.updateScaleBar(vh);
 
