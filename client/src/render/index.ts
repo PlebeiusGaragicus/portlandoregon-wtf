@@ -115,7 +115,13 @@ export class Renderer {
     this.ground = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
     this.world = opts.prebuilt?.world ?? buildWorld(map, hf);
     this.world.group.traverse((o) => {
-      if (o instanceof THREE.Mesh) o.castShadow = o.receiveShadow = true;
+      if (!(o instanceof THREE.Mesh)) return;
+      o.receiveShadow = true;
+      // Decals (streets, sidewalks, paint — polygonOffset materials) hug the
+      // terrain within centimeters, far below the shadow map's depth
+      // resolution: letting them cast just shadow-acnes the ground black.
+      const m = o.material as THREE.Material;
+      o.castShadow = !("polygonOffset" in m && m.polygonOffset);
     });
     this.scene.add(this.world.group);
     this.props = opts.prebuilt?.props ?? buildProps(map, hf);
