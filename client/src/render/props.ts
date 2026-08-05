@@ -18,9 +18,31 @@ const TILE = 1000; // meters — instanced meshes chunked for frustum culling
  * over life size. FPV rebuilds with scale 1 so everything is life-sized. */
 export const ICON_SCALE = 2.5;
 
+/** Soft radial gradient (hot center, feathered edge) for lamp pools and
+ * sky bodies — cheap fake bloom: an additive textured quad. */
+export function radialGlowTexture(size = 128): THREE.CanvasTexture {
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = size;
+  const ctx = cv.getContext("2d")!;
+  const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  grad.addColorStop(0, "rgba(255,255,255,1)");
+  grad.addColorStop(0.18, "rgba(255,255,255,0.75)");
+  grad.addColorStop(0.45, "rgba(255,255,255,0.28)");
+  grad.addColorStop(0.75, "rgba(255,255,255,0.07)");
+  grad.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
 export interface PropLayers {
   /** Everything (contains `near`). */
   group: THREE.Group;
+  /** Lamplight pools — kept OUT of `group` so the city keeps its night glow
+   * at any zoom, even when the lamp geometry itself is culled. */
+  glow: THREE.Group;
   /** Day/night dial: 0 = daylight (lamps off) .. 1 = deep night (full glow). */
   setNight(n: number): void;
   /** Small street furniture — signs, signals, meters, benches, racks, speed
@@ -43,6 +65,7 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
   const g = hf ? (x: number, y: number): number => heightAt(hf, x, y) : (): number => 0;
   const group = new THREE.Group();
   const near = new THREE.Group();
+  const glow = new THREE.Group();
   group.add(near);
   const byTile = new Map<
     number,
@@ -94,10 +117,16 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
   const lightHeadGeo = new THREE.SphereGeometry(0.45 * s, 6, 5);
   const lightPoleMat = new THREE.MeshLambertMaterial({ color: 0x555b66 });
   const lightHeadMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0 }); // warm glow, unlit
-  // Additive pool of lamplight on the pavement under each luminaire.
-  const poolGeo = new THREE.CircleGeometry(4.5 * s, 12);
+  // Additive pool of lamplight on the pavement under each luminaire: a wide
+  // quad with a radial-gradient texture — soft-edged, bloom-ish, one instanced
+  // draw per tile.
+  // Life-size (FPV) pools stay tighter: at eye level the wide quads stack
+  // into additive overdraw across the whole frustum.
+  const POOL_R = s > 1 ? 9 * s : 7;
+  const poolGeo = new THREE.PlaneGeometry(POOL_R * 2, POOL_R * 2);
   poolGeo.rotateX(-Math.PI / 2);
   const poolMat = new THREE.MeshBasicMaterial({
+    map: radialGlowTexture(),
     color: 0xffc078,
     transparent: true,
     opacity: 0,
@@ -188,7 +217,8 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
       });
       pool.visible = false;
       pools.push(pool);
-      group.add(poles, heads, pool);
+      group.add(poles, heads);
+      glow.add(pool);
     }
     if (bucket.meters.length) {
       const poles = new THREE.InstancedMesh(meterGeo, meterMat, bucket.meters.length);
@@ -247,9 +277,10 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
   return {
     group,
     near,
+    glow,
     setNight(n: number): void {
       lightHeadMat.color.copy(dayOff).lerp(nightOn, n);
-      poolMat.opacity = 0.3 * n;
+      poolMat.opacity = 0.5 * n;
       const on = n > 0.03;
       for (const pm of pools) pm.visible = on;
     },

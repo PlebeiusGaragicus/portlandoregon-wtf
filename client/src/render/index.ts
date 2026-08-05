@@ -6,7 +6,7 @@ import { DayNight } from "./daynight.js";
 import { FpvMode } from "./fpv.js";
 import { buildLandmarks, type LandmarkLayer } from "./landmarks.js";
 import { Minimap } from "./minimap.js";
-import { buildProps, type PropLayers } from "./props.js";
+import { buildProps, radialGlowTexture, type PropLayers } from "./props.js";
 import { buildWorld, type WorldLayers } from "./world.js";
 
 // Zoom thresholds (meters of vertical view).
@@ -67,6 +67,8 @@ export class Renderer {
 
   private map: GameMap;
   private sky: THREE.Mesh | null = null;
+  private skyBody: THREE.Mesh | null = null;
+  private skyBodyMat: THREE.MeshBasicMaterial | null = null;
   private fpvProps: PropLayers | null = null;
   private fpv: FpvMode | null = null;
   private fpvOn = false;
@@ -112,7 +114,7 @@ export class Renderer {
     });
     this.scene.add(this.world.group);
     this.props = opts.prebuilt?.props ?? buildProps(map, hf);
-    this.scene.add(this.props.group);
+    this.scene.add(this.props.group, this.props.glow);
     this.landmarks = opts.prebuilt?.landmarks ?? buildLandmarks(map, hf);
     this.scene.add(this.landmarks.group);
 
@@ -238,7 +240,9 @@ export class Renderer {
     if (!this.fpvProps) {
       this.fpvProps = buildProps(this.map, this.hf, 1);
       this.fpvProps.group.visible = false;
-      this.scene.add(this.fpvProps.group);
+      this.fpvProps.glow.visible = false;
+      this.fpvProps.setNight(this.daynight.night);
+      this.scene.add(this.fpvProps.group, this.fpvProps.glow);
     }
     // Enter skydiving from roughly the map camera's altitude — dramatic from
     // street zoom, capped so strategic view doesn't mean a minute of freefall.
@@ -276,6 +280,29 @@ export class Renderer {
     this.scene.add(this.sky);
     this.recolorSky();
     return this.sky;
+  }
+
+  /** Sun/moon: a soft additive billboard riding the sky dome (FPV only). */
+  private updateSkyBody(): void {
+    if (!this.skyBody) {
+      this.skyBodyMat = new THREE.MeshBasicMaterial({
+        map: radialGlowTexture(256),
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        fog: false,
+      });
+      this.skyBody = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.skyBodyMat);
+      this.skyBody.renderOrder = 0; // over the dome, under the world
+      this.scene.add(this.skyBody);
+    }
+    const dn = this.daynight;
+    this.skyBody.visible = true;
+    this.skyBody.position.copy(this.camera.position).addScaledVector(dn.lightDir, SKY_R * 0.88);
+    this.skyBody.quaternion.copy(this.camera.quaternion);
+    const size = dn.day ? 2600 : 1500;
+    this.skyBody.scale.set(size, size, 1);
+    this.skyBodyMat!.color.copy(dn.lightColor).multiplyScalar(dn.day ? 1 : 0.85);
   }
 
   private skyColor = new THREE.Color();
@@ -397,7 +424,11 @@ export class Renderer {
       // for the map view — at eye height they wallpaper the horizon, so off.
       this.world.setBlend(0);
       this.props.group.visible = false;
-      if (this.fpvProps) this.fpvProps.group.visible = true;
+      this.props.glow.visible = false;
+      if (this.fpvProps) {
+        this.fpvProps.group.visible = true;
+        this.fpvProps.glow.visible = true;
+      }
       this.world.detail.visible = true;
       this.landmarks.group.visible = false;
       if (!this.scene.fog) this.scene.fog = new THREE.FogExp2(0x323e55, 0.00008);
@@ -405,6 +436,7 @@ export class Renderer {
       const aspect = (this.canvas.clientWidth || 1) / (this.canvas.clientHeight || 1);
       this.fpv.apply(this.camera, aspect);
       this.sky!.position.copy(this.camera.position);
+      this.updateSkyBody();
       this.applyDayNight(this.fpv.x, this.fpv.y, this.fpv.z, true);
       this.webgl.render(this.scene, this.camera);
       requestAnimationFrame(() => this.frame());
@@ -412,7 +444,12 @@ export class Renderer {
     }
     if (this.scene.fog) this.scene.fog = null;
     if (this.sky) this.sky.visible = false;
-    if (this.fpvProps) this.fpvProps.group.visible = false;
+    if (this.skyBody) this.skyBody.visible = false;
+    this.props.glow.visible = true;
+    if (this.fpvProps) {
+      this.fpvProps.group.visible = false;
+      this.fpvProps.glow.visible = false;
+    }
     this.landmarks.group.visible = true;
     this.controls.update(dt);
 

@@ -2,9 +2,13 @@ import * as THREE from "three";
 
 // Accelerated day/night driven by the real clock: CYCLES_PER_DAY full
 // day-night cycles per real day, phase-locked to local midnight (so 12:00AM
-// real time is always in-game midnight). One cycle = 3 real hours.
+// real time is always in-game midnight). Within a cycle the sun follows real
+// solar geometry for Portland's latitude on today's real date — August days
+// run long, December days short, and the noon sun sits where it should.
 
-export const CYCLES_PER_DAY = 8;
+export const CYCLES_PER_DAY = 12;
+
+const LAT = (45.5152 * Math.PI) / 180; // Portland
 
 interface Palette {
   zenith: number;
@@ -27,10 +31,12 @@ export class DayNight {
   /** In-game time of day, 0 = midnight .. 1. */
   t = 0;
   clock = "00:00";
+  /** True when the sun is up (the moon is modeled anti-solar, so exactly one
+   * body is above the horizon at any moment). */
   day = false;
   /** 0 in daylight .. 1 deep night: lamp glow, window of "lights on". */
   night = 1;
-  /** Direction TO the light source (sun or moon), scene frame (y up). */
+  /** Direction TO the active body (sun or moon), scene frame (y up). */
   lightDir = new THREE.Vector3(0, 1, 0);
   lightColor = new THREE.Color();
   lightIntensity = 1;
@@ -42,6 +48,7 @@ export class DayNight {
   private a = new THREE.Color();
 
   update(nowMs: number): void {
+    const d = new Date(nowMs);
     const midnight = new Date(nowMs).setHours(0, 0, 0, 0);
     const cycleMs = 86_400_000 / CYCLES_PER_DAY;
     this.t = this.overrideT ?? ((nowMs - midnight) % cycleMs) / cycleMs;
@@ -49,24 +56,37 @@ export class DayNight {
     const mins = Math.floor(this.t * 24 * 60);
     this.clock = `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`;
 
-    // Sun above the horizon 06:00-18:00; the moon works the other shift.
-    // Both sweep east -> south -> west (northern-hemisphere city).
-    const phase = (this.t + 0.75) % 1; // 0 at 06:00
-    this.day = phase < 0.5;
-    const prog = (this.day ? phase : phase - 0.5) / 0.5; // 0..1 across the sky
-    const az = prog * Math.PI;
-    const maxElev = this.day ? 1.05 : 0.85; // radians at culmination
-    const elev = Math.sin(prog * Math.PI) * maxElev;
-    // World frame: morning east (+x), culmination south (-y), evening west.
-    const ce = Math.cos(elev);
-    this.lightDir.set(Math.cos(az) * ce, Math.sin(elev), Math.sin(az) * ce);
+    // Solar declination for today's real date (drives season length).
+    const yearStart = new Date(d.getFullYear(), 0, 0).getTime();
+    const doy = Math.floor((nowMs - yearStart) / 86_400_000);
+    const decl = ((-23.44 * Math.PI) / 180) * Math.cos((2 * Math.PI * (doy + 10)) / 365);
 
-    const horizonFade = Math.min(1, elev / 0.3); // 0 at the horizon, 1 high up
+    // Hour angle: 0 at virtual solar noon. Sun elevation from the standard
+    // spherical formula; the (full) moon is modeled exactly anti-solar.
+    const H = (this.t - 0.5) * 2 * Math.PI;
+    const sunElev = Math.asin(
+      Math.sin(LAT) * Math.sin(decl) + Math.cos(LAT) * Math.cos(decl) * Math.cos(H),
+    );
+    this.day = sunElev > 0;
+    const e = this.day ? sunElev : -sunElev; // active body's elevation
+    const bDecl = this.day ? decl : -decl;
+    const bH = this.day ? H : H + Math.PI;
+
+    // Azimuth from north, clockwise (east = morning side).
+    const cosA =
+      (Math.sin(bDecl) - Math.sin(e) * Math.sin(LAT)) / (Math.cos(e) * Math.cos(LAT) || 1e-9);
+    let az = Math.acos(Math.min(1, Math.max(-1, cosA)));
+    if (Math.sin(bH) > 0) az = 2 * Math.PI - az; // past culmination: west side
+    const ce = Math.cos(e);
+    // World (x east, y north, z up) -> scene (x, z, -y).
+    this.lightDir.set(Math.sin(az) * ce, Math.sin(e), -Math.cos(az) * ce);
+
+    const horizonFade = Math.min(1, e / 0.3); // 0 at the horizon, 1 high up
     if (this.day) {
       this.lightColor.copy(SUN_LOW).lerp(SUN_WARM, horizonFade);
       this.lightIntensity = 0.25 + 1.45 * horizonFade;
       this.hemiIntensity = 0.45 + 0.5 * horizonFade;
-      this.night = Math.max(0, Math.min(1, 1 - elev / 0.2));
+      this.night = Math.max(0, Math.min(1, (0.08 - sunElev) / 0.2));
     } else {
       // Bright moonlight: cool, hard, plenty to see (and cast shadows) by.
       this.lightColor.copy(MOON);
@@ -76,7 +96,7 @@ export class DayNight {
     }
 
     // Sky/fog palettes: dusk near the horizon crossings, else day/night.
-    const toward = Math.min(1, Math.abs(elev) / 0.35);
+    const toward = Math.min(1, Math.abs(sunElev) / 0.35);
     const p = this.day ? DAY : NIGHT;
     this.mix(this.zenith, DUSK.zenith, p.zenith, toward);
     this.mix(this.horizon, DUSK.horizon, p.horizon, toward);
