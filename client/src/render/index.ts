@@ -64,6 +64,7 @@ export class Renderer {
   private fpv: FpvMode | null = null;
   private fpvOn = false;
   private fpvHint: HTMLDivElement;
+  private fadeEl: HTMLDivElement;
   private fpvHintTimer = 0;
   private fpvDisposers: (() => void)[] = [];
 
@@ -134,6 +135,9 @@ export class Renderer {
     this.fpvHint = document.createElement("div");
     this.fpvHint.id = "fpvhint";
     parent.appendChild(this.fpvHint);
+    this.fadeEl = document.createElement("div");
+    this.fadeEl.id = "modefade";
+    parent.appendChild(this.fadeEl);
     this.wireFpvInput();
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
@@ -168,8 +172,23 @@ export class Renderer {
     return toWorldXY(hit);
   }
 
+  /** Cut to dark, then fade the new mode in — covers the camera jump (and
+   * the one-time collision/props build on first FPV entry). */
+  private flashFade(): void {
+    const s = this.fadeEl.style;
+    s.transition = "none";
+    s.opacity = "1";
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        s.transition = "opacity 0.6s ease";
+        s.opacity = "0";
+      }),
+    );
+  }
+
   /** Toggle first-person walk/fly mode at the current camera focus. */
   toggleFpv(): void {
+    this.flashFade();
     if (this.fpvOn) {
       this.fpvOn = false;
       if (this.fpv) {
@@ -191,10 +210,13 @@ export class Renderer {
       this.fpvProps.group.visible = false;
       this.scene.add(this.fpvProps.group);
     }
+    // Enter skydiving from roughly the map camera's altitude — dramatic from
+    // street zoom, capped so strategic view doesn't mean a minute of freefall.
+    const dropH = Math.min(600, Math.max(200, this.rig.viewHeight * 1.2));
     if (!this.fpv) {
-      this.fpv = new FpvMode(this.map, this.hf, this.rig.target, this.rig.theta);
+      this.fpv = new FpvMode(this.map, this.hf, this.rig.target, this.rig.theta, dropH);
     } else {
-      this.fpv.place(this.rig.target.x, this.rig.target.y);
+      this.fpv.place(this.rig.target.x, this.rig.target.y, dropH);
       this.fpv.yaw = this.rig.theta;
     }
     this.fpvOn = true;
@@ -301,6 +323,7 @@ export class Renderer {
     for (const d of this.fpvDisposers) d();
     this.fpvDisposers = [];
     this.fpvHint.remove();
+    this.fadeEl.remove();
     this.controls.dispose();
     this.minimap.dispose();
     this.compass.remove();

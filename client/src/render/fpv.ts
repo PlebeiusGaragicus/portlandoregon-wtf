@@ -13,6 +13,7 @@ const FLY = 45;
 const FLY_SPRINT = 140;
 const FLY_VERT = 22;
 const GRAVITY = -26;
+const MAX_FALL = 110; // terminal velocity — sky-drop entries stay snappy but landable
 const JUMP = 9.5;
 const ACCEL = 14; // horizontal velocity easing, higher = snappier
 const STEP = 0.9; // max ledge height feet can pop over / stand across
@@ -179,6 +180,7 @@ export class FpvMode {
   private vx = 0;
   private vy = 0;
   private vz = 0;
+  private dropping = false; // sky-drop entry in progress (auto-levels the view near touchdown)
   private grounded = false;
   private lastSpaceAt = -Infinity;
   private keys = new Set<string>();
@@ -187,7 +189,7 @@ export class FpvMode {
   private mapW: number;
   private mapH: number;
 
-  constructor(map: GameMap, hf: Heightfield | null, start: { x: number; y: number }, yaw: number) {
+  constructor(map: GameMap, hf: Heightfield | null, start: { x: number; y: number }, yaw: number, dropHeight = 0) {
     this.terrain = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
     this.solids = new SolidIndex(map, this.terrain);
     this.mapW = map.meta.width;
@@ -196,12 +198,15 @@ export class FpvMode {
     this.y = start.y;
     this.z = 0;
     this.yaw = yaw;
-    this.place(start.x, start.y);
+    this.place(start.x, start.y, dropHeight);
   }
 
-  /** Drop the player at (x, y) on the ground — nudged out along a golden-angle
-   * spiral if that point is inside a building (walls would trap them). */
-  place(x: number, y: number): void {
+  /** Put the player at (x, y) — nudged out along a golden-angle spiral if that
+   * point is inside a building (walls would trap them). With `dropHeight` the
+   * player enters skydiving: that far above the ground, looking down. */
+  place(x: number, y: number, dropHeight = 0): void {
+    this.dropping = dropHeight > 0;
+    if (this.dropping) this.pitch = -0.95;
     for (let i = 0; i < 120; i++) {
       const r = 1.9 * Math.sqrt(i);
       const a = i * 2.39996;
@@ -211,7 +216,7 @@ export class FpvMode {
       if (!this.solids.inside(px, py, gz)) {
         this.x = px;
         this.y = py;
-        this.z = gz;
+        this.z = gz + dropHeight;
         this.vx = this.vy = this.vz = 0;
         this.flying = false;
         return;
@@ -220,7 +225,7 @@ export class FpvMode {
     // Deep inside a superblock: land on whatever the roof is instead.
     this.x = x;
     this.y = y;
-    this.z = this.solids.support(x, y, Infinity, this.terrain(x, y));
+    this.z = this.solids.support(x, y, Infinity, this.terrain(x, y)) + dropHeight;
     this.vx = this.vy = this.vz = 0;
     this.flying = false;
   }
@@ -235,6 +240,7 @@ export class FpvMode {
       const now = performance.now();
       if (now - this.lastSpaceAt < DOUBLE_TAP_MS) {
         this.flying = !this.flying;
+        this.dropping = false; // catching yourself mid-skydive
         this.vz = 0;
         this.lastSpaceAt = -Infinity; // a triple tap shouldn't re-toggle
       } else {
@@ -291,7 +297,7 @@ export class FpvMode {
       this.vz = vert * FLY_VERT * (sprint ? 3 : 1);
       this.z += this.vz * dt;
     } else {
-      this.vz += GRAVITY * dt;
+      this.vz = Math.max(-MAX_FALL, this.vz + GRAVITY * dt);
       this.z += this.vz * dt;
     }
     const sup = this.solids.support(this.x, this.y, this.z, this.terrain(this.x, this.y));
@@ -304,8 +310,14 @@ export class FpvMode {
         this.vz = 0;
       }
       this.grounded = true;
+      this.dropping = false;
     } else {
       this.grounded = this.z - sup < 0.05 && this.z <= sup + 0.05;
+    }
+    // Sky-drop entry: raise the gaze from the rushing ground to the street
+    // ahead as touchdown nears (the player's mouse still steers freely).
+    if (this.dropping && this.z - sup < 150) {
+      this.pitch += (-0.06 - this.pitch) * Math.min(1, dt * 3.5);
     }
   }
 

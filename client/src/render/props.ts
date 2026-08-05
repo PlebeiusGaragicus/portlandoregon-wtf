@@ -16,7 +16,7 @@ const TILE = 1000; // meters — instanced meshes chunked for frustum culling
 
 /** Map-view prop magnification: street furniture reads from the sky at a bit
  * over life size. FPV rebuilds with scale 1 so everything is life-sized. */
-export const ICON_SCALE = 1.8;
+export const ICON_SCALE = 2.5;
 
 export interface PropLayers {
   /** Everything (contains `near`). */
