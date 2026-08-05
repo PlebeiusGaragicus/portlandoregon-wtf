@@ -75,6 +75,7 @@ interface Vehicle {
   /** Dispatch destination while responding. */
   goal: { x: number; y: number } | null;
   respondT: number;
+  fireScanT: number;
   sceneT: number;
   /** Seconds until this roamer heads home (fire/ambulance). */
   patience: number;
@@ -235,6 +236,8 @@ export class Actors {
   /** Burn-sim probe (renderer wires it): active fire near (x, y)? Keeps
    * crews and fire calls on scene until the fire is actually out. */
   hasFireNear: ((x: number, y: number, r: number) => boolean) | null = null;
+  /** Burn-sim probe: nearest active fire within r — crews leapfrog to it. */
+  nearestFire: ((x: number, y: number, r: number) => { x: number; y: number } | null) | null = null;
 
   update(dt: number, timeSec: number, focus: { x: number; y: number }, night = 0, hour = 12): void {
     this.spawn(focus, dt, night, hour);
@@ -456,6 +459,7 @@ export class Actors {
       avoidCap: Infinity,
       goal: null,
       respondT: 0,
+      fireScanT: 0,
       sceneT: 0,
       trailHeading: 0,
       expire: false,
@@ -519,6 +523,7 @@ export class Actors {
     }
 
     // Dispatch lifecycle.
+    const fireUnit = v.kind === "engine" || v.kind === "truck";
     if (v.mode === "respond" && v.goal) {
       v.respondT -= dt;
       if (Math.hypot(v.x - v.goal.x, v.y - v.goal.y) < SCENE_RADIUS) {
@@ -527,25 +532,47 @@ export class Actors {
       } else if (v.respondT <= 0) {
         v.mode = "roam"; // couldn't find the address — back on patrol
         v.goal = null;
+      } else if (fireUnit) {
+        // Passing a working fire beats driving circles around the address:
+        // stop HERE and go to work.
+        v.fireScanT -= dt;
+        if (v.fireScanT <= 0) {
+          v.fireScanT = 1.2;
+          if (this.hasFireNear?.(v.x, v.y, 55)) {
+            v.mode = "onscene";
+            v.sceneT = 22 + Math.random() * 18;
+          }
+        }
       }
     } else if (v.mode === "onscene") {
       v.sceneT -= dt;
       if (v.sceneT <= 0) {
-        // Fire apparatus doesn't pack up while the fire's still going.
-        if ((v.kind === "engine" || v.kind === "truck") && this.hasFireNear?.(v.x, v.y, 130)) {
+        // Fire apparatus doesn't pack up while the fire's still going —
+        // and when this corner is out, it leapfrogs toward the next one to
+        // contain the spread.
+        if (fireUnit && this.hasFireNear?.(v.x, v.y, 130)) {
           v.sceneT = 20 + Math.random() * 20;
         } else {
-          v.goal = null;
-          v.mode = v.home ? "return" : "roam";
-          v.patience = 40 + Math.random() * 60;
+          const next = fireUnit ? this.nearestFire?.(v.x, v.y, 500) : null;
+          if (next) {
+            v.mode = "respond";
+            v.goal = { x: next.x, y: next.y };
+            v.respondT = 90;
+          } else {
+            v.goal = null;
+            v.mode = v.home ? "return" : "roam";
+            v.patience = 40 + Math.random() * 60;
+          }
         }
       }
     }
 
     // Speed: cruise, braked for corners, dispatch stops and traffic ahead.
-    let target = v.mode === "onscene" ? 0 : v.speed;
+    // Responding with lights on means code 3 — about 60 mph.
+    const cruise = v.mode === "respond" && KINDS[v.kind].lights ? Math.max(v.speed, 27) : v.speed;
+    let target = v.mode === "onscene" ? 0 : cruise;
     const err = Math.abs(Math.atan2(Math.sin(v.heading - v.rHeading), Math.cos(v.heading - v.rHeading)));
-    target = Math.min(target, v.speed * Math.max(0.22, 1 - err * 1.15));
+    target = Math.min(target, cruise * Math.max(0.22, 1 - err * 1.15));
     if (v.avoidCap < target) target = v.avoidCap;
     const delta = target - v.curSpeed;
     v.curSpeed += Math.max(-BRAKE * dt, Math.min(ACCEL * dt, delta));

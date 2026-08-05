@@ -791,6 +791,20 @@ export class FireSim {
     return false;
   }
 
+  /** Nearest active fire within r — crews leapfrog scene-to-scene with it. */
+  nearestFire(x: number, y: number, r: number): { x: number; y: number } | null {
+    let best: Burn | null = null;
+    let bd = r;
+    for (const b of this.burns.values()) {
+      const d = Math.hypot(b.x - x, b.y - y);
+      if (d < bd) {
+        bd = d;
+        best = b;
+      }
+    }
+    return best ? { x: best.x, y: best.y } : null;
+  }
+
   // ---- simulation ----------------------------------------------------------
 
   private addSmolder(x: number, y: number, z: number, gameHours: number, grey: number, size: number): void {
@@ -930,7 +944,7 @@ export class FireSim {
         const d = Math.hypot(other.x - burn.x, other.y - burn.y);
         if (d < 90) heat += other.intensity * (1 - d / 90);
       }
-      burn.t += dt * (1 + Math.min(0.8, heat * 0.15));
+      burn.t += dt * (1 + Math.min(0.4, heat * 0.1));
       const f = burn.t / burn.dur;
       if (f >= 1) {
         this.burnOut(burn);
@@ -976,9 +990,9 @@ export class FireSim {
       burn.spreadClock -= dt;
       if (burn.spreadClock <= 0 && f > 0.04 && burn.intensity > 0.2 && !burn.suppressed) {
         burn.spreadClock = SPREAD_TICK * (0.7 + Math.random() * 0.6);
-        const feed = 1 + Math.min(2.5, heat * 0.6);
-        const reach = 14 + this.windSpeed * 2.2 + burn.size * 0.4 + Math.min(12, heat * 3);
-        const baseP = (burn.wood ? 0.028 : 0.016) * burn.intensity * feed;
+        const feed = 1 + Math.min(1.8, heat * 0.45);
+        const reach = 14 + this.windSpeed * 2.2 + burn.size * 0.4 + Math.min(8, heat * 2);
+        const baseP = (burn.wood ? 0.014 : 0.008) * burn.intensity * feed;
         this.nearBuildings(burn.x, burn.y, reach, (bi, d) => {
           if (bi === burn.bi || this.status[bi] !== 0) return;
           const dx = (this.cx[bi]! - burn.x) / (d || 1);
@@ -998,7 +1012,7 @@ export class FireSim {
       }
 
       // Embers: a big enough fire lofts brands downwind.
-      if (burn.intensity * burn.size > 7 && !burn.suppressed) {
+      if (burn.intensity * burn.size > 9 && !burn.suppressed) {
         burn.emberClock -= dt;
         if (burn.emberClock <= 0 && this.embers.length < EMBER_MAX) {
           burn.emberClock = (2.5 + Math.random() * 5 / Math.max(0.3, burn.intensity)) / (1 + heat * 0.4);
@@ -1109,12 +1123,12 @@ export class FireSim {
         if (under >= 0 && Math.random() < 0.6 && !this.igniteBuilding(under, fb.x, fb.y)) {
           this.stoke(under, fb.x, fb.y);
         }
-        this.nearBuildings(fb.x, fb.y, 26, (bi) => {
-          if (Math.random() < 0.22 && !this.igniteBuilding(bi, fb.x, fb.y) && Math.random() < 0.4) {
+        this.nearBuildings(fb.x, fb.y, 20, (bi) => {
+          if (Math.random() < 0.1 && !this.igniteBuilding(bi, fb.x, fb.y) && Math.random() < 0.4) {
             this.stoke(bi, fb.x, fb.y);
           }
         });
-        if (Math.random() < 0.16 && this.fireballs.length < 40) {
+        if (Math.random() < 0.05 && fb.size > 8.5 && this.fireballs.length < 16) {
           const a = this.windDir + (Math.random() - 0.5) * 2.4;
           const d = 8 + Math.random() * 8;
           const cx = fb.x + Math.cos(a) * d;
@@ -1160,7 +1174,7 @@ export class FireSim {
       e.z += e.vz * dt;
       const landed = e.z <= this.terrain(e.x, e.y) + 1;
       if (landed || e.t >= e.life) {
-        if (landed && Math.random() < 0.3) {
+        if (landed && Math.random() < 0.18) {
           if (!this.igniteNear(e.x, e.y, 13)) {
             this.nearTrees(e.x, e.y, 9, (ti) => {
               if (Math.random() < 0.5) this.igniteTree(ti);
