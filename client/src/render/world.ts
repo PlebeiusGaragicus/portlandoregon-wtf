@@ -31,31 +31,28 @@ const STREET_COLOR = 0x3a4150; // asphalt
 const WATER_Y = 0.1; // between ground and streets
 const PARK_Y = 0.18;
 const SIDEWALK_COLOR = 0x555c66; // concrete, lighter than asphalt
-// Draped layers hug the terrain (tiny hovers only), and their stacking is
-// resolved in the DEPTH BUFFER via polygonOffset — decals painted on the
-// ground, not paper sheets floating above it. More negative wins overlap.
-const SIDEWALK_Y = 0.02;
-const STREET_Y = 0.04;
+// Draped layers hug the terrain: centimeter hovers order the paved layers
+// among themselves, while a shared polygonOffset depth bias wins the fight
+// against the ground mesh itself — decals painted on the ground, not paper
+// sheets floating above it. The bias must be IDENTICAL for every decal:
+// its slope-scaled term varies per triangle, so distinct biases between
+// near-coplanar layers tear into sawtooth patches on steep grazing views.
+const SIDEWALK_Y = 0.03;
+const STREET_Y = 0.09;
 const MARK_WHITE = 0xb9c0c8; // painted pavement markings
 const MARK_YELLOW = 0xc2a53a;
-const MARK_Y = 0.06;
-const TRAIL_Y = 0.08;
-const OFF_SIDEWALK = -1;
-const OFF_STREET = -2;
-const OFF_TRAIL = -3;
-const OFF_MARK = -4;
-const OFF_RAIL = -5;
-const OFF_STOP = -6;
+const MARK_Y = 0.15;
+const TRAIL_Y = 0.18;
 
 /** Decal-style material: drawn essentially on the terrain surface, pulled
  * toward the camera in depth so it always wins against the ground mesh. */
-function decalMat(opts: THREE.MeshLambertMaterialParameters, off: number): THREE.MeshLambertMaterial {
+function decalMat(opts: THREE.MeshLambertMaterialParameters): THREE.MeshLambertMaterial {
   return new THREE.MeshLambertMaterial({
     ...opts,
     side: THREE.DoubleSide,
     polygonOffset: true,
-    polygonOffsetFactor: off,
-    polygonOffsetUnits: off,
+    polygonOffsetFactor: -2,
+    polygonOffsetUnits: -2,
   });
 }
 
@@ -157,7 +154,7 @@ export function buildWorld(map: GameMap, hf?: Heightfield | null): WorldLayers {
   const trails = buildTrails(map.trails ?? [], ground, cell, overWater);
   if (trails) group.add(trails);
 
-  const streetMat = decalMat({ color: STREET_COLOR }, OFF_STREET);
+  const streetMat = decalMat({ color: STREET_COLOR });
   for (const mesh of buildStreetTiles(map.edges, streetMat, ground, cell, overWater)) group.add(mesh);
 
   for (const mesh of buildRails(map.rails ?? [], ground, cell, overWater)) group.add(mesh);
@@ -175,13 +172,11 @@ export function buildWorld(map: GameMap, hf?: Heightfield | null): WorldLayers {
     (map.sidewalks ?? []).map((s) => ({ rings: s.rings, color: SIDEWALK_COLOR })),
     SIDEWALK_Y,
     ground,
-    OFF_SIDEWALK,
   )) detail.add(mesh);
   for (const mesh of drapedPolyTiles(
     (map.markingAreas ?? []).map((a) => ({ rings: a.rings, color: a.style === "yellow" ? MARK_YELLOW : MARK_WHITE })),
     MARK_Y,
     ground,
-    OFF_MARK,
   )) detail.add(mesh);
   {
     const laneTiles = new Map<number, Soup>();
@@ -191,7 +186,7 @@ export function buildWorld(map: GameMap, hf?: Heightfield | null): WorldLayers {
       if (!soup) laneTiles.set(tileKey(mx, my), (soup = { pos: [], nrm: [] }));
       pushRibbon(soup.pos, l.polyline, 0.35, MARK_Y, ground, cell);
     }
-    const laneMat = decalMat({ color: MARK_YELLOW }, OFF_MARK);
+    const laneMat = decalMat({ color: MARK_YELLOW });
     for (const soup of laneTiles.values()) detail.add(soupMesh(soup, laneMat));
   }
 
@@ -352,7 +347,6 @@ function drapedPolyTiles(
   bodies: { rings: [number, number][][]; color: number }[],
   yOff: number,
   ground: GroundFn,
-  depthOff: number,
 ): THREE.Mesh[] {
   // color -> tile -> soup
   const byColor = new Map<number, Map<number, Soup>>();
@@ -398,7 +392,7 @@ function drapedPolyTiles(
   }
   const meshes: THREE.Mesh[] = [];
   for (const [color, tiles] of byColor) {
-    const mat = decalMat({ color }, depthOff);
+    const mat = decalMat({ color });
     for (const soup of tiles.values()) meshes.push(soupMesh(soup, mat));
   }
   return meshes;
@@ -495,7 +489,7 @@ function buildTrails(
     pushRibbon(soup.pos, t.polyline, 2.5, TRAIL_Y, ground, cell, overWater(t.polyline));
   }
   if (soup.pos.length === 0) return null;
-  return soupMesh(soup, decalMat({ color: TRAIL_COLOR }, OFF_TRAIL));
+  return soupMesh(soup, decalMat({ color: TRAIL_COLOR }));
 }
 
 /** Turn a soup into a mesh (normals constant-up when nrm is empty). */
@@ -671,7 +665,7 @@ function buildRails(
     pushRibbon(soup.pos, r.polyline, RAIL_STYLE[r.kind].width, RAIL_Y, ground, cell, overWater(r.polyline));
   }
   return [...soups.entries()].map(([kind, soup]) =>
-    soupMesh(soup, decalMat({ color: RAIL_STYLE[kind].color }, OFF_RAIL)),
+    soupMesh(soup, decalMat({ color: RAIL_STYLE[kind].color })),
   );
 }
 
@@ -694,7 +688,7 @@ function buildRailStops(stops: RailStop[], ground: GroundFn): THREE.Mesh | null 
       for (let v = 0; v < 3; v++) soup.col!.push(c.r, c.g, c.b);
     }
   }
-  return soupMesh(soup, decalMat({ vertexColors: true }, OFF_STOP));
+  return soupMesh(soup, decalMat({ vertexColors: true }));
 }
 
 /** Buildings written straight into per-tile buffers (keyed by first vertex). */
