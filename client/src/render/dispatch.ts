@@ -158,7 +158,9 @@ export class Dispatch {
         if (best) {
           best.mode = "respond";
           best.goal = { x: inc.x, y: inc.y };
-          best.respondT = 110;
+          // Give-up clock scales with the actual run distance (grid driving
+          // nets well under cruise speed) — no more mid-drive churn.
+          best.respondT = 60 + bd / 15;
           inc.assigned.push(best);
           inc.needs.splice(n, 1);
         }

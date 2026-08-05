@@ -46,6 +46,18 @@ interface FireCell {
   delay: number; // real s after ignition before the front arrives
   i: number; // current intensity 0..1
   char: number; // monotonic burn damage 0..1 (drives localized char)
+  douse: number; // water applied 0..1
+  doused: boolean; // knocked down — this blob stays out
+}
+
+/** A 4-man hose crew working ONE building for ONE apparatus. */
+interface Crew {
+  unitId: number;
+  bi: number;
+  truck: { x: number; y: number };
+  men: { x: number; y: number; tx: number; ty: number; ci: number }[];
+  repickT: number;
+  staleT: number;
 }
 
 interface Burn {
@@ -383,6 +395,12 @@ export class FireSim {
   readonly collapsed: number[] = [];
   /** Emission clocks for the merged neighborhood sky plumes. */
   private plumeClocks = new Map<number, number>();
+  /** Hose crews by apparatus unit id; one crew works ONE building. */
+  private crews = new Map<number, Crew>();
+  private claimedB = new Map<number, number>(); // building -> unit id
+  private menBody: THREE.InstancedMesh;
+  private menHead: THREE.InstancedMesh;
+  private static MEN_CAP = 64;
 
   private smoke: BillboardPool;
   private glow: BillboardPool;
@@ -439,6 +457,22 @@ export class FireSim {
     this.flames = new BillboardPool(FLAME_MAX, flameAtlas(), THREE.NormalBlending, 41, true, 4, true);
     this.smoke = new BillboardPool(SMOKE_MAX, tex, THREE.NormalBlending, 42);
     this.group.add(this.glow.mesh, this.flames.mesh, this.smoke.mesh);
+    // Stick firemen: instanced body + helmet, posed each frame per crew.
+    this.menBody = new THREE.InstancedMesh(
+      new THREE.CylinderGeometry(0.28, 0.34, 1.5, 5),
+      new THREE.MeshLambertMaterial({ color: 0xc9a86a }),
+      FireSim.MEN_CAP,
+    );
+    this.menHead = new THREE.InstancedMesh(
+      new THREE.SphereGeometry(0.27, 6, 4),
+      new THREE.MeshLambertMaterial({ color: 0xb3342a }),
+      FireSim.MEN_CAP,
+    );
+    this.menBody.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.menHead.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.menBody.count = 0;
+    this.menHead.count = 0;
+    this.group.add(this.menBody, this.menHead);
   }
 
   /** Prop sets whose trees this sim recolors (map set + lazy FPV set). */
@@ -534,7 +568,7 @@ export class FireSim {
         x, y,
         fx: x + (dx / d) * 1.1,
         fy: y + (dy / d) * 1.1,
-        z, top, delay: 0, i: 0, char: 0,
+        z, top, delay: 0, i: 0, char: 0, douse: 0, doused: false,
       });
     };
     let carry = spacing * 0.5;
@@ -565,7 +599,7 @@ export class FireSim {
       for (let y = ymin + step * 0.5; y < ymax && added < 12; y += step) {
         for (let x = xmin + step * 0.5; x < xmax && added < 12; x += step) {
           if (!pointInRing(x, y, ring)) continue;
-          cells.push({ x, y, fx: x, fy: y, z: roof, top: roof + 6 + b.height * 0.3, delay: 0, i: 0, char: 0 });
+          cells.push({ x, y, fx: x, fy: y, z: roof, top: roof + 6 + b.height * 0.3, delay: 0, i: 0, char: 0, douse: 0, doused: false });
           added++;
         }
       }
@@ -922,13 +956,136 @@ export class FireSim {
     this.puffs.push({ x, y, z, vx, vy, vz, t: 0, life, size, grow, grey, alpha });
   }
 
-  update(dt: number, focus: { x: number; y: number }, suppressors: { x: number; y: number }[]): void {
+  /**
+   * Hose crews. Each ON-SCENE apparatus claims ONE burning building (one
+   * apparatus per building) and fields a 4-man crew. The squad walks to the
+   * nearest burning blob cluster, each man plays a stream on his own blob,
+   * and when those are knocked down they advance together to the next —
+   * dousing the building cell by cell.
+   */
+  private updateCrews(dt: number, units: { id: number; x: number; y: number }[]): void {
+    const seen = new Set<number>();
+    for (const u of units) {
+      seen.add(u.id);
+      let crew = this.crews.get(u.id);
+      if (crew && !this.burns.has(crew.bi)) {
+        // Their building is out (or gone) — release the claim.
+        this.claimedB.delete(crew.bi);
+        this.crews.delete(u.id);
+        crew = undefined;
+      }
+      if (!crew) {
+        // Claim the nearest UNCLAIMED burning building.
+        let best = -1;
+        let bd = 160;
+        for (const b of this.burns.values()) {
+          if (this.claimedB.has(b.bi)) continue;
+          const d = Math.hypot(b.x - u.x, b.y - u.y);
+          if (d < bd) {
+            bd = d;
+            best = b.bi;
+          }
+        }
+        if (best < 0) continue;
+        const men = [];
+        for (let j = 0; j < 4; j++) {
+          men.push({
+            x: u.x + (Math.random() - 0.5) * 4,
+            y: u.y + (Math.random() - 0.5) * 4,
+            tx: u.x, ty: u.y, ci: -1,
+          });
+        }
+        crew = { unitId: u.id, bi: best, truck: { x: u.x, y: u.y }, men, repickT: 0, staleT: 0 };
+        this.crews.set(u.id, crew);
+        this.claimedB.set(best, u.id);
+      }
+      crew.truck = { x: u.x, y: u.y };
+      crew.staleT = 0;
+    }
+    for (const [id, crew] of this.crews) {
+      if (!seen.has(id)) {
+        crew.staleT += dt;
+        if (crew.staleT > 2) {
+          // The rig drove off — pack up the crew.
+          this.claimedB.delete(crew.bi);
+          this.crews.delete(id);
+          continue;
+        }
+      }
+      const burn = this.burns.get(crew.bi);
+      if (!burn) {
+        this.claimedB.delete(crew.bi);
+        this.crews.delete(id);
+        continue;
+      }
+      // Re-target: nearest lit blob to the squad anchors the cluster; the
+      // four men take the closest lit blobs AROUND it (stay together).
+      crew.repickT -= dt;
+      if (crew.repickT <= 0) {
+        crew.repickT = 1.4;
+        const lit: { c: FireCell; ci: number; d: number }[] = [];
+        for (let ci = 0; ci < burn.cells.length; ci++) {
+          const c = burn.cells[ci]!;
+          if (!c.doused && c.i > 0.04) lit.push({ c, ci, d: Math.hypot(c.x - crew.truck.x, c.y - crew.truck.y) });
+        }
+        lit.sort((a, b) => a.d - b.d);
+        if (lit.length) {
+          const anchor = lit[0]!.c;
+          lit.sort((a, b) => Math.hypot(a.c.x - anchor.x, a.c.y - anchor.y) - Math.hypot(b.c.x - anchor.x, b.c.y - anchor.y));
+          for (let j = 0; j < crew.men.length; j++) {
+            const pick = lit[Math.min(j, lit.length - 1)]!;
+            const m = crew.men[j]!;
+            m.ci = pick.ci;
+            // Stand off the blob, on the truck side, loosely spread.
+            const dx = crew.truck.x - pick.c.x;
+            const dy = crew.truck.y - pick.c.y;
+            const dd = Math.hypot(dx, dy) || 1;
+            const px = -dy / dd;
+            const py = dx / dd;
+            m.tx = pick.c.x + (dx / dd) * 11 + px * (j - 1.5) * 2.2;
+            m.ty = pick.c.y + (dy / dd) * 11 + py * (j - 1.5) * 2.2;
+          }
+        } else {
+          for (const m of crew.men) m.ci = -1;
+        }
+      }
+      // Walk + spray.
+      for (const m of crew.men) {
+        const dx = m.tx - m.x;
+        const dy = m.ty - m.y;
+        const d = Math.hypot(dx, dy);
+        if (d > 0.4) {
+          const step = Math.min(d, 3.2 * dt);
+          m.x += (dx / d) * step;
+          m.y += (dy / d) * step;
+        } else if (m.ci >= 0) {
+          const c = burn.cells[m.ci]!;
+          if (!c.doused && c.i > 0.02) {
+            c.douse += dt / 6.5;
+            if (Math.random() < dt * 1.6) {
+              // Steam boiling off the knocked-down blob.
+              this.spawnPuff(c.x, c.y, c.z + 2, 0, 0, 2.5 + Math.random(), 2.5, 2, 0.62, 3.5 + Math.random() * 2, 0.6);
+            }
+            if (c.douse >= 1) {
+              c.doused = true;
+              c.i = 0;
+              this.spawnPuff(c.x, c.y, c.z + 2, 0, 0, 3.5, 4, 2.4, 0.68, 6 + Math.random() * 3, 0.75);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  update(dt: number, focus: { x: number; y: number }, suppressors: { id: number; x: number; y: number }[]): void {
     this.time += dt;
     // Wind wanders slowly; it is THE conflagration variable.
     this.windDir += (Math.sin(this.time * 0.023) + Math.sin(this.time * 0.011 + 2)) * 0.06 * dt;
     this.windSpeed = 3.5 + 2.8 * Math.sin(this.time * 0.017 + 1);
     const wx = Math.cos(this.windDir);
     const wy = Math.sin(this.windDir);
+
+    this.updateCrews(dt, suppressors);
 
     // Shared sky plumes: burns in the same ~110 m neighborhood pool their
     // smoke into one column (weighted centroid, summed rate).
@@ -966,7 +1123,14 @@ export class FireSim {
       const ramp = Math.min(40, burn.dur * 0.06);
       const tail = 1 - Math.max(0, (f - 0.82) / 0.18);
       let iSum = 0;
+      let anyLit = false;
+      let dousedN = 0;
       for (const c of burn.cells) {
+        if (c.doused) {
+          c.i = 0;
+          dousedN++;
+          continue;
+        }
         const tl = burn.t - c.delay;
         if (tl <= 0) {
           c.i = 0;
@@ -975,8 +1139,14 @@ export class FireSim {
         c.i = Math.min(1, tl / ramp) * tail * (1 - burn.knock);
         c.char = Math.max(c.char, Math.min(1, tl / (burn.dur * 0.55)));
         iSum += c.i;
+        if (c.i > 0.02) anyLit = true;
       }
       burn.intensity = iSum / burn.cells.length;
+      // Hose crews knocked down every burning blob: the building is out.
+      if (!anyLit && dousedN > 0 && burn.t > 5) {
+        this.extinguish(burn);
+        continue;
+      }
 
       // Localized charring, throttled (partial color-buffer uploads only).
       burn.charClock -= dt;
@@ -1369,7 +1539,58 @@ export class FireSim {
     this.glow.end();
     this.flames.end();
 
+    // Firemen + hose streams.
+    const tmpM = new THREE.Matrix4();
+    let mi = 0;
+    for (const crew of this.crews.values()) {
+      for (const m of crew.men) {
+        if (mi >= FireSim.MEN_CAP) break;
+        const gz = this.terrain(m.x, m.y);
+        const p = toScene(m.x, m.y, gz);
+        tmpM.makeTranslation(p.x, p.y + 0.75, p.z);
+        this.menBody.setMatrixAt(mi, tmpM);
+        tmpM.makeTranslation(p.x, p.y + 1.75, p.z);
+        this.menHead.setMatrixAt(mi, tmpM);
+        mi++;
+      }
+    }
+    this.menBody.count = mi;
+    this.menHead.count = mi;
+    this.menBody.instanceMatrix.needsUpdate = true;
+    this.menHead.instanceMatrix.needsUpdate = true;
+
     this.smoke.begin();
+    // Water streams: an arc of droplets from each nozzle to its blob.
+    for (const crew of this.crews.values()) {
+      const burn = this.burns.get(crew.bi);
+      if (!burn) continue;
+      for (const m of crew.men) {
+        if (m.ci < 0 || Math.hypot(m.tx - m.x, m.ty - m.y) > 0.6) continue;
+        const c = burn.cells[m.ci]!;
+        if (c.doused) continue;
+        const gz = this.terrain(m.x, m.y);
+        const x0 = m.x;
+        const y0 = m.y;
+        const z0 = gz + 1.35;
+        const x1 = c.x;
+        const y1 = c.y;
+        const z1 = c.z + 1.5;
+        const span = Math.hypot(x1 - x0, y1 - y0);
+        const wob = Math.sin(this.time * 9 + m.tx) * 0.35;
+        for (let k = 0; k <= 10; k++) {
+          const t = k / 10;
+          const arc = span * 0.28 * Math.sin(t * Math.PI) + wob * t;
+          this.smoke.push(
+            x0 + (x1 - x0) * t,
+            y0 + (y1 - y0) * t + wob * t * 0.4,
+            z0 + (z1 - z0) * t + arc,
+            0.4 + t * 0.65,
+            0.62, 0.72, 0.9,
+            0.55 * (1 - t * 0.35),
+          );
+        }
+      }
+    }
     for (const p of this.puffs) {
       if (Math.hypot(p.x - focus.x, p.y - focus.y) > RANGE) continue;
       const f = p.t / p.life;

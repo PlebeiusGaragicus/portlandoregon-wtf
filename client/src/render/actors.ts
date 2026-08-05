@@ -20,6 +20,9 @@ const MAX_TANK = 5;
 const CAP = MAX_FIRE + MAX_POLICE + MAX_AMBULANCE_DAY + MAX_CITYBUS + MAX_SCHOOLBUS + MAX_TANK;
 const TRAILER_CAP = MAX_CITYBUS;
 
+/** Monotonic vehicle identity (stable across the vehicles array mutating). */
+let nextUid = 1;
+
 /** School buses run the morning pickup and afternoon drop-off windows. */
 function schoolRun(hour: number): boolean {
   return (hour >= 7 && hour < 9.5) || (hour >= 14 && hour < 16.5);
@@ -76,6 +79,8 @@ interface Vehicle {
   goal: { x: number; y: number } | null;
   respondT: number;
   fireScanT: number;
+  /** Stable identity for cross-system hooks (hose crews). */
+  uid: number;
   sceneT: number;
   /** Seconds until this roamer heads home (fire/ambulance). */
   patience: number;
@@ -216,10 +221,10 @@ export class Actors {
   }
 
   /** Fire crews working a scene — the burn sim uses them as suppressors. */
-  fireUnitsOnScene(): { x: number; y: number }[] {
+  fireUnitsOnScene(): { id: number; x: number; y: number }[] {
     return this.vehicles
       .filter((v) => (v.kind === "engine" || v.kind === "truck") && v.mode === "onscene")
-      .map((v) => ({ x: v.x, y: v.y }));
+      .map((v) => ({ id: v.uid, x: v.x, y: v.y }));
   }
 
   /** Report a real fire to dispatch (dedupes against open fire calls). */
@@ -460,6 +465,7 @@ export class Actors {
       goal: null,
       respondT: 0,
       fireScanT: 0,
+      uid: nextUid++,
       sceneT: 0,
       trailHeading: 0,
       expire: false,
@@ -532,17 +538,6 @@ export class Actors {
       } else if (v.respondT <= 0) {
         v.mode = "roam"; // couldn't find the address — back on patrol
         v.goal = null;
-      } else if (fireUnit) {
-        // Passing a working fire beats driving circles around the address:
-        // stop HERE and go to work.
-        v.fireScanT -= dt;
-        if (v.fireScanT <= 0) {
-          v.fireScanT = 1.2;
-          if (this.hasFireNear?.(v.x, v.y, 55)) {
-            v.mode = "onscene";
-            v.sceneT = 22 + Math.random() * 18;
-          }
-        }
       }
     } else if (v.mode === "onscene") {
       v.sceneT -= dt;
@@ -557,12 +552,25 @@ export class Actors {
           if (next) {
             v.mode = "respond";
             v.goal = { x: next.x, y: next.y };
-            v.respondT = 90;
+            v.respondT = 60 + Math.hypot(next.x - v.x, next.y - v.y) / 15;
           } else {
             v.goal = null;
             v.mode = v.home ? "return" : "roam";
             v.patience = 40 + Math.random() * 60;
           }
+        }
+      }
+    }
+
+    // Passing a working fire beats driving circles around the address: any
+    // fire unit rolling past flames stops HERE and goes to work.
+    if (fireUnit && (v.mode === "respond" || v.mode === "roam")) {
+      v.fireScanT -= dt;
+      if (v.fireScanT <= 0) {
+        v.fireScanT = 1.2;
+        if (this.hasFireNear?.(v.x, v.y, 55)) {
+          v.mode = "onscene";
+          v.sceneT = 22 + Math.random() * 18;
         }
       }
     }
