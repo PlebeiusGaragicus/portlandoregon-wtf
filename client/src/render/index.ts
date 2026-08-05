@@ -1,7 +1,8 @@
 import * as THREE from "three";
 import { heightAt, raycastHeightfield, type GameMap, type Heightfield } from "@battle-juice/shared";
-import { CameraRig, toWorldXY } from "./camera.js";
+import { CameraRig, toScene, toWorldXY } from "./camera.js";
 import { Controls, type ControlDelegate } from "./controls.js";
+import { DayNight } from "./daynight.js";
 import { FpvMode } from "./fpv.js";
 import { buildLandmarks, type LandmarkLayer } from "./landmarks.js";
 import { Minimap } from "./minimap.js";
@@ -16,11 +17,8 @@ const NEAR_PROPS_VIEW = 1000; // above: hide small street furniture (signs, hydr
 
 const START_VIEW = 2600; // spectator reveal: district scale, then explore
 
-// FPV atmosphere: dusk gradient sky dome, haze in the horizon color.
-const SKY_ZENITH = 0x10151f;
-const SKY_HORIZON = 0x39465e;
-const FOG_COLOR = 0x323e55;
-const SKY_R = 20000; // inside the FPV far plane
+const SKY_R = 20000; // FPV sky dome radius, inside the FPV far plane
+const SHADOW_MAX_VIEW = 8000; // above: shadows are subpixel, skip the pass
 
 export interface PrebuiltLayers {
   world: WorldLayers;
@@ -55,6 +53,15 @@ export class Renderer {
   private raycaster = new THREE.Raycaster();
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
+  private hemi!: THREE.HemisphereLight;
+  private sun!: THREE.DirectionalLight;
+  private daynight = new DayNight();
+  private lastNight = -1;
+  private hudClock!: HTMLDivElement;
+  private hudScale!: HTMLDivElement;
+  private hudScaleBar!: HTMLDivElement;
+  private hudScaleLabel!: HTMLSpanElement;
+  private lastScaleText = "";
   private hf: Heightfield | null;
   private ground: (x: number, y: number) => number;
 
@@ -82,15 +89,27 @@ export class Renderer {
     this.webgl.setPixelRatio(window.devicePixelRatio);
     this.scene.background = new THREE.Color(0x14171c);
 
-    const hemi = new THREE.HemisphereLight(0xbfd0e8, 0x33302a, 0.9);
-    const sun = new THREE.DirectionalLight(0xfff2dd, 1.4);
-    sun.position.set(0.6, 1, 0.35).normalize(); // world-fixed: shading stays put as camera spins
-    this.scene.add(hemi, sun);
+    this.hemi = new THREE.HemisphereLight(0xbfd0e8, 0x33302a, 0.9);
+    this.sun = new THREE.DirectionalLight(0xfff2dd, 1.4);
+    // Shadows: one directional (sun or moon) with an ortho box re-fit around
+    // the camera focus every frame — city-wide maps can't fit one shadow map.
+    this.webgl.shadowMap.enabled = true;
+    this.webgl.shadowMap.type = THREE.PCFShadowMap;
+    this.sun.castShadow = true;
+    this.sun.shadow.mapSize.set(2048, 2048);
+    this.sun.shadow.camera.near = 1;
+    this.sun.shadow.camera.far = 6000;
+    this.sun.shadow.bias = -0.0004;
+    this.sun.shadow.normalBias = 2;
+    this.scene.add(this.hemi, this.sun, this.sun.target);
 
     this.hf = opts.heightfield ?? null;
     const hf = this.hf;
     this.ground = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
     this.world = opts.prebuilt?.world ?? buildWorld(map, hf);
+    this.world.group.traverse((o) => {
+      if (o instanceof THREE.Mesh) o.castShadow = o.receiveShadow = true;
+    });
     this.scene.add(this.world.group);
     this.props = opts.prebuilt?.props ?? buildProps(map, hf);
     this.scene.add(this.props.group);
@@ -138,6 +157,16 @@ export class Renderer {
     this.fadeEl = document.createElement("div");
     this.fadeEl.id = "modefade";
     parent.appendChild(this.fadeEl);
+    this.hudClock = document.createElement("div");
+    this.hudClock.id = "hudclock";
+    parent.appendChild(this.hudClock);
+    this.hudScale = document.createElement("div");
+    this.hudScale.id = "hudscale";
+    this.hudScaleBar = document.createElement("div");
+    this.hudScaleBar.className = "bar";
+    this.hudScaleLabel = document.createElement("span");
+    this.hudScale.append(this.hudScaleBar, this.hudScaleLabel);
+    parent.appendChild(this.hudScale);
     this.wireFpvInput();
 
     this.resizeObserver = new ResizeObserver(() => this.resize());
@@ -201,6 +230,7 @@ export class Renderer {
       this.controls.active = true;
       this.minimap.el.style.display = "";
       this.compass.style.display = "";
+      this.hudScale.style.display = "";
       this.hint("", 0);
       return;
     }
@@ -223,27 +253,18 @@ export class Renderer {
     this.controls.active = false;
     this.minimap.el.style.display = "none";
     this.compass.style.display = "none";
+    this.hudScale.style.display = "none";
     this.lockPointer();
     this.hint("WASD move · Shift sprint · Space jump · double-Space fly (Space up, C down) · V exit", 6000);
   }
 
-  /** Lazily built gradient dome that rides on the FPV camera. */
+  /** Lazily built gradient dome that rides on the FPV camera; recolored
+   * every frame from the day/night palette. */
   private ensureSky(): THREE.Mesh {
     if (this.sky) return this.sky;
     const geo = new THREE.SphereGeometry(SKY_R, 24, 12);
     const pos = geo.attributes["position"]!;
-    const colors = new Float32Array(pos.count * 3);
-    const zen = new THREE.Color(SKY_ZENITH);
-    const hor = new THREE.Color(SKY_HORIZON);
-    const c = new THREE.Color();
-    for (let i = 0; i < pos.count; i++) {
-      const t = Math.max(0, pos.getY(i) / SKY_R); // below horizon stays horizon-colored
-      c.copy(hor).lerp(zen, Math.pow(t, 0.6));
-      colors[i * 3] = c.r;
-      colors[i * 3 + 1] = c.g;
-      colors[i * 3 + 2] = c.b;
-    }
-    geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(pos.count * 3), 3));
     const mat = new THREE.MeshBasicMaterial({
       vertexColors: true,
       side: THREE.BackSide,
@@ -253,7 +274,24 @@ export class Renderer {
     this.sky = new THREE.Mesh(geo, mat);
     this.sky.renderOrder = -1;
     this.scene.add(this.sky);
+    this.recolorSky();
     return this.sky;
+  }
+
+  private skyColor = new THREE.Color();
+  private recolorSky(): void {
+    if (!this.sky) return;
+    const geo = this.sky.geometry;
+    const pos = geo.attributes["position"]!;
+    const col = geo.attributes["color"]!;
+    const dn = this.daynight;
+    const c = this.skyColor;
+    for (let i = 0; i < pos.count; i++) {
+      const t = Math.max(0, pos.getY(i) / SKY_R); // below horizon stays horizon-colored
+      c.copy(dn.horizon).lerp(dn.zenith, Math.pow(t, 0.6));
+      col.setXYZ(i, c.r, c.g, c.b);
+    }
+    col.needsUpdate = true;
   }
 
   /** Chrome returns a promise that rejects when lock is unavailable
@@ -324,6 +362,8 @@ export class Renderer {
     this.fpvDisposers = [];
     this.fpvHint.remove();
     this.fadeEl.remove();
+    this.hudClock.remove();
+    this.hudScale.remove();
     this.controls.dispose();
     this.minimap.dispose();
     this.compass.remove();
@@ -348,9 +388,11 @@ export class Renderer {
     const dt = Math.min(0.1, (now - this.lastFrame) / 1000);
     this.lastFrame = now;
 
+    this.daynight.update(Date.now());
+
     if (this.fpvOn && this.fpv) {
       this.fpv.update(dt);
-      // Street level: full detail, street-scale tint, dusk sky + distance
+      // Street level: full detail, street-scale tint, gradient sky + distance
       // haze in the sky's horizon color. Landmark plates are billboards sized
       // for the map view — at eye height they wallpaper the horizon, so off.
       this.world.setBlend(0);
@@ -358,11 +400,12 @@ export class Renderer {
       if (this.fpvProps) this.fpvProps.group.visible = true;
       this.world.detail.visible = true;
       this.landmarks.group.visible = false;
-      if (!this.scene.fog) this.scene.fog = new THREE.FogExp2(FOG_COLOR, 0.00008);
+      if (!this.scene.fog) this.scene.fog = new THREE.FogExp2(0x323e55, 0.00008);
       this.ensureSky().visible = true;
       const aspect = (this.canvas.clientWidth || 1) / (this.canvas.clientHeight || 1);
       this.fpv.apply(this.camera, aspect);
       this.sky!.position.copy(this.camera.position);
+      this.applyDayNight(this.fpv.x, this.fpv.y, this.fpv.z, true);
       this.webgl.render(this.scene, this.camera);
       requestAnimationFrame(() => this.frame());
       return;
@@ -393,7 +436,64 @@ export class Renderer {
     ];
     this.minimap.update(corners, []);
 
+    this.applyDayNight(this.rig.target.x, this.rig.target.y, this.ground(this.rig.target.x, this.rig.target.y), vh < SHADOW_MAX_VIEW);
+    this.updateScaleBar(vh);
+
     this.webgl.render(this.scene, this.camera);
     requestAnimationFrame(() => this.frame());
+  }
+
+  /** Apply the current sun/moon to lights, sky, fog and lamp glow, and re-fit
+   * the shadow box around the focus point (fx, fy world meters, fz height). */
+  private applyDayNight(fx: number, fy: number, fz: number, shadows: boolean): void {
+    const dn = this.daynight;
+    this.sun.color.copy(dn.lightColor);
+    this.sun.intensity = dn.lightIntensity;
+    this.hemi.intensity = dn.hemiIntensity;
+    this.hemi.color.copy(dn.zenith).lerp(dn.horizon, 0.5).multiplyScalar(2.2);
+
+    const focus = toScene(fx, fy, fz);
+    this.sun.target.position.copy(focus);
+    this.sun.position.copy(focus).addScaledVector(dn.lightDir, 2500);
+    this.sun.castShadow = shadows;
+    if (shadows) {
+      // Fit the shadow ortho box to what's on screen (FPV gets a fixed box).
+      const half = this.fpvOn ? 700 : Math.min(4500, Math.max(350, this.rig.viewHeight * 1.1));
+      const sc = this.sun.shadow.camera;
+      if (Math.abs(sc.right - half) > 1) {
+        sc.left = -half;
+        sc.right = half;
+        sc.top = half;
+        sc.bottom = -half;
+        sc.updateProjectionMatrix();
+      }
+    }
+
+    (this.scene.background as THREE.Color).copy(dn.fog).multiplyScalar(0.55);
+    if (this.scene.fog instanceof THREE.FogExp2) this.scene.fog.color.copy(dn.fog);
+    if (this.sky?.visible) this.recolorSky();
+
+    if (Math.abs(dn.night - this.lastNight) > 0.01) {
+      this.lastNight = dn.night;
+      this.props.setNight(dn.night);
+      this.fpvProps?.setNight(dn.night);
+    }
+
+    const label = `${dn.day ? "☀" : "☾"} ${dn.clock}`;
+    if (this.hudClock.textContent !== label) this.hudClock.textContent = label;
+  }
+
+  /** Distance scale bar (map view only): a nice round length near 150 px. */
+  private updateScaleBar(vh: number): void {
+    const mpp = vh / (this.canvas.clientHeight || 1);
+    const steps = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000];
+    let d = steps[0]!;
+    for (const c of steps) if (c / mpp <= 190) d = c;
+    const text = d >= 1000 ? `${d / 1000} km` : `${d} m`;
+    if (text !== this.lastScaleText) {
+      this.lastScaleText = text;
+      this.hudScaleLabel.textContent = text;
+    }
+    this.hudScaleBar.style.width = `${(d / mpp).toFixed(1)}px`;
   }
 }

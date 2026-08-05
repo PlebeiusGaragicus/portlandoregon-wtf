@@ -21,6 +21,8 @@ export const ICON_SCALE = 2.5;
 export interface PropLayers {
   /** Everything (contains `near`). */
   group: THREE.Group;
+  /** Day/night dial: 0 = daylight (lamps off) .. 1 = deep night (full glow). */
+  setNight(n: number): void;
   /** Small street furniture — signs, signals, meters, benches, racks, speed
    * cushions, hydrants. Gated to a much closer zoom than trees/lights. */
   near: THREE.Group;
@@ -92,6 +94,17 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
   const lightHeadGeo = new THREE.SphereGeometry(0.45 * s, 6, 5);
   const lightPoleMat = new THREE.MeshLambertMaterial({ color: 0x555b66 });
   const lightHeadMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0 }); // warm glow, unlit
+  // Additive pool of lamplight on the pavement under each luminaire.
+  const poolGeo = new THREE.CircleGeometry(4.5 * s, 12);
+  poolGeo.rotateX(-Math.PI / 2);
+  const poolMat = new THREE.MeshBasicMaterial({
+    color: 0xffc078,
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const pools: THREE.Object3D[] = [];
   const meterGeo = new THREE.CylinderGeometry(0.05 * s, 0.05 * s, 1.3 * s, 5);
   const meterHeadGeo = new THREE.BoxGeometry(0.24 * s, 0.32 * s, 0.12 * s);
   const meterMat = new THREE.MeshLambertMaterial({ color: 0x7b828d });
@@ -118,6 +131,7 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
     if (bucket.trees.length) {
       const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, bucket.trees.length);
       const canopies = new THREE.InstancedMesh(canopyGeo, canopyMat, bucket.trees.length);
+      trunks.castShadow = canopies.castShadow = true;
       bucket.trees.forEach((t, i) => {
         const r = CANOPY_RADIUS[t.size];
         const gz = g(t.x, t.y);
@@ -133,6 +147,7 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
     if (bucket.signs.length) {
       const poles = new THREE.InstancedMesh(poleGeo, poleMat, bucket.signs.length);
       const faces = new THREE.InstancedMesh(faceGeo, faceMat, bucket.signs.length);
+      poles.castShadow = faces.castShadow = true;
       bucket.signs.forEach((si, i) => {
         const gz = g(si.x, si.y);
         m.makeTranslation(toScene(si.x, si.y, gz + 1.6 * s));
@@ -147,6 +162,7 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
     if (bucket.signals.length) {
       const poles = new THREE.InstancedMesh(sigPoleGeo, sigPoleMat, bucket.signals.length);
       const heads = new THREE.InstancedMesh(sigHeadGeo, sigHeadMat, bucket.signals.length);
+      poles.castShadow = heads.castShadow = true;
       bucket.signals.forEach((si, i) => {
         const gz = g(si.x, si.y);
         m.makeTranslation(toScene(si.x, si.y, gz + 2.25 * s));
@@ -159,14 +175,20 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
     if (bucket.lights.length) {
       const poles = new THREE.InstancedMesh(lightPoleGeo, lightPoleMat, bucket.lights.length);
       const heads = new THREE.InstancedMesh(lightHeadGeo, lightHeadMat, bucket.lights.length);
+      const pool = new THREE.InstancedMesh(poolGeo, poolMat, bucket.lights.length);
+      poles.castShadow = true;
       bucket.lights.forEach((si, i) => {
         const gz = g(si.x, si.y);
         m.makeTranslation(toScene(si.x, si.y, gz + 3.5 * s));
         poles.setMatrixAt(i, m);
         m.makeTranslation(toScene(si.x, si.y, gz + 7.1 * s));
         heads.setMatrixAt(i, m);
+        m.makeTranslation(toScene(si.x, si.y, gz + 0.4));
+        pool.setMatrixAt(i, m);
       });
-      group.add(poles, heads);
+      pool.visible = false;
+      pools.push(pool);
+      group.add(poles, heads, pool);
     }
     if (bucket.meters.length) {
       const poles = new THREE.InstancedMesh(meterGeo, meterMat, bucket.meters.length);
@@ -220,7 +242,18 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
       near.add(barrels, caps);
     }
   }
-  return { group, near };
+  const dayOff = new THREE.Color(0x565c66);
+  const nightOn = new THREE.Color(0xffd9a0);
+  return {
+    group,
+    near,
+    setNight(n: number): void {
+      lightHeadMat.color.copy(dayOff).lerp(nightOn, n);
+      poolMat.opacity = 0.3 * n;
+      const on = n > 0.03;
+      for (const pm of pools) pm.visible = on;
+    },
+  };
 }
 
 // Deterministic per-index jitter in [-1, 1] (no Math.random — stable frames).

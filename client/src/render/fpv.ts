@@ -206,7 +206,18 @@ export class FpvMode {
    * player enters skydiving: that far above the ground, looking down. */
   place(x: number, y: number, dropHeight = 0): void {
     this.dropping = dropHeight > 0;
-    if (this.dropping) this.pitch = -0.95;
+    if (this.dropping) {
+      // Skydive entry: keep the exact spot (dropping onto a roof is a
+      // feature) and start the fall above whatever stands there.
+      this.pitch = -0.95;
+      this.x = Math.min(this.mapW, Math.max(0, x));
+      this.y = Math.min(this.mapH, Math.max(0, y));
+      const top = this.solids.support(this.x, this.y, Infinity, this.terrain(this.x, this.y));
+      this.z = top + dropHeight;
+      this.vx = this.vy = this.vz = 0;
+      this.flying = false;
+      return;
+    }
     for (let i = 0; i < 120; i++) {
       const r = 1.9 * Math.sqrt(i);
       const a = i * 2.39996;
@@ -291,7 +302,10 @@ export class FpvMode {
       this.y = ny;
     }
 
-    // Vertical.
+    // Vertical. Roof eligibility uses the PRE-fall height: a fast fall can
+    // cross a whole roof-catch window in one frame, and testing only the
+    // post-fall z would tunnel straight through the slab.
+    const z0 = this.z;
     if (this.flying) {
       const vert = this.keys.has(" ") ? 1 : this.keys.has("c") ? -1 : 0;
       this.vz = vert * FLY_VERT * (sprint ? 3 : 1);
@@ -300,7 +314,7 @@ export class FpvMode {
       this.vz = Math.max(-MAX_FALL, this.vz + GRAVITY * dt);
       this.z += this.vz * dt;
     }
-    const sup = this.solids.support(this.x, this.y, this.z, this.terrain(this.x, this.y));
+    const sup = this.solids.support(this.x, this.y, Math.max(z0, this.z), this.terrain(this.x, this.y));
     if (this.z <= sup && (!this.flying || this.vz < 0)) {
       // Flying upward passes freely through a roof plane; everything else
       // lands, and descending onto a surface folds the wings.
