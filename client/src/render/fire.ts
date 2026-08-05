@@ -23,7 +23,7 @@ const REAL_PER_GAME_H = 3600 / CYCLES_PER_DAY;
 
 const SMOKE_MAX = 2000;
 const GLOW_MAX = 1200;
-const FLAME_MAX = 2200;
+const FLAME_MAX = 3600;
 const EMBER_MAX = 130;
 const SPREAD_TICK = 4; // real s between spread rolls per burning building
 const TREE_IGNITE_R = 14; // m from a burning building
@@ -136,7 +136,7 @@ interface Tree {
  */
 function flameAtlas(): THREE.CanvasTexture {
   const cv = document.createElement("canvas");
-  cv.width = cv.height = 256;
+  cv.width = cv.height = 512;
   const ctx = cv.getContext("2d")!;
   ctx.globalCompositeOperation = "lighter";
   const blob = (x: number, y: number, r: number, rgb: string, a: number) => {
@@ -149,15 +149,15 @@ function flameAtlas(): THREE.CanvasTexture {
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
   };
-  // Four DIFFERENT flames in a 2x2 grid — cells pick one per instance so a
-  // burning block isn't the same sprite copy-pasted. Colors sit between the
-  // old ghost-glow and the cartoon sticker: deep red body, orange heart,
-  // only a small warm core.
-  for (let cell = 0; cell < 4; cell++) {
-    const ox = (cell & 1) * 128;
-    const oy = (cell >> 1) * 128;
-    const lean = (Math.random() - 0.5) * 22; // each flame leans differently
-    const axis = (t: number) => ox + 64 + lean * t;
+  // 4x4 atlas: 12 DIFFERENT flame tongues + 4 roiling near-opaque fire
+  // balls. Instances pick a slot, so a burning block is never the same
+  // sprite copy-pasted. Colors sit between ghost-glow and cartoon sticker:
+  // deep red body, orange heart, small warm core.
+  const drawTongue = (ox: number, oy: number) => {
+    const lean = (Math.random() - 0.5) * 24;
+    const wob = 4 + Math.random() * 9;
+    const ph = Math.random() * Math.PI * 2;
+    const axis = (t: number) => ox + 64 + lean * t + Math.sin(t * 6 + ph) * wob * t;
     for (let i = 0; i < 80; i++) {
       const t = Math.pow(Math.random(), 0.85);
       const y = oy + 118 - t * 100;
@@ -180,10 +180,44 @@ function flameAtlas(): THREE.CanvasTexture {
       const r = 6.5 * (1 - t * 0.4) + 2;
       blob(x, y, r, "255,214,138", 0.6);
     }
+  };
+  // Roiling ball of fire: dense (mostly opaque) center, ragged round edge.
+  const drawBall = (ox: number, oy: number) => {
+    const cx = ox + 64;
+    const cy = oy + 64;
+    for (let i = 0; i < 30; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = Math.pow(Math.random(), 0.7) * 38;
+      blob(cx + Math.cos(a) * d, cy + Math.sin(a) * d, 12 + Math.random() * 9, "232,44,10", 0.5);
+    }
+    for (let i = 0; i < 20; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = Math.pow(Math.random(), 0.8) * 25;
+      blob(cx + Math.cos(a) * d, cy + Math.sin(a) * d, 9 + Math.random() * 7, "255,122,30", 0.55);
+    }
+    for (let i = 0; i < 11; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = Math.random() * 13;
+      blob(cx + Math.cos(a) * d, cy + Math.sin(a) * d, 6 + Math.random() * 5, "255,202,96", 0.62);
+    }
+  };
+  for (let slot = 0; slot < 16; slot++) {
+    const ox = (slot & 3) * 128;
+    const oy = (slot >> 2) * 128;
+    if (BALL_SLOTS.includes(slot)) drawBall(ox, oy);
+    else drawTongue(ox, oy);
   }
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
+}
+
+/** Atlas slot layout (4x4). Slots 8-11 are the round fire balls. */
+const BALL_SLOTS = [8, 9, 10, 11];
+const TONGUE_SLOTS = [0, 1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 15];
+/** Canvas slot → UV offset (CanvasTexture flips Y: top canvas row = high v). */
+function slotUv(slot: number): [number, number] {
+  return [(slot & 3) * 0.25, 0.75 - (slot >> 2) * 0.25];
 }
 
 // The renderer uses a logarithmic depth buffer: raw ShaderMaterials MUST
@@ -402,7 +436,7 @@ export class FireSim {
     const tex = radialGlowTexture();
     // Draw order: light halos under the solid flame bodies, smoke on top.
     this.glow = new BillboardPool(GLOW_MAX, tex, THREE.AdditiveBlending, 40);
-    this.flames = new BillboardPool(FLAME_MAX, flameAtlas(), THREE.NormalBlending, 41, true, 2, true);
+    this.flames = new BillboardPool(FLAME_MAX, flameAtlas(), THREE.NormalBlending, 41, true, 4, true);
     this.smoke = new BillboardPool(SMOKE_MAX, tex, THREE.NormalBlending, 42);
     this.group.add(this.glow.mesh, this.flames.mesh, this.smoke.mesh);
   }
@@ -584,10 +618,27 @@ export class FireSim {
       cellR,
       intensity: 0,
     };
+    // Head start: a fresh ignition is VISIBLY on fire immediately, not a
+    // smolder you have to squint for.
+    burn.t = Math.min(40, dur * 0.06) * 0.7;
     this.status[bi] = 1;
     this.burns.set(bi, burn);
     this.onNewFire?.(burn.x, burn.y);
     return true;
+  }
+
+  /** Feed an ALREADY-burning building (another fireball, a shell): advance
+   * the burn, wake the cells around the impact, shrug off some knockdown.
+   * Thirty fireballs into one big block now means an inferno, not nothing. */
+  stoke(bi: number, x: number, y: number): void {
+    const burn = this.burns.get(bi);
+    if (!burn) return;
+    burn.t = Math.min(burn.t + burn.dur * 0.06, burn.dur * 0.85);
+    burn.knock = Math.max(0, burn.knock - 0.35);
+    const wake = Math.max(0, burn.t - 1);
+    for (const c of burn.cells) {
+      if (Math.hypot(c.x - x, c.y - y) < 28) c.delay = Math.min(c.delay, wake);
+    }
   }
 
   /** Ignite the closest intact building to (x, y). */
@@ -606,11 +657,14 @@ export class FireSim {
   /** Drop a free-standing fireball at (x, y): it roils for a few seconds and
    * catches whatever fuel is around it — or goes out if there is none. */
   fireball(x: number, y: number): void {
-    const z = this.terrain(x, y) + 1.2;
-    this.flash(x, y, z + 3, 22, 0xffb066);
-    // A fireball ON a building takes: the click point is the ignition point.
+    // A fireball ON a building sits on its ROOF (not buried inside) and
+    // takes immediately — or stokes a fire that's already going.
     const direct = this.buildingAt(x, y, this.terrain(x, y) + 1);
-    if (direct >= 0) this.igniteBuilding(direct, x, y);
+    const z = (direct >= 0
+      ? this.shells.base(direct) + this.map.buildings[direct]!.height
+      : this.terrain(x, y)) + 1.2;
+    this.flash(x, y, z + 3, 22, 0xffb066);
+    if (direct >= 0 && !this.igniteBuilding(direct, x, y)) this.stoke(direct, x, y);
     for (let i = 0; i < 6; i++) {
       const a = Math.random() * Math.PI * 2;
       this.spawnPuff(
@@ -972,7 +1026,9 @@ export class FireSim {
           : 0.045 + Math.random() * 0.05; // commercial: near-black
       burn.smokeClock -= dt;
       if (burn.smokeClock <= 0 && burn.intensity > 0.02) {
-        burn.smokeClock = 0.55 / Math.max(0.15, burn.intensity * burn.smoky);
+        // Fast, fat, fully-opaque puffs rooted at the roof line over the
+        // burning cells: a continuous churning column, not scattered dots.
+        burn.smokeClock = 0.28 / Math.max(0.18, burn.intensity * burn.smoky);
         let src: FireCell | null = null;
         for (let tries = 0; tries < 4 && !src; tries++) {
           const c = burn.cells[Math.floor(Math.random() * burn.cells.length)]!;
@@ -980,14 +1036,13 @@ export class FireSim {
         }
         const sx = src ? src.x : burn.x;
         const sy = src ? src.y : burn.y;
-        const sz = src ? Math.max(src.z + 2, burn.z) : burn.z + 2;
         this.spawnPuff(
-          sx, sy, sz,
+          sx, sy, burn.z + 1 + Math.random() * 3,
           wx * this.windSpeed * 0.15, wy * this.windSpeed * 0.15,
-          3.5 + Math.random() * 2.5,
-          5 + burn.size * 0.4, 1.8,
+          2.6 + Math.random() * 1.8,
+          9 + burn.size * 0.55, 2.6,
           burn.suppressed ? grey : grey * 0.5, // pitch black right off the fire
-          4 + Math.random() * 3,
+          8 + Math.random() * 4,
           1,
         );
       }
@@ -1042,16 +1097,47 @@ export class FireSim {
         this.fireballs.splice(i, 1);
         continue;
       }
+      // Fire crawls: the ball drifts downwind and can shed children.
+      fb.x += wx * this.windSpeed * 0.14 * dt;
+      fb.y += wy * this.windSpeed * 0.14 * dt;
       fb.tryClock -= dt;
       if (fb.tryClock <= 0) {
         fb.tryClock = 0.7;
         // Direct contact always threatens; centroids can sit far from the
         // click on big footprints, so test the point itself too.
-        const under = this.buildingAt(fb.x, fb.y, fb.z - 1);
-        if (under >= 0 && Math.random() < 0.6) this.igniteBuilding(under, fb.x, fb.y);
+        const under = this.buildingAt(fb.x, fb.y, fb.z - fb.size);
+        if (under >= 0 && Math.random() < 0.6 && !this.igniteBuilding(under, fb.x, fb.y)) {
+          this.stoke(under, fb.x, fb.y);
+        }
         this.nearBuildings(fb.x, fb.y, 26, (bi) => {
-          if (Math.random() < 0.22) this.igniteBuilding(bi, fb.x, fb.y);
+          if (Math.random() < 0.22 && !this.igniteBuilding(bi, fb.x, fb.y) && Math.random() < 0.4) {
+            this.stoke(bi, fb.x, fb.y);
+          }
         });
+        if (Math.random() < 0.16 && this.fireballs.length < 40) {
+          const a = this.windDir + (Math.random() - 0.5) * 2.4;
+          const d = 8 + Math.random() * 8;
+          const cx = fb.x + Math.cos(a) * d;
+          const cy = fb.y + Math.sin(a) * d;
+          const cb = this.buildingAt(cx, cy, this.terrain(cx, cy) + 1);
+          const cz = (cb >= 0
+            ? this.shells.base(cb) + this.map.buildings[cb]!.height
+            : this.terrain(cx, cy)) + 1.2;
+          const subs = [];
+          for (let i = 0; i < 6; i++) {
+            const sa = Math.random() * Math.PI * 2;
+            const sr = Math.sqrt(Math.random()) * fb.size * 0.4;
+            subs.push({ ox: Math.cos(sa) * sr, oy: Math.sin(sa) * sr, seed: Math.random() * 100 });
+          }
+          this.fireballs.push({
+            x: cx, y: cy, z: cz,
+            t: 0,
+            life: 8 + Math.random() * 10,
+            size: fb.size * (0.65 + Math.random() * 0.25),
+            tryClock: 0.5,
+            subs,
+          });
+        }
         this.nearTrees(fb.x, fb.y, 12, (ti) => {
           if (Math.random() < 0.4) this.igniteTree(ti);
         });
@@ -1154,14 +1240,23 @@ export class FireSim {
   }
 
   /** One flame = two crossed world-fixed quads, each a DIFFERENT atlas
-   * variant: orbiting the fire shows changing structure, not a rotating
+   * tongue: orbiting the fire shows changing structure, not a rotating
    * cardboard cutout, and no two fires read identical. */
   private pushFlame(x: number, y: number, z: number, s: number, a: number, variant: number, yaw: number): void {
     const aa = Math.min(1, a);
-    const v1 = variant & 3;
-    const v2 = (variant + 1 + (variant >> 2)) & 3;
-    this.flames.push(x, y, z, s, 1, 1, 1, aa * 0.82, (v1 & 1) * 0.5, (v1 >> 1) * 0.5, yaw);
-    this.flames.push(x, y, z, s * 0.94, 1, 1, 1, aa * 0.7, (v2 & 1) * 0.5, (v2 >> 1) * 0.5, yaw + Math.PI / 2);
+    const [u1, v1] = slotUv(TONGUE_SLOTS[variant % 12]!);
+    const [u2, v2] = slotUv(TONGUE_SLOTS[(variant * 7 + 3) % 12]!);
+    this.flames.push(x, y, z, s, 1, 1, 1, aa * 0.82, u1, v1, yaw);
+    this.flames.push(x, y, z, s * 0.94, 1, 1, 1, aa * 0.7, u2, v2, yaw + Math.PI / 2);
+  }
+
+  /** Mostly-opaque roiling fire ball stuck to a surface (crossed quads). */
+  private pushBall(x: number, y: number, z: number, s: number, a: number, variant: number, yaw: number): void {
+    const aa = Math.min(1, a);
+    const [u1, v1] = slotUv(BALL_SLOTS[variant & 3]!);
+    const [u2, v2] = slotUv(BALL_SLOTS[(variant + 1) & 3]!);
+    this.flames.push(x, y, z, s, 1, 1, 1, aa * 0.9, u1, v1, yaw);
+    this.flames.push(x, y, z, s * 0.9, 1, 1, 1, aa * 0.75, u2, v2, yaw + Math.PI / 2);
   }
 
   private writeBillboards(focus: { x: number; y: number }): void {
@@ -1196,6 +1291,15 @@ export class FireSim {
         const s = (5 + c.i * (8 + burn.height * 0.22)) * szf;
         this.pushFlame(c.fx, c.fy, c.z + s * 0.42, s, c.i * 1.35 * alf, burn.bi + ci, burn.bi * 1.3 + ci * 0.9);
         this.glow.push(c.fx, c.fy, c.z + s * 0.55, s * 1.5, 1, 0.42, 0.1, 0.32 * c.i * alf);
+        // Roiling fire balls STUCK to the facade at varied heights — the
+        // structure itself unmistakably reads as on fire.
+        if (c.i > 0.12) {
+          const hb = ((ci * 2654435761) >>> 0) % 100 / 100;
+          const onRoof = c.z >= burn.z - 0.5;
+          const bz = onRoof ? c.z + 1.5 : c.z + 1.2 + burn.height * (0.15 + 0.55 * hb);
+          const bs = (2.4 + c.i * 3.4 + burn.height * 0.06) * (0.9 + 0.1 * Math.sin(this.time * 8 + ci * 1.9));
+          this.pushBall(c.fx, c.fy, bz, bs, (0.5 + 0.5 * c.i) * alf, burn.bi + ci, burn.bi + ci * 0.8);
+        }
       }
       // Heavily involved: bigger flame bodies over every cell plus a central
       // inferno rooted in the structure — a raging mass, not a glow ball.
@@ -1230,8 +1334,9 @@ export class FireSim {
       if (Math.hypot(e.x - focus.x, e.y - focus.y) > RANGE) continue;
       const tw = 0.7 + 0.3 * Math.sin(this.time * 31 + e.x * 7);
       const fade = 1 - Math.pow(e.t / e.life, 2);
-      this.glow.push(e.x, e.y, e.z, 2.4 * tw, 1, 0.45, 0.1, 0.95 * tw * fade);
-      this.glow.push(e.x, e.y, e.z, 1.1 * tw, 1, 0.85, 0.55, fade);
+      this.glow.push(e.x, e.y, e.z, 3.8 * tw, 1, 0.4, 0.08, 0.95 * tw * fade);
+      this.glow.push(e.x, e.y, e.z, 1.9 * tw, 1, 0.8, 0.45, fade);
+      this.glow.push(e.x, e.y, e.z, 0.9, 1, 0.97, 0.85, fade);
     }
     for (const ti of this.burningTrees) {
       const t = this.trees[ti]!;
