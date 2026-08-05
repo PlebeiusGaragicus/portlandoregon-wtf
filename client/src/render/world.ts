@@ -551,15 +551,30 @@ function buildBuildingTiles(
     // Base at the lowest footprint corner, sunk 1 m so slopes never show a
     // gap under the uphill wall.
     let base = Infinity;
-    for (const [vx, vy] of b.footprint) base = Math.min(base, ground(vx, vy));
+    let cx = 0;
+    let cy = 0;
+    for (const [vx, vy] of b.footprint) {
+      base = Math.min(base, ground(vx, vy));
+      cx += vx;
+      cy += vy;
+    }
     base = (Number.isFinite(base) ? base : 0) - 1;
+    cx /= b.footprint.length;
+    cy /= b.footprint.length;
     const landmarkKind = landmarks.get(b.id);
     if (landmarkKind) {
       pushPrism(soup, b, LANDMARK_RGB.get(landmarkKind)!, base);
       continue;
     }
+    // Tint keyed on a coarse spatial hash, not the part id: the footprint DB
+    // splits one building into stacked parts (podium/tower/penthouse), and
+    // per-part colors painted those as random patches. Nearby parts of the
+    // same use now share a tint, so the massing reads as ONE structure.
     const palette = palettes.get(b.use ?? "other") ?? palettes.get("other")!;
-    pushPrism(soup, b, palette[b.id % palette.length]!, base);
+    const qx = Math.round(cx / 45);
+    const qy = Math.round(cy / 45);
+    const hash = ((qx * 73856093) ^ (qy * 19349663)) >>> 0;
+    pushPrism(soup, b, palette[hash % palette.length]!, base);
   }
   const material = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
   return [...tiles.values()].map((soup) => soupMesh(soup, material));
@@ -571,12 +586,23 @@ function buildBuildingTiles(
  * one wall formula serve both: (dy, -dx) is outward for CCW and points into
  * the courtyard for CW holes — exactly the visible side each time.
  */
-function pushPrism(soup: Soup, b: Building, rgb: number[], base = 0): void {
-  const h = base + 1 + b.height; // roof height above the (sunk) base
-  const rings = [b.footprint, ...(b.holes ?? [])];
-  const before = soup.pos.length;
+// Vertical light falloff: wall bases sit in street shadow, roofs are dusty
+// membrane rather than facade — cheap cues that make stacked massing read.
+const WALL_BASE_SHADE = 0.68;
+const ROOF_SHADE = 0.88;
 
-  // Walls.
+function pushPrism(soup: Soup, b: Building, rgb: number[], base = 0): void {
+  // Tiny deterministic per-part lift: the footprint DB nests same-height
+  // parts (podium duplicates), and exactly coplanar roofs shimmer.
+  const h = base + 1 + b.height + (b.id % 7) * 0.06;
+  const rings = [b.footprint, ...(b.holes ?? [])];
+  const r = rgb[0]!;
+  const g = rgb[1]!;
+  const bl = rgb[2]!;
+  const s = WALL_BASE_SHADE;
+
+  // Walls: bottom vertices shaded, top full color — the GPU interpolates a
+  // smooth ambient-occlusion-ish gradient up the facade.
   for (const ring of rings) {
     for (let i = 0; i < ring.length; i++) {
       const [ax, ay] = ring[i]!;
@@ -590,6 +616,9 @@ function pushPrism(soup: Soup, b: Building, rgb: number[], base = 0): void {
       // Two triangles: (A, B, B_top), (A, B_top, A_top) — outward-facing.
       soup.pos.push(ax, base, -ay, bx, base, -by, bx, h, -by, ax, base, -ay, bx, h, -by, ax, h, -ay);
       for (let v = 0; v < 6; v++) soup.nrm.push(nx, 0, nz);
+      // Vertex order: bot, bot, top, bot, top, top.
+      soup.col!.push(r * s, g * s, bl * s, r * s, g * s, bl * s, r, g, bl);
+      soup.col!.push(r * s, g * s, bl * s, r, g, bl, r, g, bl);
     }
   }
 
@@ -598,15 +627,16 @@ function pushPrism(soup: Soup, b: Building, rgb: number[], base = 0): void {
   const holesV = (b.holes ?? []).map((ring) => ring.map(([x, y]) => new THREE.Vector2(x, y)));
   const flat: THREE.Vector2[] = outerV.concat(...holesV);
   const triangles = THREE.ShapeUtils.triangulateShape(outerV, holesV);
+  const rr = r * ROOF_SHADE;
+  const rg = g * ROOF_SHADE;
+  const rb = bl * ROOF_SHADE;
   for (const tri of triangles) {
     for (const idx of tri) {
       const v = flat[idx];
       if (!v) continue;
       soup.pos.push(v.x, h, -v.y);
       soup.nrm.push(0, 1, 0);
+      soup.col!.push(rr, rg, rb);
     }
   }
-
-  const added = (soup.pos.length - before) / 3;
-  for (let v = 0; v < added; v++) soup.col!.push(rgb[0]!, rgb[1]!, rgb[2]!);
 }
