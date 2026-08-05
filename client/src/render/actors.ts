@@ -16,7 +16,8 @@ const MAX_AMBULANCE_DAY = 40;
 const MAX_AMBULANCE_NIGHT = 20;
 const MAX_CITYBUS = 12;
 const MAX_SCHOOLBUS = 10; // only during school runs
-const CAP = MAX_FIRE + MAX_POLICE + MAX_AMBULANCE_DAY + MAX_CITYBUS + MAX_SCHOOLBUS;
+const MAX_TANK = 5;
+const CAP = MAX_FIRE + MAX_POLICE + MAX_AMBULANCE_DAY + MAX_CITYBUS + MAX_SCHOOLBUS + MAX_TANK;
 const TRAILER_CAP = MAX_CITYBUS;
 
 /** School buses run the morning pickup and afternoon drop-off windows. */
@@ -54,7 +55,7 @@ interface VehicleKind {
 }
 
 const KINDS: Record<
-  "engine" | "truck" | "police" | "ambulance" | "schoolbus" | "citybus",
+  "engine" | "truck" | "police" | "ambulance" | "schoolbus" | "citybus" | "tank",
   VehicleKind
 > = {
   engine: { color: 0xb92418, lights: true, flashA: 0xff2a1a, flashB: 0xffffff, size: [8.2, 2.5, 3.1], speedMin: 14, speedMax: 21 },
@@ -63,6 +64,7 @@ const KINDS: Record<
   ambulance: { color: 0xe4e6e9, lights: true, flashA: 0xff2a1a, flashB: 0xffffff, size: [6.6, 2.4, 2.6], speedMin: 14, speedMax: 21 },
   schoolbus: { color: 0xe8a91c, lights: false, flashA: 0, flashB: 0, size: [10.5, 2.5, 3.0], speedMin: 9, speedMax: 12 },
   citybus: { color: 0x2f8b46, lights: false, flashA: 0, flashB: 0, size: [9.0, 2.55, 3.1], trailer: [8.2, 2.55, 3.1], speedMin: 8, speedMax: 11 },
+  tank: { color: 0x4b5320, lights: false, flashA: 0, flashB: 0, size: [7.6, 3.4, 2.5], speedMin: 5, speedMax: 9 },
 };
 
 interface Vehicle {
@@ -102,6 +104,8 @@ interface Vehicle {
   trailHeading: number;
   /** Off-shift (school bus after the bell): despawn once out of sight. */
   expire: boolean;
+  /** Seconds until this tank fires its main gun again. */
+  bombardT: number;
   glow: THREE.Sprite | null;
 }
 
@@ -113,6 +117,11 @@ interface Facility {
 
 export class Actors {
   group = new THREE.Group();
+
+  /** Fire-sim hooks (wired by the renderer). Dispatch fire incidents ignite
+   * a real building; tanks ask for a bombardment at their position. */
+  onFireIncident: ((x: number, y: number) => void) | null = null;
+  onTankFire: ((x: number, y: number) => void) | null = null;
 
   private adj = new Map<number, StreetEdge[]>();
   private nodePos = new Map<number, { x: number; y: number }>();
@@ -175,16 +184,19 @@ export class Actors {
       else if (lm.kind === "police") this.policeHomes.push(snap(lm.x, lm.y));
       else if (lm.kind === "school") this.schoolHomes.push(snap(lm.x, lm.y));
     }
-    this.dispatch = new Dispatch((focus, range) => {
-      const ids = [...this.nodePos.keys()];
-      for (let tries = 0; tries < 40; tries++) {
-        const p = this.nodePos.get(ids[Math.floor(Math.random() * ids.length)]!)!;
-        if (Math.hypot(p.x - focus.x, p.y - focus.y) < range) {
-          return { x: p.x, y: p.y, z: this.terrain(p.x, p.y) };
+    this.dispatch = new Dispatch(
+      (focus, range) => {
+        const ids = [...this.nodePos.keys()];
+        for (let tries = 0; tries < 40; tries++) {
+          const p = this.nodePos.get(ids[Math.floor(Math.random() * ids.length)]!)!;
+          if (Math.hypot(p.x - focus.x, p.y - focus.y) < range) {
+            return { x: p.x, y: p.y, z: this.terrain(p.x, p.y) };
+          }
         }
-      }
-      return null;
-    });
+        return null;
+      },
+      (x, y) => this.onFireIncident?.(x, y),
+    );
     this.group.add(this.dispatch.group);
 
     const bodyMat = new THREE.MeshLambertMaterial({ flatShading: true });
@@ -202,6 +214,18 @@ export class Actors {
     this.group.add(this.body, this.bar, this.trailer);
   }
 
+  /** Fire crews working a scene — the burn sim uses them as suppressors. */
+  fireUnitsOnScene(): { x: number; y: number }[] {
+    return this.vehicles
+      .filter((v) => (v.kind === "engine" || v.kind === "truck") && v.mode === "onscene")
+      .map((v) => ({ x: v.x, y: v.y }));
+  }
+
+  /** Report a real fire to dispatch (dedupes against open fire calls). */
+  reportFire(x: number, y: number, z: number): void {
+    this.dispatch.report(x, y, z);
+  }
+
   /** FPV listener position for the siren (null = map view, siren muted). */
   setListener(pos: { x: number; y: number } | null): void {
     this.listener = pos;
@@ -213,6 +237,15 @@ export class Actors {
     this.dispatch.update(dt, timeSec, focus, this.vehicles);
 
     for (const v of this.vehicles) v.patience -= dt;
+    // Tanks near the camera bombard the neighborhood.
+    for (const v of this.vehicles) {
+      if (v.kind !== "tank") continue;
+      v.bombardT -= dt;
+      if (v.bombardT <= 0 && Math.hypot(v.x - focus.x, v.y - focus.y) < 2500) {
+        v.bombardT = 11 + Math.random() * 17;
+        this.onTankFire?.(v.x, v.y);
+      }
+    }
     this.interact(dt);
     this.vehicles = this.vehicles.filter((v) => this.advance(v, dt, focus));
 
@@ -345,6 +378,9 @@ export class Actors {
     } else if (nBus < MAX_CITYBUS) {
       const h = this.randomFacilityNear(focus);
       if (h) spawned = this.spawnAt("citybus", h, true);
+    } else if (count((v) => v.kind === "tank") < MAX_TANK) {
+      const h = this.randomFacilityNear(focus);
+      if (h) spawned = this.spawnAt("tank", h, true);
     } else if (nSchool < maxSchool) {
       const homes = near(this.schoolHomes);
       const h = homes.length
@@ -418,6 +454,7 @@ export class Actors {
       sceneT: 0,
       trailHeading: 0,
       expire: false,
+      bombardT: 6 + Math.random() * 14,
       glow,
     };
     this.enterEdge(v, edge, home.node);

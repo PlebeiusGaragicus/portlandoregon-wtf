@@ -65,7 +65,29 @@ export class Dispatch {
   constructor(
     /** Random drivable point within `range` of a focus, or null. */
     private samplePoint: (focus: { x: number; y: number }, range: number) => { x: number; y: number; z: number } | null,
+    /** Fire-kind incidents ignite a REAL building here (fire sim hook). */
+    private onFire: ((x: number, y: number) => void) | null = null,
   ) {}
+
+  /** A real fire reported from the burn sim: open a call unless a fire
+   * incident already covers that area. Real fires burn long — so does the
+   * incident (units keep cycling in until the fire dies or spreads away). */
+  report(x: number, y: number, z: number): void {
+    for (const inc of this.incidents) {
+      if (inc.kind === "fire" && Math.hypot(inc.x - x, inc.y - y) < 260) return;
+    }
+    if (this.incidents.length >= MAX_INCIDENTS + 3) return;
+    this.incidents.push({
+      kind: "fire",
+      x,
+      y,
+      z,
+      needs: rollNeeds("fire"),
+      assigned: [],
+      t: 150 + Math.random() * 90,
+      glow: null, // the fire sim renders the flames themselves
+    });
+  }
 
   update(dt: number, timeSec: number, focus: { x: number; y: number }, units: Unit[]): void {
     // New calls come in.
@@ -83,7 +105,10 @@ export class Dispatch {
           t: 50 + Math.random() * 70,
           glow: null,
         };
-        if (kind === "fire") {
+        if (kind === "fire" && this.onFire) {
+          // A real building catches fire; the burn sim owns the visuals.
+          this.onFire(p.x, p.y);
+        } else if (kind === "fire") {
           inc.glow = new THREE.Sprite(
             new THREE.SpriteMaterial({
               map: this.glowTex,

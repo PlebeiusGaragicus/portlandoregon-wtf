@@ -4,6 +4,7 @@ import { Actors } from "./actors.js";
 import { CameraRig, toScene, toWorldXY } from "./camera.js";
 import { Controls, type ControlDelegate } from "./controls.js";
 import { DayNight } from "./daynight.js";
+import { FireSim } from "./fire.js";
 import { FpvMode } from "./fpv.js";
 import { buildLandmarks, type LandmarkLayer } from "./landmarks.js";
 import { Minimap } from "./minimap.js";
@@ -58,6 +59,11 @@ export class Renderer {
   private sun!: THREE.DirectionalLight;
   private daynight = new DayNight();
   private actors!: Actors;
+  /** Fire + destruction sim (public: debug harnesses drive it). */
+  fire!: FireSim;
+  private shake = 0;
+  private punchCd = 0;
+  private boomCtx: AudioContext | null = null;
   private lastNight = -1;
   private hudClock!: HTMLDivElement;
   private hudScale!: HTMLDivElement;
@@ -130,6 +136,28 @@ export class Renderer {
     this.scene.add(this.landmarks.group);
     this.actors = new Actors(map, hf);
     this.scene.add(this.actors.group);
+
+    // Disaster sim: fires, spread, destruction — wired into dispatch both
+    // ways (real fires open calls; dispatch fire incidents ignite for real).
+    this.fire = new FireSim(map, hf, this.world.shells);
+    this.fire.addPropSet(this.props);
+    this.scene.add(this.fire.group);
+    this.fire.onNewFire = (x, y) => this.actors.reportFire(x, y, this.ground(x, y));
+    this.actors.onFireIncident = (x, y) => this.fire.igniteNear(x, y, 90);
+    this.actors.onTankFire = (x, y) => {
+      const bi = this.fire.randomTargetNear(x, y, 45, 320);
+      if (bi < 0) return;
+      const c = this.fire.centerOf(bi);
+      this.fire.flash(x, y, this.ground(x, y) + 2.4, 8);
+      window.setTimeout(() => {
+        this.fire.explosion(c.x, c.y, c.z, 13, 4.2);
+        if (this.fpvOn && this.fpv) {
+          const d = Math.hypot(c.x - this.fpv.x, c.y - this.fpv.y);
+          if (d < 1500) this.boom(Math.min(0.5, 320 / (d + 120)), 70);
+          this.shake = Math.min(1, this.shake + Math.min(0.7, 260 / (d + 60)));
+        }
+      }, 450);
+    };
 
     this.rig = new CameraRig(map);
     this.rig.viewHeight = START_VIEW;
@@ -264,6 +292,7 @@ export class Renderer {
       this.fpvProps.group.visible = false;
       this.fpvProps.glow.visible = false;
       this.fpvProps.setNight(this.daynight.night);
+      this.fire.addPropSet(this.fpvProps);
       this.scene.add(this.fpvProps.group, this.fpvProps.glow);
       // Distance-cull registry: 1 km prop/paint tiles vanish once they're too
       // far to read; the altitude fog swallows the transition.
@@ -296,7 +325,50 @@ export class Renderer {
     this.minimap.el.style.display = "none";
     this.hudScale.style.display = "none";
     this.lockPointer();
-    this.hint("WASD move · Shift sprint · Space jump · double-Space fly (Space up, C down) · V exit", 6000);
+    this.hint("WASD move · Shift sprint · Space jump · double-Space fly (Space up, C down) · click PUNCH · V exit", 6000);
+  }
+
+  /** Anti-hero mode: a punch cracks (and sometimes torches) what's in front
+   * of you. A few blows level a house; towers take real work. */
+  private punch(): void {
+    if (!this.fpv || this.punchCd > 0) return;
+    this.punchCd = 0.32;
+    const f = this.fpv;
+    const dx = -Math.sin(f.yaw);
+    const dy = Math.cos(f.yaw);
+    for (const reach of [1.6, 3.1, 4.6]) {
+      const px = f.x + dx * reach;
+      const py = f.y + dy * reach;
+      const bi = this.fire.buildingAt(px, py, f.z);
+      if (bi < 0) continue;
+      this.fire.damageBuilding(bi, 2.3, 0.3);
+      this.fire.flash(px, py, f.z + 1.5, 3.2, 0xffe9c9);
+      this.fire.dust(px, py, f.z, 4);
+      this.shake = Math.min(1, this.shake + 0.5);
+      this.boom(0.22, 110);
+      return;
+    }
+    this.shake = Math.min(1, this.shake + 0.1); // whiff
+  }
+
+  /** Short thump — punches and shellfire. */
+  private boom(gain: number, freq: number): void {
+    try {
+      this.boomCtx ??= new AudioContext();
+      const t = this.boomCtx.currentTime;
+      const o = this.boomCtx.createOscillator();
+      o.type = "sine";
+      o.frequency.setValueAtTime(freq, t);
+      o.frequency.exponentialRampToValueAtTime(28, t + 0.35);
+      const g = this.boomCtx.createGain();
+      g.gain.setValueAtTime(gain, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
+      o.connect(g).connect(this.boomCtx.destination);
+      o.start(t);
+      o.stop(t + 0.5);
+    } catch {
+      /* no audio available */
+    }
   }
 
   /** Lazily built gradient dome that rides on the FPV camera; recolored
@@ -411,8 +483,20 @@ export class Renderer {
         this.fpv.look(e.movementX, e.movementY);
       }
     });
-    on(this.canvas, "pointerdown", () => {
-      if (this.fpvOn && document.pointerLockElement !== this.canvas) this.lockPointer();
+    on(this.canvas, "pointerdown", (e: MouseEvent) => {
+      if (this.fpvOn) {
+        if (document.pointerLockElement !== this.canvas) {
+          this.lockPointer();
+          return;
+        }
+        if (e.button === 0) this.punch();
+        return;
+      }
+      // Disaster director: shift+click torches the nearest building.
+      if (e.shiftKey) {
+        const w = this.toWorld(e.clientX, e.clientY);
+        if (w && this.fire.igniteNear(w.x, w.y, 70)) this.hint("fire started", 1100);
+      }
     });
     on(document, "pointerlockchange", () => {
       if (!this.fpvOn) return;
@@ -479,12 +563,20 @@ export class Renderer {
       const aspect = (this.canvas.clientWidth || 1) / (this.canvas.clientHeight || 1);
       this.actors.setListener({ x: this.fpv.x, y: this.fpv.y });
       this.actors.update(dt, now / 1000, { x: this.fpv.x, y: this.fpv.y }, this.daynight.night, this.daynight.t * 24);
+      this.fire.update(dt, { x: this.fpv.x, y: this.fpv.y }, this.actors.fireUnitsOnScene());
+      this.punchCd -= dt;
       // Draw distance scales with altitude: short and hazy at street level
       // (nearby blocks occlude everything anyway), the whole city from the
       // air. Fog density is tied to the far plane so the cutoff hides in haze.
       const altAbove = this.fpv.z - this.ground(this.fpv.x, this.fpv.y);
       const far = Math.min(30000, Math.max(5500, 5500 + altAbove * 55));
       this.fpv.apply(this.camera, aspect, far);
+      if (this.shake > 0.002) {
+        this.camera.position.x += (Math.random() - 0.5) * this.shake * 0.3;
+        this.camera.position.y += (Math.random() - 0.5) * this.shake * 0.3;
+        this.camera.rotation.z += (Math.random() - 0.5) * this.shake * 0.022;
+        this.shake *= Math.exp(-dt * 5.5);
+      }
       (this.scene.fog as THREE.FogExp2).density = 1.7 / far;
       this.sky!.scale.setScalar((far * 0.85) / SKY_R);
       this.compass.style.setProperty("--rot", `${this.fpv.yaw}rad`);
@@ -539,6 +631,7 @@ export class Renderer {
 
     this.actors.setListener(null);
     this.actors.update(dt, now / 1000, this.rig.target, this.daynight.night, this.daynight.t * 24);
+    this.fire.update(dt, this.rig.target, this.actors.fireUnitsOnScene());
     this.applyDayNight(this.rig.target.x, this.rig.target.y, this.ground(this.rig.target.x, this.rig.target.y), vh < SHADOW_MAX_VIEW);
     this.updateScaleBar(vh);
 

@@ -40,8 +40,10 @@ roughly ordered by visible payoff. Deployment/gameplay backlogs live in
    extend over the water (real data — docks). Clip to shoreline if they
    look wrong.
 
-## Up next (not polish)
+## Delivered since (2026-08-05)
 
-- **Conflagration**: buildings catch fire, burn, and spread — fire sim over
-  the 538k footprints, tied into the dispatch module (fire apparatus respond
-  to real spreading fires instead of faux incidents).
+- **Conflagration** (`client/src/render/fire.ts`): buildings ignite, char in
+  place, spread with the wind, collapse to rubble; trees torch; smoke
+  headers; tanks bombard; FPV punch (Hulk mode); dispatch integration both
+  ways. Future: bullet holes/scars as decals, debris piles, water arcs from
+  engines, fire audio (crackle).

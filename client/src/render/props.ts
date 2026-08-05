@@ -10,7 +10,9 @@ const SIGN_FACE: Record<Extract<Prop, { kind: "sign" }>["sign"], number> = {
   "street-name": 0x2ecc71,
   other: 0x8a8f99,
 };
-const CANOPY_RADIUS: Record<1 | 2 | 3, number> = { 1: 1.5, 2: 2.5, 3: 3.5 };
+// Fuller, slightly bigger trees — same icosahedron, just scaled (wider than
+// tall) so the canopy reads lush without any extra polygons.
+const CANOPY_RADIUS: Record<1 | 2 | 3, number> = { 1: 2.0, 2: 3.1, 3: 4.3 };
 
 const TILE = 1000; // meters — instanced meshes chunked for frustum culling
 
@@ -48,6 +50,9 @@ export interface PropLayers {
   /** Small street furniture — signs, signals, meters, benches, racks, speed
    * cushions, hydrants. Gated to a much closer zoom than trees/lights. */
   near: THREE.Group;
+  /** Recolor one tree canopy by its global tree index (fire tints: green ->
+   * ember -> charred black). Cheap: one instanced color write. */
+  paintTree(gi: number, color: THREE.Color): void;
 }
 
 type Tree = Extract<Prop, { kind: "tree" }>;
@@ -81,6 +86,11 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
       hydrants: Simple[];
     }
   >();
+  // Global tree index (order of tree props in map.props) -> instanced slot,
+  // so the fire sim can tint canopies across every built prop set.
+  const treeSlots = new Map<number, { mesh: THREE.InstancedMesh; i: number }>();
+  const treeGi = new Map<Tree, number>();
+  let giCounter = 0;
   for (const p of map.props) {
     const key = Math.floor(p.y / TILE) * 4096 + Math.floor(p.x / TILE);
     let bucket = byTile.get(key);
@@ -88,7 +98,10 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
       bucket = { trees: [], signs: [], signals: [], lights: [], meters: [], furniture: [], racks: [], bumps: [], hydrants: [] };
       byTile.set(key, bucket);
     }
-    if (p.kind === "tree") bucket.trees.push(p);
+    if (p.kind === "tree") {
+      treeGi.set(p, giCounter++);
+      bucket.trees.push(p);
+    }
     else if (p.kind === "sign") bucket.signs.push(p);
     else if (p.kind === "signal") bucket.signals.push(p);
     else if (p.kind === "light") bucket.lights.push(p);
@@ -101,7 +114,7 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
 
   // Shared geometries/materials across all tiles. Life-size meters x s.
   const flat = { flatShading: true } as const;
-  const trunkGeo = new THREE.CylinderGeometry(0.25, 0.35, 2, 5);
+  const trunkGeo = new THREE.CylinderGeometry(0.3, 0.42, 2.6, 5);
   const canopyGeo = new THREE.IcosahedronGeometry(1, 0);
   const trunkMat = new THREE.MeshLambertMaterial({ color: TRUNK_COLOR, ...flat });
   const canopyMat = new THREE.MeshLambertMaterial({ ...flat });
@@ -164,12 +177,15 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
       bucket.trees.forEach((t, i) => {
         const r = CANOPY_RADIUS[t.size];
         const gz = g(t.x, t.y);
-        m.makeTranslation(toScene(t.x, t.y, gz + 1));
+        m.makeTranslation(toScene(t.x, t.y, gz + 1.3));
         trunks.setMatrixAt(i, m);
-        m.makeScale(r, r, r).setPosition(toScene(t.x, t.y, gz + 1.6 + r * 0.8));
+        // Wider than tall: a fuller crown from the same icosahedron.
+        m.makeScale(r * 1.12, r * 0.92, r * 1.12).setPosition(toScene(t.x, t.y, gz + 1.8 + r * 0.78));
         canopies.setMatrixAt(i, m);
         color.copy(CANOPY_BASE).offsetHSL(jitter(i) * 0.04, jitter(i + 1) * 0.08, jitter(i + 2) * 0.05);
         canopies.setColorAt(i, color);
+        const gi = treeGi.get(t);
+        if (gi !== undefined) treeSlots.set(gi, { mesh: canopies, i });
       });
       group.add(trunks, canopies);
     }
@@ -283,6 +299,12 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
       poolMat.opacity = 0.5 * n;
       const on = n > 0.03;
       for (const pm of pools) pm.visible = on;
+    },
+    paintTree(gi: number, c: THREE.Color): void {
+      const slot = treeSlots.get(gi);
+      if (!slot) return;
+      slot.mesh.setColorAt(slot.i, c);
+      if (slot.mesh.instanceColor) slot.mesh.instanceColor.needsUpdate = true;
     },
   };
 }

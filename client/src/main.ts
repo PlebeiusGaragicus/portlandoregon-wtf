@@ -1,6 +1,7 @@
 // Spectator-first boot: the map loads and renders immediately — no login.
 // (Units and the multiplayer join flow return in a later phase; net.ts and
 // the server's join path are kept for that.)
+import * as THREE from "three";
 import { decodeHeightfield, type GameMap, type Heightfield } from "@battle-juice/shared";
 import { Renderer } from "./render/index.js";
 import { buildLandmarks } from "./render/landmarks.js";
@@ -39,7 +40,7 @@ async function boot(): Promise<void> {
   await status("ready");
   const renderer = new Renderer(canvas, map, { prebuilt: { world, props, landmarks }, heightfield: hf });
   // Dev/debug handle (headless smoke tests steer the camera through this).
-  (window as unknown as Record<string, unknown>)["__bj"] = { renderer };
+  (window as unknown as Record<string, unknown>)["__bj"] = { renderer, THREE };
   loadingEl.classList.add("done");
 }
 

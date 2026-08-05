@@ -124,6 +124,110 @@ export interface WorldLayers {
   detail: THREE.Group;
   /** Zoom-driven cosmetics (street tint brightens from altitude). */
   setBlend(f: number): void;
+  /** In-place surgery on the merged building soups (fire/destruction). */
+  shells: BuildingShells;
+}
+
+/**
+ * Every building's vertex range inside its merged tile mesh, so the fire and
+ * destruction sim can recolor (char) or rewrite (collapse to rubble) ONE
+ * building in place — no per-building meshes, no soup rebuilds. Buildings
+ * are addressed by their index in map.buildings.
+ */
+export class BuildingShells {
+  /** mesh slot per building (-1 = no geometry, e.g. degenerate footprint). */
+  private meshIdx: Int32Array;
+  private start: Uint32Array; // first vertex of the prism
+  private vcount: Uint32Array;
+  private baseZ: Float32Array; // prism base elevation used at build time
+  private rgb: Float32Array; // build-time tint (palette or landmark theme)
+  private meshes: THREE.Mesh[] = [];
+  private charRGB = [0.09, 0.082, 0.078];
+
+  constructor(private buildings: Building[]) {
+    this.meshIdx = new Int32Array(buildings.length).fill(-1);
+    this.start = new Uint32Array(buildings.length);
+    this.vcount = new Uint32Array(buildings.length);
+    this.baseZ = new Float32Array(buildings.length);
+    this.rgb = new Float32Array(buildings.length * 3);
+  }
+
+  record(bi: number, meshIdx: number, vertStart: number, vertCount: number, base: number, rgb: number[]): void {
+    this.meshIdx[bi] = meshIdx;
+    this.start[bi] = vertStart;
+    this.vcount[bi] = vertCount;
+    this.baseZ[bi] = base;
+    this.rgb[bi * 3] = rgb[0]!;
+    this.rgb[bi * 3 + 1] = rgb[1]!;
+    this.rgb[bi * 3 + 2] = rgb[2]!;
+  }
+
+  finalize(meshes: THREE.Mesh[]): void {
+    this.meshes = meshes;
+  }
+
+  has(bi: number): boolean {
+    return this.meshIdx[bi]! >= 0;
+  }
+
+  base(bi: number): number {
+    return this.baseZ[bi]!;
+  }
+
+  /** Blend a building's vertex colors toward char black (t: 0..1). */
+  char(bi: number, t: number): void {
+    const mi = this.meshIdx[bi]!;
+    if (mi < 0) return;
+    const mesh = this.meshes[mi];
+    const b = this.buildings[bi];
+    if (!mesh || !b) return;
+    const col = mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
+    // Rebuild the original per-vertex color pattern and lerp toward char —
+    // no snapshots needed; the pattern is deterministic from the soup layout.
+    const tmp: Soup = { pos: [], nrm: [], col: [] };
+    pushPrism(tmp, b, [this.rgb[bi * 3]!, this.rgb[bi * 3 + 1]!, this.rgb[bi * 3 + 2]!], this.baseZ[bi]!);
+    const s = this.start[bi]!;
+    const n = this.vcount[bi]!;
+    const [cr, cg, cb] = this.charRGB as [number, number, number];
+    const src = tmp.col!;
+    for (let v = 0; v < n; v++) {
+      col.setXYZ(
+        s + v,
+        src[v * 3]! * (1 - t) + cr * t,
+        src[v * 3 + 1]! * (1 - t) + cg * t,
+        src[v * 3 + 2]! * (1 - t) + cb * t,
+      );
+    }
+    this.upload(col, s, n, 3);
+  }
+
+  /** Rewrite the prism as a low rubble stub (same vertex count, in place). */
+  collapse(bi: number): void {
+    const mi = this.meshIdx[bi]!;
+    if (mi < 0) return;
+    const mesh = this.meshes[mi];
+    const b = this.buildings[bi];
+    if (!mesh || !b) return;
+    const tmp: Soup = { pos: [], nrm: [], col: [] };
+    const rubbleH = Math.max(1.2, Math.min(4, b.height * 0.12));
+    pushPrism(tmp, { ...b, height: rubbleH }, [0.16, 0.15, 0.14], this.baseZ[bi]!);
+    const pos = mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const col = mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
+    const s = this.start[bi]!;
+    const n = Math.min(this.vcount[bi]!, tmp.pos.length / 3);
+    for (let v = 0; v < n; v++) {
+      pos.setXYZ(s + v, tmp.pos[v * 3]!, tmp.pos[v * 3 + 1]!, tmp.pos[v * 3 + 2]!);
+      col.setXYZ(s + v, tmp.col![v * 3]!, tmp.col![v * 3 + 1]!, tmp.col![v * 3 + 2]!);
+    }
+    this.upload(pos, s, n, 3);
+    this.upload(col, s, n, 3);
+  }
+
+  private upload(attr: THREE.BufferAttribute, start: number, count: number, itemSize: number): void {
+    const a = attr as THREE.BufferAttribute & { addUpdateRange?: (s: number, c: number) => void };
+    if (a.addUpdateRange) a.addUpdateRange(start * itemSize, count * itemSize);
+    attr.needsUpdate = true;
+  }
 }
 
 /** Static map meshes: terrain (or flat ground), water, tiled street ribbons
@@ -169,7 +273,8 @@ export function buildWorld(map: GameMap, hf?: Heightfield | null): WorldLayers {
 
   const landmarkBuildings = new Map<number, Landmark["kind"]>();
   for (const m of map.landmarks ?? []) for (const id of m.buildingIds ?? []) landmarkBuildings.set(id, m.kind);
-  for (const mesh of buildBuildingTiles(map.buildings, landmarkBuildings, ground)) group.add(mesh);
+  const { meshes: buildingMeshes, shells } = buildBuildingTiles(map.buildings, landmarkBuildings, ground);
+  for (const mesh of buildingMeshes) group.add(mesh);
 
   // Street-level dressing, in its own zoom-gated group.
   const detail = new THREE.Group();
@@ -202,6 +307,7 @@ export function buildWorld(map: GameMap, hf?: Heightfield | null): WorldLayers {
   return {
     group,
     detail,
+    shells,
     setBlend(f: number): void {
       const t = Math.min(1, Math.max(0, f));
       streetMat.color.lerpColors(streetNear, streetFar, t);
@@ -745,7 +851,7 @@ function buildBuildingTiles(
   buildings: Building[],
   landmarks: Map<number, Landmark["kind"]>,
   ground: GroundFn,
-): THREE.Mesh[] {
+): { meshes: THREE.Mesh[]; shells: BuildingShells } {
   // Palette colors as flat rgb triples, resolved once.
   const palettes = new Map<string, number[][]>();
   for (const [use, hexes] of Object.entries(USE_TINTS)) {
@@ -758,7 +864,12 @@ function buildBuildingTiles(
   // Landmark prisms get their own soup per kind: an emissive material makes
   // the building itself glow in its civic color, day and night.
   const lmSoups = new Map<Landmark["kind"], Soup>();
-  for (const b of buildings) {
+  const shells = new BuildingShells(buildings);
+  // Per-building vertex ranges, resolved to mesh indices after the loop
+  // (tile and landmark soups interleave while building).
+  const pending: { bi: number; key: number | string; start: number; count: number; base: number; rgb: number[] }[] = [];
+  for (let bi = 0; bi < buildings.length; bi++) {
+    const b = buildings[bi]!;
     if (b.footprint.length < 3) continue;
     const [fx, fy] = b.footprint[0]!;
     const key = tileKey(fx, fy);
@@ -781,7 +892,10 @@ function buildBuildingTiles(
     if (landmarkKind) {
       let ls = lmSoups.get(landmarkKind);
       if (!ls) lmSoups.set(landmarkKind, (ls = { pos: [], nrm: [], col: [] }));
-      pushPrism(ls, b, LANDMARK_RGB.get(landmarkKind)!, base);
+      const lmRgb = LANDMARK_RGB.get(landmarkKind)!;
+      const s0 = ls.pos.length / 3;
+      pushPrism(ls, b, lmRgb, base);
+      pending.push({ bi, key: `lm:${landmarkKind}`, start: s0, count: ls.pos.length / 3 - s0, base, rgb: lmRgb });
       continue;
     }
     // Tint keyed on a coarse spatial hash, not the part id: the footprint DB
@@ -792,13 +906,19 @@ function buildBuildingTiles(
     const qx = Math.round(cx / 45);
     const qy = Math.round(cy / 45);
     const hash = ((qx * 73856093) ^ (qy * 19349663)) >>> 0;
-    pushPrism(soup, b, palette[hash % palette.length]!, base);
+    const rgb = palette[hash % palette.length]!;
+    const s0 = soup.pos.length / 3;
+    pushPrism(soup, b, rgb, base);
+    pending.push({ bi, key, start: s0, count: soup.pos.length / 3 - s0, base, rgb });
   }
   const material = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
   const meshes = [...tiles.values()].map((soup) => soupMesh(soup, material));
+  const keyIndex = new Map<number | string, number>();
+  [...tiles.keys()].forEach((k, i) => keyIndex.set(k, i));
   for (const [kind, soup] of lmSoups) {
     // Lighter-tier kinds keep the tint but not the glow.
     const emissive = kind === "school" ? 0 : 0.42;
+    keyIndex.set(`lm:${kind}`, meshes.length);
     meshes.push(
       soupMesh(
         soup,
@@ -811,7 +931,11 @@ function buildBuildingTiles(
       ),
     );
   }
-  return meshes;
+  for (const p of pending) {
+    shells.record(p.bi, keyIndex.get(p.key)!, p.start, p.count, p.base, p.rgb);
+  }
+  shells.finalize(meshes);
+  return { meshes, shells };
 }
 
 /**
