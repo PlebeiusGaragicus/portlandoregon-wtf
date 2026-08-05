@@ -12,6 +12,7 @@ import { Room } from "./room.js";
 const loadedMap = loadActiveMap();
 
 const PORT = Number(process.env.PORT ?? 4000);
+const REPO_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "../..");
 const clientDist = join(fileURLToPath(new URL(".", import.meta.url)), "../../client/dist");
 
 const MIME: Record<string, string> = {
@@ -37,6 +38,21 @@ const httpServer = createServer((req, res) => {
       "cache-control": "no-cache",
     });
     res.end(loadedMap.gz);
+    return;
+  }
+  // Terrain heightfield (binary, pre-gzipped). 404 = flat-ground fallback.
+  if (url === "/heightmap") {
+    const file = join(REPO_ROOT, "data", "maps", `${loadedMap.map.meta.name}-heightmap.bin.gz`);
+    if (!existsSync(file)) {
+      res.writeHead(404).end("no heightmap");
+      return;
+    }
+    res.writeHead(200, {
+      "content-type": "application/octet-stream",
+      "content-encoding": "gzip",
+      "cache-control": "no-cache",
+    });
+    createReadStream(file).pipe(res);
     return;
   }
   // Static client (production). In dev, Vite serves the client instead.

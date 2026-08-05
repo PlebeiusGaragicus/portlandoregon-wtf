@@ -17,6 +17,11 @@ export function toLocal(lon: number, lat: number): [number, number] {
   return [x - originUtm[0], y - originUtm[1]];
 }
 
+/** Local meters -> WGS84 lon/lat (inverse, for raster sampling). */
+export function fromLocal(x: number, y: number): [number, number] {
+  return proj4(UTM10N, "WGS84", [x + originUtm[0], y + originUtm[1]]) as [number, number];
+}
+
 /** Play-area size in local meters (UTM is metric, so corners suffice). */
 export function playArea(): { width: number; height: number } {
   const ne = toLocal(DISTRICT.xmax, DISTRICT.ymax);

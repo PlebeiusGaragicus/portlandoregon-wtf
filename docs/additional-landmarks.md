@@ -93,7 +93,7 @@ tools/map-extract`, then re-run build-map.
 
 | Layer | Endpoint | Count | Notes |
 |---|---|---|---|
-| Elevation contours | `COP_OpenData_Environment/MapServer/268` | 1,226,592 | Real height for the West Hills. Needs a ground mesh + unit Y + camera work — a separate project, not a layer bolt-on. LiDAR DEM hillshades also exist under `Public/COP_LiDAR_*`. |
+| Elevation | **DONE** — USGS 3DEP 1/3" DEM (`fetch-dem.ts`), not the city contours | 1453×1193 @ 30 m | Baked to `data/maps/portland-heightmap.bin.gz`; terrain mesh with water/park/yard vertex tinting; streets/rails draped; STRUC_TYPE 21/23 span as bridges, 32 hidden as tunnels. Contours/LiDAR remain if we ever want finer than 10 m. |
 | FEMA flood areas / 1996 flood extent | `COP_OpenData_PublicSafetyHazards/MapServer/116` / `/93` | — | Scenario material: river floods, low ground impassable. |
 | Landslide hazard | `…PublicSafetyHazards/MapServer/1422` | — | West Hills terrain flavor. |
 | Police districts (PPB) | `…PublicSafetyHazards/MapServer/254` | — | Territory-control boundaries. |

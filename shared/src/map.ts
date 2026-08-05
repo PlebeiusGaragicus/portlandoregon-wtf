@@ -36,6 +36,9 @@ export interface StreetEdge {
   /** e.g. "NW COUCH ST" — free flavor for the UI. */
   name: string;
   class: RoadClass;
+  /** Grade separation (from Portland's STRUC_TYPE): bridges/viaducts span
+   * between endpoint heights; tunnels are not rendered. Absent = at grade. */
+  struct?: "bridge" | "tunnel";
 }
 
 /** Normalized building category, for palette/gameplay variety. */

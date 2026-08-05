@@ -19,6 +19,9 @@ export default defineConfig({
       "/map": {
         target: `http://localhost:${gamePort}`,
       },
+      "/heightmap": {
+        target: `http://localhost:${gamePort}`,
+      },
     },
   },
 });

@@ -10,6 +10,7 @@
     "validate": "tsx validate.ts",
     "transform": "tsx transform.ts",
     "scrape-landmarks": "tsx scrape-landmarks.ts",
+    "fetch-dem": "tsx fetch-dem.ts",
     "build-map": "tsx build.ts",
     "typecheck": "tsc --noEmit",
     "build": "tsc --noEmit"
@@ -17,6 +18,7 @@
   "devDependencies": {
     "@types/node": "^22.10.5",
     "@types/proj4": "^2.5.6",
+    "geotiff": "^3.0.5",
     "proj4": "^2.15.0",
     "tsx": "^4.19.2"
   }

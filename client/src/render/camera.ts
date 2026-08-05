@@ -98,7 +98,9 @@ export class CameraRig {
     return { x: Math.cos(this.theta), y: Math.sin(this.theta) };
   }
 
-  apply(cam: THREE.PerspectiveCamera, aspect: number): void {
+  /** `baseH`: terrain height at the target — the whole rig rides on it so
+   * the focus point sits on the ground, not at sea level. */
+  apply(cam: THREE.PerspectiveCamera, aspect: number, baseH = 0): void {
     this.lastAspect = aspect;
     this.constrain(); // every frame: zoom, tilt, pan can all push out of fit
     const f = this.forward();
@@ -106,11 +108,11 @@ export class CameraRig {
     const horiz = d * Math.cos(this.tilt);
     const camX = this.target.x - f.x * horiz;
     const camY = this.target.y - f.y * horiz;
-    const camH = d * Math.sin(this.tilt);
+    const camH = baseH + d * Math.sin(this.tilt);
 
     cam.position.copy(toScene(camX, camY, camH));
     cam.up.set(0, 1, 0);
-    cam.lookAt(toScene(this.target.x, this.target.y, 0));
+    cam.lookAt(toScene(this.target.x, this.target.y, baseH));
 
     cam.fov = FOV_DEG;
     cam.aspect = aspect;

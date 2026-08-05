@@ -61,6 +61,8 @@ interface RawEdge {
   line: Pt[];
   name: string;
   cls: RoadClass;
+  /** From STRUC_TYPE: 21 viaduct / 23 bridge -> "bridge"; 32 -> "tunnel". */
+  struct?: "bridge" | "tunnel";
 }
 
 interface RawGraph {
@@ -97,12 +99,14 @@ function buildGraph(streets: GeoJsonCollection): RawGraph {
     nodePos.set(t, line[line.length - 1]!);
     addZ(f, p["F_ZLEV"]);
     addZ(t, p["T_ZLEV"]);
+    const st = Number(p["STRUC_TYPE"] ?? 10);
     edges.push({
       f,
       t,
       line,
       name: String(p["FULL_NAME"] ?? ""),
       cls: roadClass(p["CFCC"], p["TYPE"]),
+      ...(st === 21 || st === 23 ? { struct: "bridge" as const } : st === 32 ? { struct: "tunnel" as const } : {}),
     });
   }
   if (skipped) console.log(`  streets: skipped ${skipped} segments without node ids/geometry`);
@@ -297,6 +301,7 @@ function transformStreets(streets: GeoJsonCollection, rect: Rect) {
       width: ROAD_WIDTH[e.cls],
       name: e.name,
       class: e.cls,
+      ...(e.struct ? { struct: e.struct } : {}),
     });
   }
 

@@ -102,7 +102,7 @@
   },
   "bakedMap": {
     "file": "data/maps/portland.json.gz",
-    "kind": "gz-asset (125.8 MB raw, 27.4 MB gz)",
+    "kind": "gz-asset (125.9 MB raw, 27.4 MB gz)",
     "meta": {
       "name": "portland",
       "sourceDate": "2026-08-04",
@@ -129,5 +129,17 @@
     "R1010": "stop",
     "G5500": "street-name",
     "G5501": "street-name"
+  },
+  "heightfield": {
+    "source": "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/13/TIFF/current/n46w123/USGS_13_n46w123.tif",
+    "cellSizeM": 30,
+    "scaleM": 0.5,
+    "cols": 1453,
+    "rows": 1193,
+    "elevationRangeM": [
+      0,
+      462.1
+    ],
+    "file": "data/maps/portland-heightmap.bin.gz"
   }
 }

@@ -1,91 +1,46 @@
-import type { GameMap, Snapshot } from "@battle-juice/shared";
-import { Net } from "./net.js";
-import { Renderer, type PrebuiltLayers } from "./render/index.js";
+// Spectator-first boot: the map loads and renders immediately — no login.
+// (Units and the multiplayer join flow return in a later phase; net.ts and
+// the server's join path are kept for that.)
+import { decodeHeightfield, type GameMap, type Heightfield } from "@battle-juice/shared";
+import { Renderer } from "./render/index.js";
 import { buildLandmarks } from "./render/landmarks.js";
 import { buildProps } from "./render/props.js";
 import { buildWorld } from "./render/world.js";
 
-const joinForm = document.getElementById("join") as HTMLFormElement;
-const nameInput = document.getElementById("name") as HTMLInputElement;
-const passwordInput = document.getElementById("password") as HTMLInputElement;
-const errorEl = document.getElementById("error") as HTMLParagraphElement;
-const gameEl = document.getElementById("game") as HTMLDivElement;
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
-const bannerEl = document.getElementById("banner") as HTMLDivElement;
+const loadingEl = document.getElementById("loading") as HTMLDivElement;
+const statusEl = document.getElementById("loading-status") as HTMLParagraphElement;
 
-// Invite links: https://game.example/?join=<password>
-const invited = new URLSearchParams(location.search).get("join");
-if (invited) passwordInput.value = invited;
-
-function updateBanner(s: Snapshot, myPlayerId: string): void {
-  if (!s.winner) {
-    bannerEl.style.display = "none";
-    return;
-  }
-  const survivor = s.entities.find((e) => e.ownerId === s.winner);
-  const name = survivor ? survivor.name.replace(/ \d+$/, "") : s.winner;
-  bannerEl.textContent = s.winner === myPlayerId ? `Victory — ${name} holds the city` : `${name} wins`;
-  bannerEl.style.display = "block";
+/** Paint a status line, then yield two frames so it actually shows before
+ * the next main-thread-blocking build step. */
+async function status(text: string): Promise<void> {
+  statusEl.textContent = text;
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 }
 
-// The map is served by the game server (large maps are not bundled). World
-// geometry is built as soon as it arrives — while the player is still at the
-// login form — so joining is near-instant.
-const mapPromise: Promise<GameMap> = fetch("/map").then((r) => {
-  if (!r.ok) throw new Error(`map fetch failed: ${r.status}`);
-  return r.json() as Promise<GameMap>;
-});
-const prebuiltPromise: Promise<{ map: GameMap; layers: PrebuiltLayers }> = mapPromise.then((map) => ({
-  map,
-  layers: { world: buildWorld(map), props: buildProps(map), landmarks: buildLandmarks(map) },
-}));
+async function boot(): Promise<void> {
+  await status("downloading Portland…");
+  const heightPromise: Promise<Heightfield | null> = fetch("/heightmap")
+    .then(async (r) => (r.ok ? decodeHeightfield(await r.arrayBuffer()) : null))
+    .catch(() => null);
+  const res = await fetch("/map");
+  if (!res.ok) throw new Error(`map fetch failed: ${res.status}`);
+  await status("unpacking the city…");
+  const map = (await res.json()) as GameMap;
+  const hf = await heightPromise;
 
-joinForm.addEventListener("submit", (ev) => {
-  ev.preventDefault();
-  errorEl.textContent = "";
-  let renderer: Renderer | null = null;
-  let latest: Snapshot | null = null; // buffered until the map arrives
+  await status("raising terrain, streets and 538k buildings…");
+  const world = buildWorld(map, hf);
+  await status("planting trees and street lights…");
+  const props = buildProps(map, hf);
+  await status("labeling landmarks…");
+  const landmarks = buildLandmarks(map, hf);
 
-  const net = new Net({
-    onWelcome(msg) {
-      joinForm.style.display = "none";
-      gameEl.style.display = "block";
-      latest = msg.snapshot;
-      prebuiltPromise
-        .then(({ map, layers }) => {
-          renderer = new Renderer(canvas, msg.playerId, map, {
-            onCommand: (entityId, target) => net.send({ type: "input", entityId, target }),
-            prebuilt: layers,
-          });
-          if (latest) {
-            renderer.pushSnapshot(latest);
-            updateBanner(latest, msg.playerId);
-          }
-        })
-        .catch((err) => {
-          errorEl.textContent = String(err);
-          gameEl.style.display = "none";
-          joinForm.style.display = "flex";
-        });
-    },
-    onSnapshot(msg) {
-      latest = msg.snapshot;
-      renderer?.pushSnapshot(msg.snapshot);
-      if (renderer) updateBanner(msg.snapshot, renderer.playerId);
-    },
-    onError(reason) {
-      errorEl.textContent = reason;
-    },
-    onClose() {
-      if (gameEl.style.display === "block") {
-        gameEl.style.display = "none";
-        joinForm.style.display = "flex";
-        errorEl.textContent = "disconnected";
-      }
-      renderer?.dispose();
-      renderer = null;
-    },
-  });
+  await status("ready");
+  new Renderer(canvas, map, { prebuilt: { world, props, landmarks }, heightfield: hf });
+  loadingEl.classList.add("done");
+}
 
-  net.join(nameInput.value.trim() || "anon", passwordInput.value);
+boot().catch((err) => {
+  statusEl.textContent = String(err);
 });

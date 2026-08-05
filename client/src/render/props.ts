@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { GameMap, Prop } from "@battle-juice/shared";
+import { heightAt, type GameMap, type Heightfield, type Prop } from "@battle-juice/shared";
 import { toScene } from "./camera.js";
 
 const TRUNK_COLOR = 0x5c4a36;
@@ -20,7 +20,8 @@ type Signal = Extract<Prop, { kind: "signal" }>;
 type Light = Extract<Prop, { kind: "light" }>;
 
 /** All decorative props, tiled into InstancedMeshes per prop family. */
-export function buildProps(map: GameMap): THREE.Group {
+export function buildProps(map: GameMap, hf?: Heightfield | null): THREE.Group {
+  const g = hf ? (x: number, y: number): number => heightAt(hf, x, y) : (): number => 0;
   const group = new THREE.Group();
   const byTile = new Map<number, { trees: Tree[]; signs: Sign[]; signals: Signal[]; lights: Light[] }>();
   for (const p of map.props) {
@@ -68,9 +69,10 @@ export function buildProps(map: GameMap): THREE.Group {
       const canopies = new THREE.InstancedMesh(canopyGeo, canopyMat, bucket.trees.length);
       bucket.trees.forEach((t, i) => {
         const r = CANOPY_RADIUS[t.size];
-        m.makeTranslation(toScene(t.x, t.y, 1));
+        const gz = g(t.x, t.y);
+        m.makeTranslation(toScene(t.x, t.y, gz + 1));
         trunks.setMatrixAt(i, m);
-        m.makeScale(r, r, r).setPosition(toScene(t.x, t.y, 1.6 + r * 0.8));
+        m.makeScale(r, r, r).setPosition(toScene(t.x, t.y, gz + 1.6 + r * 0.8));
         canopies.setMatrixAt(i, m);
         color.copy(CANOPY_BASE).offsetHSL(jitter(i) * 0.04, jitter(i + 1) * 0.08, jitter(i + 2) * 0.05);
         canopies.setColorAt(i, color);
@@ -81,10 +83,11 @@ export function buildProps(map: GameMap): THREE.Group {
       const poles = new THREE.InstancedMesh(poleGeo, poleMat, bucket.signs.length);
       const faces = new THREE.InstancedMesh(faceGeo, faceMat, bucket.signs.length);
       bucket.signs.forEach((s, i) => {
-        m.makeTranslation(toScene(s.x, s.y, 2.5));
+        const gz = g(s.x, s.y);
+        m.makeTranslation(toScene(s.x, s.y, gz + 2.5));
         poles.setMatrixAt(i, m);
         q.setFromAxisAngle(up, s.rot);
-        m.compose(toScene(s.x, s.y, 4.6), q, one);
+        m.compose(toScene(s.x, s.y, gz + 4.6), q, one);
         faces.setMatrixAt(i, m);
         faces.setColorAt(i, color.setHex(SIGN_FACE[s.sign]));
       });
@@ -94,9 +97,10 @@ export function buildProps(map: GameMap): THREE.Group {
       const poles = new THREE.InstancedMesh(sigPoleGeo, sigPoleMat, bucket.signals.length);
       const heads = new THREE.InstancedMesh(sigHeadGeo, sigHeadMat, bucket.signals.length);
       bucket.signals.forEach((s, i) => {
-        m.makeTranslation(toScene(s.x, s.y, 2.25));
+        const gz = g(s.x, s.y);
+        m.makeTranslation(toScene(s.x, s.y, gz + 2.25));
         poles.setMatrixAt(i, m);
-        m.makeTranslation(toScene(s.x, s.y, 4.6));
+        m.makeTranslation(toScene(s.x, s.y, gz + 4.6));
         heads.setMatrixAt(i, m);
       });
       group.add(poles, heads);
@@ -105,9 +109,10 @@ export function buildProps(map: GameMap): THREE.Group {
       const poles = new THREE.InstancedMesh(lightPoleGeo, lightPoleMat, bucket.lights.length);
       const heads = new THREE.InstancedMesh(lightHeadGeo, lightHeadMat, bucket.lights.length);
       bucket.lights.forEach((s, i) => {
-        m.makeTranslation(toScene(s.x, s.y, 3.5));
+        const gz = g(s.x, s.y);
+        m.makeTranslation(toScene(s.x, s.y, gz + 3.5));
         poles.setMatrixAt(i, m);
-        m.makeTranslation(toScene(s.x, s.y, 7.1));
+        m.makeTranslation(toScene(s.x, s.y, gz + 7.1));
         heads.setMatrixAt(i, m);
       });
       group.add(poles, heads);

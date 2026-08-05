@@ -49,7 +49,8 @@ interface Marker {
   heading: number; // squad travel direction (formation frame)
 }
 
-const ROUTE_Y = 0.35; // above streets, below units
+const ROUTE_Y = 0.55; // above streets/rails, below units
+const ROUTE_STEP = 15; // m — resample legs so the ribbon tracks terrain
 const ROUTE_WIDTH = 3.5; // meters, scaled with zoom
 
 // Stick-figure proportions (meters; feet at y=0).
@@ -60,8 +61,21 @@ const ARM_LEN = 0.58;
 const CROWD_SPREAD = 1.5; // meters between people in the blob
 const LEADER_SCALE = 1.18;
 
-/** Flat world-space ribbon along route points (thick, unlike gl lines). */
-function routeGeometry(points: { x: number; y: number }[], width: number): THREE.BufferGeometry {
+/** World-space ribbon along route points, draped on terrain. */
+function routeGeometry(
+  rawPoints: { x: number; y: number }[],
+  width: number,
+  ground: (x: number, y: number) => number,
+): THREE.BufferGeometry {
+  const points: { x: number; y: number }[] = [rawPoints[0]!];
+  for (let i = 1; i < rawPoints.length; i++) {
+    const a = rawPoints[i - 1]!;
+    const b = rawPoints[i]!;
+    const n = Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / ROUTE_STEP) || 1;
+    for (let k = 1; k <= n; k++) {
+      points.push({ x: a.x + ((b.x - a.x) * k) / n, y: a.y + ((b.y - a.y) * k) / n });
+    }
+  }
   const half = width / 2;
   const positions: number[] = [];
   for (let i = 0; i < points.length - 1; i++) {
@@ -81,7 +95,7 @@ function routeGeometry(points: { x: number; y: number }[], width: number): THREE
     ];
     for (const idx of [0, 1, 2, 0, 2, 3]) {
       const [wx, wy] = quad[idx]!;
-      positions.push(wx, ROUTE_Y, -wy);
+      positions.push(wx, ROUTE_Y + ground(wx, wy), -wy);
     }
   }
   const geo = new THREE.BufferGeometry();
@@ -212,13 +226,13 @@ class CrowdPools {
    * One person. (px, py) world meters of their feet, heading in world
    * radians, swing in radians (legs; arms counter-swing), scale s.
    */
-  person(px: number, py: number, heading: number, swing: number, s: number, color: THREE.Color): void {
+  person(px: number, py: number, gz: number, heading: number, swing: number, s: number, color: THREE.Color): void {
     if (this.used >= this.capacity) return;
     const i = this.used++;
     // Scene yaw that points local +Z along the world heading.
     const yaw = Math.atan2(Math.cos(heading), -Math.sin(heading));
     _q.setFromAxisAngle(_UP, yaw);
-    _base.compose(_v.set(px, 0, -py), _q, _s.set(s, s, s));
+    _base.compose(_v.set(px, gz, -py), _q, _s.set(s, s, s));
 
     this.body.setMatrixAt(i, _base);
     this.body.setColorAt(i, color);
@@ -237,22 +251,22 @@ class CrowdPools {
     pool.setColorAt(i, color);
   }
 
-  flag(px: number, py: number, heading: number, s: number, color: THREE.Color): void {
+  flag(px: number, py: number, gz: number, heading: number, s: number, color: THREE.Color): void {
     if (this.flagsUsed >= this.flagCapacity) return;
     const i = this.flagsUsed++;
     const yaw = Math.atan2(Math.cos(heading), -Math.sin(heading));
     _q.setFromAxisAngle(_UP, yaw);
-    _m.compose(_v.set(px, 0, -py), _q, _s.set(s, s, s));
+    _m.compose(_v.set(px, gz, -py), _q, _s.set(s, s, s));
     this.flags.setMatrixAt(i, _m);
     this.flags.setColorAt(i, color);
   }
 
   /** Selection puck under one person's feet. */
-  disc(px: number, py: number, s: number): void {
+  disc(px: number, py: number, gz: number, s: number): void {
     if (this.discsUsed >= this.capacity) return;
     const i = this.discsUsed++;
     _q.identity();
-    _m.compose(_v.set(px, 0, -py), _q, _s.set(s, s, s));
+    _m.compose(_v.set(px, gz, -py), _q, _s.set(s, s, s));
     this.discs.setMatrixAt(i, _m);
   }
 
@@ -299,7 +313,10 @@ export class UnitLayer {
   private pools = new CrowdPools(this.group);
   private lastSync = 0;
 
-  constructor(private myPlayerId: string) {}
+  constructor(
+    private myPlayerId: string,
+    private ground: (x: number, y: number) => number = () => 0,
+  ) {}
 
   /** Grow markers when zoomed out so armies stay visible at city scale. */
   setViewScale(s: number): void {
@@ -341,7 +358,7 @@ export class UnitLayer {
       marker.y = ny;
       marker.pop = Math.max(1, Math.ceil(e.strength));
       totalPeople += marker.pop;
-      marker.root.position.copy(toScene(marker.x, marker.y, 0));
+      marker.root.position.copy(toScene(marker.x, marker.y, this.ground(marker.x, marker.y)));
       marker.root.scale.setScalar(this.viewScale);
       if (e.strength !== marker.lastStrength) {
         marker.lastStrength = e.strength;
@@ -446,11 +463,12 @@ export class UnitLayer {
         p.py = p.y;
         const swing = p.amp * 0.55 * Math.sin(p.phase);
         const ps = pScale * (i === 0 ? LEADER_SCALE : 1);
-        this.pools.person(p.x, p.y, p.heading, swing, ps, marker.color);
-        if (selected) this.pools.disc(p.x, p.y, ps);
+        const gz = this.ground(p.x, p.y);
+        this.pools.person(p.x, p.y, gz, p.heading, swing, ps, marker.color);
+        if (selected) this.pools.disc(p.x, p.y, gz + 0.05, ps);
       }
       const lead = ppl[0]!;
-      this.pools.flag(lead.x, lead.y, lead.heading, pScale, marker.color);
+      this.pools.flag(lead.x, lead.y, this.ground(lead.x, lead.y), lead.heading, pScale, marker.color);
     }
     this.pools.commit();
 
@@ -468,6 +486,7 @@ export class UnitLayer {
           marker.routeMesh.geometry = routeGeometry(
             [{ x: marker.x, y: marker.y }, ...e.path],
             ROUTE_WIDTH * this.viewScale,
+            this.ground,
           );
           marker.routeMesh.visible = true;
         } else {
@@ -478,9 +497,10 @@ export class UnitLayer {
       const targetMarker = e.firingAt ? this.markers.get(e.firingAt) : undefined;
       if (targetMarker) {
         marker.tracer.geometry.dispose();
+        const dz = (this.ground(targetMarker.x, targetMarker.y) - this.ground(marker.x, marker.y)) * inv;
         marker.tracer.geometry = new THREE.BufferGeometry().setFromPoints([
           new THREE.Vector3(0, 2, 0),
-          toScene((targetMarker.x - marker.x) * inv, (targetMarker.y - marker.y) * inv, 2),
+          toScene((targetMarker.x - marker.x) * inv, (targetMarker.y - marker.y) * inv, 2 + dz),
         ]);
         (marker.tracer.material as THREE.LineBasicMaterial).opacity = flicker;
         marker.tracer.visible = true;
