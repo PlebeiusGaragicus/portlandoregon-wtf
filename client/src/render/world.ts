@@ -201,7 +201,55 @@ export class BuildingShells {
     this.upload(col, s, n, 3);
   }
 
-  /** Rewrite the prism as a low rubble stub (same vertex count, in place). */
+  /**
+   * Localized charring: blend vertex colors toward char black by proximity to
+   * burn sources (fire cells, blast points). Each source is {x, y, f, r} —
+   * world position, char strength 0..1, falloff radius. Rebuilds the original
+   * pattern each call, so callers pass MONOTONIC per-source strengths; scars
+   * persist in the color buffer after the fire is out.
+   */
+  charLocal(bi: number, srcs: { x: number; y: number; f: number; r: number }[]): void {
+    const mi = this.meshIdx[bi]!;
+    if (mi < 0 || srcs.length === 0) return;
+    const mesh = this.meshes[mi];
+    const b = this.buildings[bi];
+    if (!mesh || !b) return;
+    const col = mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
+    const tmp: Soup = { pos: [], nrm: [], col: [] };
+    pushPrism(tmp, b, [this.rgb[bi * 3]!, this.rgb[bi * 3 + 1]!, this.rgb[bi * 3 + 2]!], this.baseZ[bi]!);
+    const s = this.start[bi]!;
+    const n = Math.min(this.vcount[bi]!, tmp.pos.length / 3);
+    const [cr, cg, cb] = this.charRGB as [number, number, number];
+    const base = this.baseZ[bi]!;
+    const hInv = 1 / Math.max(1, b.height);
+    const src = tmp.col!;
+    for (let v = 0; v < n; v++) {
+      const wx = tmp.pos[v * 3]!;
+      const wy = -tmp.pos[v * 3 + 2]!; // scene z back to world y
+      const relH = Math.min(1, Math.max(0, (tmp.pos[v * 3 + 1]! - base) * hInv));
+      let c = 0;
+      for (const sc of srcs) {
+        const d = Math.hypot(wx - sc.x, wy - sc.y);
+        if (d >= sc.r) continue;
+        const k = 1 - d / sc.r;
+        const f = sc.f * Math.sqrt(k);
+        if (f > c) c = f;
+      }
+      // Soot climbs: upper walls blacken slightly ahead of the base.
+      const t = Math.min(1, c * (0.8 + 0.35 * relH));
+      col.setXYZ(
+        s + v,
+        src[v * 3]! * (1 - t) + cr * t,
+        src[v * 3 + 1]! * (1 - t) + cg * t,
+        src[v * 3 + 2]! * (1 - t) + cb * t,
+      );
+    }
+    this.upload(col, s, n, 3);
+  }
+
+  /** Rewrite the prism as a jagged ash mound (same vertex count, in place).
+   * Anything above the base gets a hashed rubble height and is pulled toward
+   * the centroid, with per-vertex ash-gray speckle — a heap, not a box. */
   collapse(bi: number): void {
     const mi = this.meshIdx[bi]!;
     if (mi < 0) return;
@@ -209,12 +257,42 @@ export class BuildingShells {
     const b = this.buildings[bi];
     if (!mesh || !b) return;
     const tmp: Soup = { pos: [], nrm: [], col: [] };
-    const rubbleH = Math.max(1.2, Math.min(4, b.height * 0.12));
+    const rubbleH = Math.max(1.4, Math.min(5, b.height * 0.16));
     pushPrism(tmp, { ...b, height: rubbleH }, [0.16, 0.15, 0.14], this.baseZ[bi]!);
+    let ccx = 0;
+    let ccy = 0;
+    for (const [px, py] of b.footprint) {
+      ccx += px;
+      ccy += py;
+    }
+    ccx /= b.footprint.length;
+    ccy /= b.footprint.length;
+    const base = this.baseZ[bi]!;
+    const nv = tmp.pos.length / 3;
+    for (let v = 0; v < nv; v++) {
+      const wx = tmp.pos[v * 3]!;
+      const wz = tmp.pos[v * 3 + 1]!;
+      const wy = -tmp.pos[v * 3 + 2]!;
+      const h1 = hash2(wx * 0.73 + 11.3, wy * 0.61 - 4.7);
+      const h2 = hash2(wx * 1.91 - 3.1, wy * 1.37 + 8.9);
+      if (wz > base + 0.35) {
+        // Top-of-heap vertex: jagged height, leaning inward — collapsed mass
+        // slumps toward the middle of the footprint.
+        const lean = 0.12 + h2 * 0.14;
+        tmp.pos[v * 3] = wx + (ccx - wx) * lean;
+        tmp.pos[v * 3 + 2] = -(wy + (ccy - wy) * lean);
+        tmp.pos[v * 3 + 1] = base + 0.4 + h1 * h1 * (rubbleH + 1.6);
+      }
+      // Ash speckle: charred black through pale gray ash.
+      const g = 0.09 + h2 * 0.2;
+      tmp.col![v * 3] = g * 1.04;
+      tmp.col![v * 3 + 1] = g;
+      tmp.col![v * 3 + 2] = g * 0.94;
+    }
     const pos = mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
     const col = mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
     const s = this.start[bi]!;
-    const n = Math.min(this.vcount[bi]!, tmp.pos.length / 3);
+    const n = Math.min(this.vcount[bi]!, nv);
     for (let v = 0; v < n; v++) {
       pos.setXYZ(s + v, tmp.pos[v * 3]!, tmp.pos[v * 3 + 1]!, tmp.pos[v * 3 + 2]!);
       col.setXYZ(s + v, tmp.col![v * 3]!, tmp.col![v * 3 + 1]!, tmp.col![v * 3 + 2]!);
@@ -948,6 +1026,12 @@ function buildBuildingTiles(
 // membrane rather than facade — cheap cues that make stacked massing read.
 const WALL_BASE_SHADE = 0.68;
 const ROOF_SHADE = 0.88;
+
+/** Deterministic 2D hash → 0..1 (rubble jitter must survive rebuilds). */
+function hash2(x: number, y: number): number {
+  const s = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+  return s - Math.floor(s);
+}
 
 function pushPrism(soup: Soup, b: Building, rgb: number[], base = 0): void {
   // Tiny deterministic per-part lift: the footprint DB nests same-height

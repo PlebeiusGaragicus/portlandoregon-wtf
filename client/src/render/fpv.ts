@@ -39,6 +39,9 @@ interface Solid {
 class SolidIndex {
   private solids: Solid[] = [];
   private grid = new Map<number, number[]>();
+  /** Collapsed buildings (by map.buildings index == solid index): the ash
+   * heap is scenery, not structure — you walk straight through it. */
+  readonly dead = new Set<number>();
   private cols: number;
   private rows: number;
 
@@ -98,7 +101,7 @@ class SolidIndex {
         const cell = this.grid.get(r * this.cols + c);
         if (!cell) continue;
         for (const idx of cell) {
-          if (seen.has(idx)) continue;
+          if (seen.has(idx) || this.dead.has(idx)) continue;
           seen.add(idx);
           const s = this.solids[idx]!;
           if (s.xmax < xmin || s.xmin > xmax || s.ymax < ymin || s.ymin > ymax) continue;
@@ -244,6 +247,11 @@ export class FpvMode {
     this.z = 0;
     this.yaw = yaw;
     this.place(start.x, start.y, dropHeight);
+  }
+
+  /** Fire sim hook: a collapsed building stops being solid. */
+  markCollapsed(bi: number): void {
+    this.solids.dead.add(bi);
   }
 
   /** Put the player at (x, y) — nudged out along a golden-angle spiral if that

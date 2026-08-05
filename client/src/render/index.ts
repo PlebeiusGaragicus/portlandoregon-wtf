@@ -143,6 +143,7 @@ export class Renderer {
     this.fire.addPropSet(this.props);
     this.scene.add(this.fire.group);
     this.fire.onNewFire = (x, y) => this.actors.reportFire(x, y, this.ground(x, y));
+    this.fire.onCollapse = (bi) => this.fpv?.markCollapsed(bi);
     this.actors.onFireIncident = (x, y) => this.fire.igniteNear(x, y, 90);
     this.actors.onTankFire = (x, y) => {
       const bi = this.fire.randomTargetNear(x, y, 45, 320);
@@ -316,6 +317,8 @@ export class Renderer {
     const dropH = Math.min(600, Math.max(200, this.rig.viewHeight * 1.2));
     if (!this.fpv) {
       this.fpv = new FpvMode(this.map, this.hf, this.rig.target, this.rig.theta, dropH);
+      // Buildings that pancaked before FPV existed are already walk-through.
+      for (const bi of this.fire.collapsed) this.fpv.markCollapsed(bi);
     } else {
       this.fpv.place(this.rig.target.x, this.rig.target.y, dropH);
       this.fpv.yaw = this.rig.theta;
@@ -341,7 +344,7 @@ export class Renderer {
       const py = f.y + dy * reach;
       const bi = this.fire.buildingAt(px, py, f.z);
       if (bi < 0) continue;
-      this.fire.damageBuilding(bi, 2.3, 0.3);
+      this.fire.damageBuilding(bi, 2.3, 0.3, px, py);
       this.fire.flash(px, py, f.z + 1.5, 3.2, 0xffe9c9);
       this.fire.dust(px, py, f.z, 4);
       this.shake = Math.min(1, this.shake + 0.5);
@@ -495,7 +498,10 @@ export class Renderer {
       // Disaster director: shift+click torches the nearest building.
       if (e.shiftKey) {
         const w = this.toWorld(e.clientX, e.clientY);
-        if (w && this.fire.igniteNear(w.x, w.y, 70)) this.hint("fire started", 1100);
+        if (w) {
+          this.fire.fireball(w.x, w.y);
+          this.hint("fireball", 1100);
+        }
       }
     });
     on(document, "pointerlockchange", () => {

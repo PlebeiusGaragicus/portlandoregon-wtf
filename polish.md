@@ -47,3 +47,12 @@ roughly ordered by visible payoff. Deployment/gameplay backlogs live in
   headers; tanks bombard; FPV punch (Hulk mode); dispatch integration both
   ways. Future: bullet holes/scars as decals, debris piles, water arcs from
   engines, fire audio (crackle).
+- **Fire realism v2** (2026-08-05): fire is a localized actor — per-building
+  fire CELLS creep from the ignition point, flames render on the walls/roof
+  where it's burning; per-vertex localized char (extinguished buildings keep
+  their scars); game-time burn clocks (house ~3-4 game h, big commercial ~a
+  game day); tall black buoyant plumes; embers loft downwind and start spot
+  fires; shift+click drops a fireball that catches or gutters; crews
+  extinguish (knockdown + steam) instead of fast-forwarding; rubble is a
+  jagged walk-through ash heap smoldering 1-2 game days. Future: fire whirl
+  under high wind, roof burn-through holes, hose streams.
