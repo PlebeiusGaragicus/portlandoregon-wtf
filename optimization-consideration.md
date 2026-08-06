@@ -275,6 +275,8 @@ for LOD0. Not recommended for the first pass.
 2. **Stage 2** — packed vertices. Contained, mechanical, helps every stage
    after it.
 3. **Audit `fire.ts`** for geometry-derived state before committing to tiling.
+   *Done — see `fire-geometry-audit.md`. It moved to first, since its findings
+   decide what the binary format has to carry.*
 4. **Stage 3** — tiling and LOD. The real fix; the phone works after this.
 5. **Stage 4** — worker builds and battery tuning. Polish, but the difference
    between "runs" and "pleasant".
