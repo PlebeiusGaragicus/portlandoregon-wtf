@@ -10,7 +10,7 @@ import { loadBuildings, loadHeightfield, loadLayers, loadMap, loadProps, MapUnav
 import { Renderer } from "./render/index.js";
 import { buildLandmarks } from "./render/landmarks.js";
 import { buildProps } from "./render/props.js";
-import { buildWorldSteps } from "./render/world.js";
+import { beginWorld } from "./render/world.js";
 
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const loadingEl = document.getElementById("loading") as HTMLDivElement;
@@ -137,22 +137,16 @@ async function boot(): Promise<void> {
   done(`${city.valid.reduce((a, v) => a + v, 0)} buildings with usable footprints`);
   await paint();
 
-  await announce("building the city");
+  done = log.step("preparing the world");
+  // Nothing here builds geometry — groups, materials and the two tile managers
+  // only. Terrain, streets, rails and trails come back as `steps`, which the
+  // renderer drains a few milliseconds at a time from its own frame loop: the
+  // page is interactive from the first frame and the city arrives around the
+  // camera over the next few seconds, instead of after twenty of them.
   const t0 = performance.now();
-  // false: do NOT build every building up front. The renderer streams tiles
-  // around the camera — the whole city at once is 30.6M vertices and ~1.1 GB,
-  // which is what made a cold load take 12 s and a phone give up entirely.
-  const steps = buildWorldSteps(map, buildings, layers, hf, city, false);
-  let next = steps.next();
-  while (!next.done) {
-    // The generator yields the label of the step it is about to run, so the
-    // log names the step BEFORE it blocks — which is the whole point when the
-    // step is the one that kills the tab.
-    await announce(`  ${next.value}`);
-    next = steps.next();
-  }
-  const world = next.value;
-  log.line(`city built in ${((performance.now() - t0) / 1000).toFixed(2)}s`, "ok");
+  const { world, steps } = beginWorld(map, buildings, layers, hf, city);
+  done(`${((performance.now() - t0) / 1000).toFixed(2)}s`);
+  await paint();
 
   done = log.step("indexing trees and street lights");
   const propLayers = buildProps(map, props, hf);
@@ -165,10 +159,20 @@ async function boot(): Promise<void> {
   await paint();
 
   done = log.step("starting renderer");
-  const renderer = new Renderer(canvas, map, buildings, props, layers, { prebuilt: { world, props: propLayers, landmarks }, heightfield: hf, city });
+  const worldStart = performance.now();
+  const renderer = new Renderer(canvas, map, buildings, props, layers, {
+    prebuilt: { world, props: propLayers, landmarks },
+    boot: steps,
+    onBootProgress: (phase) => {
+      if (phase) log.line(`  ${phase} ...`);
+      else log.line(`city filled in ${((performance.now() - worldStart) / 1000).toFixed(2)}s`, "ok");
+    },
+    heightfield: hf,
+    city,
+  });
   done();
 
-  log.line(`ready — total ${((performance.now() - bootStart) / 1000).toFixed(2)}s`, "ok");
+  log.line(`interactive — total ${((performance.now() - bootStart) / 1000).toFixed(2)}s`, "ok");
   log.finish();
   // Dev/debug handle (headless smoke tests steer the camera through this).
   (window as unknown as Record<string, unknown>)["__bj"] = { renderer, THREE };

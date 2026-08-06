@@ -70,9 +70,15 @@ export class BootLog {
     this.persist();
   }
 
+  /** Set once finish() has run. Lines still get logged after it — the world
+   * keeps filling in behind the renderer — but they must not re-mark the boot
+   * as unfinished, or a boot that reached the game would be reported as a
+   * crash by the next one. */
+  private finished = false;
+
   private persist(): void {
     try {
-      sessionStorage.setItem(STORE_KEY, JSON.stringify({ lines: this.lines, finished: false }));
+      sessionStorage.setItem(STORE_KEY, JSON.stringify({ lines: this.lines, finished: this.finished }));
     } catch {
       /* over quota or unavailable — the on-screen log still works */
     }
@@ -81,12 +87,13 @@ export class BootLog {
   /** Mark this boot as having reached the end, so the next one doesn't
    * report it as a crash. */
   finish(): void {
+    this.finished = true;
     try {
-      sessionStorage.setItem(STORE_KEY, JSON.stringify({ lines: this.lines, finished: true }));
       sessionStorage.setItem(CRASH_KEY, "0");
     } catch {
       /* see persist() */
     }
+    this.persist();
   }
 
   line(text: string, level: Level = "info"): void {

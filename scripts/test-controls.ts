@@ -249,12 +249,14 @@ console.log("\nkeyboard");
   const q = rig.theta;
   check("Q rotates", Math.abs(q) > 1e-3, `theta=${((q * 180) / Math.PI).toFixed(1)}deg`);
   check("Q steps one snap angle", Math.abs(Math.abs(q) - Math.PI / 4) < 1e-3, `${((Math.abs(q) * 180) / Math.PI).toFixed(1)}deg`);
-  // Q and E must be mirror images, and Q must now match a twist to the left.
+  // Q and E must be mirror images. Increasing theta is a clockwise turn (see
+  // the twist tests above), so Q — which decreases it — turns the map
+  // counter-clockwise, matching a twist to the left.
   reset();
   key("e");
   for (let i = 0; i < 200; i++) controls.update(1 / 60);
   check("E rotates opposite Q", Math.sign(rig.theta) === -Math.sign(q), `Q=${q.toFixed(3)} E=${rig.theta.toFixed(3)}`);
-  check("Q turns the map clockwise (was E before)", q > 0, `Q theta=${q.toFixed(3)}`);
+  check("Q turns the map counter-clockwise", q < 0, `Q theta=${q.toFixed(3)}`);
 
   // After a free twist, Q/E must re-align to the 45-degree grid.
   reset();

@@ -589,10 +589,8 @@ export function buildWorld(
 
 /**
  * buildWorld as a generator, yielding the label of the step it is ABOUT to
- * run. This is the slowest thing in the whole client (~20 s on a laptop), and
- * a caller that pumps it between animation frames can both paint the label
- * and keep the page alive — a single opaque "building the city" line is
- * useless when the interesting question is which step ate the time (or died).
+ * run. Kept for headless tools and tests, which want the whole world back
+ * from one call; the client boots through {@link beginWorld} instead.
  */
 export function* buildWorldSteps(
   map: GameMap,
@@ -602,90 +600,94 @@ export function* buildWorldSteps(
   city: CityModel = buildCityModel(buildings, hf),
   buildEveryBuilding = true,
 ): Generator<string, WorldLayers, void> {
+  const { world, steps } = beginWorld(map, buildings, layers, hf, city, false);
+  let seen = "";
+  for (const label of steps) {
+    // Slices are frame-sized, so many share a label. A caller pumping this
+    // for a progress log wants one line per phase, not per slice.
+    if (label !== seen) yield (seen = label);
+  }
+  if (buildEveryBuilding) {
+    yield `${buildings.count} building prisms`;
+    world.buildings.buildAll();
+    yield `${(map.sidewalks ?? []).length} sidewalk slabs + ${(map.markingLines ?? []).length} lane lines`;
+    world.detailTiles.buildAll();
+  }
+  return world;
+}
+
+/** A world you can render immediately, plus the work still to be poured into
+ * it. See {@link beginWorld}. */
+export interface WorldBoot {
+  /** Complete enough to hand to the renderer on the spot: empty of terrain and
+   * streets, but with every group, material and tile manager in place. */
+  world: WorldLayers;
+  /**
+   * One frame-sized slice of remaining build work per step, yielding the name
+   * of the phase it just advanced. Drain it from the frame loop.
+   */
+  steps: Generator<string, void, void>;
+}
+
+/**
+ * Split the world build into "enough to draw" and "everything else".
+ *
+ * buildWorld is ~2 s on a laptop and ~20 s on a phone, and all of it used to
+ * happen before the first frame — so the phone showed a loading screen for
+ * twenty seconds and then a finished city. Nothing in it is actually needed to
+ * render: terrain, streets, rails and trails are just meshes being added to a
+ * group, and a group renders fine while it is filling up.
+ *
+ * So the skeleton — groups, materials, the building and dressing tile managers
+ * — is built here (a few milliseconds), and the rest comes back as a generator
+ * of small slices. The renderer starts on frame one and the city arrives
+ * around the camera over the next few seconds, interactively the whole time.
+ *
+ * Fill order is deliberate: terrain, then the far building tier, then streets,
+ * rails and trails. Ground and massing are what make the view legible from
+ * altitude, which is where the camera starts.
+ */
+export function beginWorld(
+  map: GameMap,
+  buildings: BuildingStore,
+  layers: LayerStores,
+  hf?: Heightfield | null,
+  city: CityModel = buildCityModel(buildings, hf),
+  deferFar = true,
+): WorldBoot {
   const ground: GroundFn = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
   const group = new THREE.Group();
-  // Needed by both the flat fallback and the bridge test below.
+  // Needed by both the flat fallback and the bridge test in the fill.
   const waterRings = featurePolys(layers.water);
-  yield hf ? "terrain mesh" : "flat ground plane";
-  if (hf) {
-    // Water/parks/yards are painted INTO the terrain's vertex colors instead
-    // of draped as separate polygons: no z-fighting, no sliver triangles
-    // from earcutting the huge clipped river rings — and since 3DEP is
-    // hydro-flattened, water-tinted terrain IS the river surface (including
-    // the drop at Willamette Falls).
-    for (const mesh of buildTerrainTiles(map, layers, hf)) group.add(mesh);
-  } else {
-    group.add(buildGround(map));
-    const parks = flatPolys(featurePolys(layers.parks), PARK_COLOR, DECAL_Y);
-    if (parks) group.add(...order([parks], DECAL_ORDER.park));
-    const water = flatPolys(waterRings, WATER_COLOR, DECAL_Y);
-    if (water) group.add(...order([water], DECAL_ORDER.water));
-    const yards = flatPolys(featurePolys(layers.railYards), YARD_COLOR, DECAL_Y);
-    if (yards) group.add(...order([yards], DECAL_ORDER.yard));
-  }
-
-  // Ribbon legs that cross water are bridges: their deck spans between the
-  // bank heights instead of sagging onto the riverbed. (Land overpasses
-  // still drape — the ZLEV rule is phase 2.)
-  yield "water mask";
-  const overWater = waterTester(waterRings, map.meta.width, map.meta.height);
-
   // Terrain cell size lets ribbon vertices land exactly where the ground
   // surface kinks, so draped decals conform instead of clipping.
   const cell = hf ? hf.cellSize : Infinity;
-
-  yield `${layers.trails.count} trails`;
-  const trails = buildTrails(featureLines(layers.trails), ground, cell, overWater);
-  if (trails) group.add(...order([trails], DECAL_ORDER.trail));
-
-  yield `${map.edges.length} street edges`;
   const streetMat = decalMat({ color: STREET_COLOR });
-  // Coarse asphalt for the WHOLE city, always resident: vertices only where
-  // the source polyline bends, with no resampling onto the terrain grid.
-  // 16.98M vertices become 1.6M, which is what makes the street grid
-  // affordable to keep everywhere — and the grid is most of what you read
-  // when you look at the city from altitude. Accurate ribbons stream on top
-  // near the camera; see createDetailTiles.
-  for (const mesh of order(
-    buildStreetTiles(map.edges, streetMat, ground, Infinity, overWater, FAR_RIBBON_STEP),
-    DECAL_ORDER.street,
-  )) {
-    group.add(mesh);
-  }
-
-  yield `${layers.rails.count} rail lines + ${(map.railStops ?? []).length} stops`;
-  for (const mesh of order(
-    buildRails(featureLines(layers.rails, RAIL_KINDS), ground, cell, overWater),
-    DECAL_ORDER.rail,
-  )) group.add(mesh);
-  const stops = buildRailStops(map.railStops ?? [], ground);
-  if (stops) group.add(...order([stops], DECAL_ORDER.railStop));
 
   const landmarkBuildings = new Map<number, Landmark["kind"]>();
   for (const m of map.landmarks ?? []) for (const id of m.buildingIds ?? []) landmarkBuildings.set(id, m.kind);
-  const tiles = createBuildingTiles(buildings, landmarkBuildings, city);
+  const tiles = createBuildingTiles(buildings, landmarkBuildings, city, deferFar);
   group.add(tiles.group);
-  if (buildEveryBuilding) {
-    // Headless tools and tests still want the whole city in one call. The
-    // renderer does NOT take this path — it syncs tiles from the camera.
-    yield `${buildings.count} building prisms`;
-    tiles.buildAll();
-  }
 
   // Street-level dressing, in its own zoom-gated group — streamed, because
   // sidewalks alone outweigh every building in the city.
   const detail = new THREE.Group();
   group.add(detail);
-  const detailTiles = createDetailTiles(layers, map.edges, streetMat, overWater, ground, cell);
+  const detailTiles = createDetailTiles(layers, map.edges, streetMat, overWaterLater, ground, cell);
   detail.add(detailTiles.group);
-  if (buildEveryBuilding) {
-    yield `${(map.sidewalks ?? []).length} sidewalk slabs + ${(map.markingLines ?? []).length} lane lines`;
-    detailTiles.buildAll();
+
+  // The water test needs the rasterized mask, which is cheap but not free, and
+  // createDetailTiles only calls it per streamed tile — long after the fill
+  // below has built it.
+  let overWater: ((p: [number, number][]) => boolean) | null = null;
+  function overWaterLater(p: [number, number][]): boolean {
+    if (!overWater) overWater = waterTester(waterRings, map.meta.width, map.meta.height);
+    return overWater(p);
   }
 
   const streetNear = new THREE.Color(STREET_COLOR);
   const streetFar = new THREE.Color(0x5a6478); // brighter so the grid reads from altitude
-  return {
+  const world: WorldLayers = {
     group,
     detail,
     shells: tiles.shells,
@@ -696,6 +698,83 @@ export function* buildWorldSteps(
       streetMat.color.lerpColors(streetNear, streetFar, t);
     },
   };
+
+  /** Add a finished mesh to the world at the given paint order. Shadow flags
+   * are set here rather than by a one-shot traverse in the renderer, because
+   * these meshes arrive over the first few seconds rather than up front. */
+  function place(mesh: THREE.Mesh, at: number): void {
+    mesh.receiveShadow = true;
+    // Decals (streets, rails, paint — polygonOffset materials) hug the terrain
+    // within centimeters, far below the shadow map's depth resolution: letting
+    // them cast just shadow-acnes the ground black.
+    const m = mesh.material as THREE.Material;
+    mesh.castShadow = !("polygonOffset" in m && m.polygonOffset);
+    group.add(...order([mesh], at));
+  }
+
+  /** Drain a mesh generator, placing what it produces, one slice per step. */
+  function* pour(
+    label: string,
+    it: Generator<THREE.Mesh | null, void, void>,
+    at: number,
+  ): Generator<string, void, void> {
+    for (const mesh of it) {
+      if (mesh) place(mesh, at);
+      yield label;
+    }
+  }
+
+  function* fill(): Generator<string, void, void> {
+    if (hf) {
+      // Water/parks/yards are painted INTO the terrain's vertex colors instead
+      // of draped as separate polygons: no z-fighting, no sliver triangles
+      // from earcutting the huge clipped river rings — and since 3DEP is
+      // hydro-flattened, water-tinted terrain IS the river surface (including
+      // the drop at Willamette Falls).
+      yield* pour("terrain", terrainTiles(map, layers, hf), 0);
+    } else {
+      place(buildGround(map), 0);
+      const parks = flatPolys(featurePolys(layers.parks), PARK_COLOR, DECAL_Y);
+      if (parks) place(parks, DECAL_ORDER.park);
+      const flat = flatPolys(waterRings, WATER_COLOR, DECAL_Y);
+      if (flat) place(flat, DECAL_ORDER.water);
+      const yards = flatPolys(featurePolys(layers.railYards), YARD_COLOR, DECAL_Y);
+      if (yards) place(yards, DECAL_ORDER.yard);
+      yield "flat ground";
+    }
+
+    // The whole city's massing, one draw call. Second because it is the other
+    // half of what the opening view is made of.
+    for (const _ of tiles.fillFar()) yield "buildings";
+
+    // Ribbon legs that cross water are bridges: their deck spans between the
+    // bank heights instead of sagging onto the riverbed. (Land overpasses
+    // still drape — the ZLEV rule is phase 2.)
+    overWater ??= waterTester(waterRings, map.meta.width, map.meta.height);
+    const water = overWater;
+    yield "water mask";
+
+    // Coarse asphalt for the WHOLE city, always resident: vertices only where
+    // the source polyline bends, with no resampling onto the terrain grid.
+    // 16.98M vertices become 1.6M, which is what makes the street grid
+    // affordable to keep everywhere — and the grid is most of what you read
+    // when you look at the city from altitude. Accurate ribbons stream on top
+    // near the camera; see createDetailTiles.
+    yield* pour(
+      "streets",
+      streetTiles(map.edges, streetMat, ground, Infinity, water, FAR_RIBBON_STEP),
+      DECAL_ORDER.street,
+    );
+
+    yield* pour("rails", railTiles(featureLines(layers.rails, RAIL_KINDS), ground, cell, water), DECAL_ORDER.rail);
+    const stops = buildRailStops(map.railStops ?? [], ground);
+    if (stops) place(stops, DECAL_ORDER.railStop);
+    yield "rails";
+
+    yield* pour("trails", trailTiles(featureLines(layers.trails), ground, cell, water), DECAL_ORDER.trail);
+  }
+
+  return { world, steps: fill() };
 }
 
 function tileKey(x: number, y: number): number {
@@ -727,11 +806,30 @@ const CAT_RGB: number[][] = [GROUND_COLOR, PARK_COLOR, YARD_COLOR, WATER_COLOR].
  * Even-odd scanline fill of polygon bodies onto the heightfield vertex grid
  * (all rings together, so island holes come free). Writes `cat` where inside.
  */
-function paintMask(bodies: { rings: [number, number][][] }[], hf: Heightfield, out: Uint8Array, cat: number): void {
+function* paintMask(
+  bodies: { rings: [number, number][][] }[],
+  hf: Heightfield,
+  out: Uint8Array,
+  cat: number,
+): Generator<void, void, void> {
   const cell = hf.cellSize;
+  let scanned = 0;
+  // Rows the CURRENT body touches, sparse. A dense array of hf.rows lists was
+  // allocated per body — parks are ~12k bodies a block wide, so that was
+  // millions of empty arrays and a full-height scan for each one.
+  const rowHits = new Map<number, number[]>();
   for (const body of bodies) {
-    const rowHits: number[][] = Array.from({ length: hf.rows }, () => []);
+    rowHits.clear();
     for (const ring of body.rings) {
+      // The Willamette is one body with rings tens of thousands of vertices
+      // long — enough that a whole body was a half-second slice on a laptop.
+      // Budgeted by vertices, because parks are the opposite case: thousands
+      // of tiny rings, where a yield per ring is pure overhead.
+      scanned += ring.length;
+      if (scanned >= MASK_VERT_SLICE) {
+        scanned = 0;
+        yield;
+      }
       for (let i = 0; i < ring.length; i++) {
         const [x1, y1] = ring[i]!;
         const [x2, y2] = ring[(i + 1) % ring.length]!;
@@ -741,13 +839,17 @@ function paintMask(bodies: { rings: [number, number][][] }[], hf: Heightfield, o
         for (let r = rLo; r <= rHi; r++) {
           const yc = r * cell;
           if (yc >= Math.min(y1, y2) && yc < Math.max(y1, y2)) {
-            rowHits[r]!.push(x1 + ((yc - y1) / (y2 - y1)) * (x2 - x1));
+            let xs = rowHits.get(r);
+            if (!xs) rowHits.set(r, (xs = []));
+            xs.push(x1 + ((yc - y1) / (y2 - y1)) * (x2 - x1));
           }
         }
       }
     }
-    for (let r = 0; r < hf.rows; r++) {
-      const xs = rowHits[r]!.sort((p, q) => p - q);
+    let filled = 0;
+    for (const [r, hits] of rowHits) {
+      if (++filled % MASK_ROW_SLICE === 0) yield;
+      const xs = hits.sort((p, q) => p - q);
       for (let k = 0; k + 1 < xs.length; k += 2) {
         const c0 = Math.max(0, Math.ceil(xs[k]! / cell));
         const c1 = Math.min(hf.cols - 1, Math.floor(xs[k + 1]! / cell));
@@ -757,11 +859,22 @@ function paintMask(bodies: { rings: [number, number][][] }[], hf: Heightfield, o
   }
 }
 
-/** Displaced terrain grid, chunked for frustum culling. Indexed geometry,
- * vertex-colored by the park/yard/water masks. */
-function buildTerrainTiles(map: GameMap, layers: LayerStores, hf: Heightfield): THREE.Mesh[] {
+/** Heightfield rows filled per mask slice, and ring vertices scanned per
+ * slice of the edge pass. */
+const MASK_ROW_SLICE = 256;
+const MASK_VERT_SLICE = 20_000;
+
+/**
+ * Displaced terrain grid, chunked for frustum culling. Indexed geometry,
+ * vertex-colored by the park/yard/water masks.
+ *
+ * A generator, one chunk per step: this is the single biggest thing standing
+ * between a cold start and a first frame (~0.8 s on a laptop, ~8 s on a
+ * phone), and a caller draining it across frames turns that block into ground
+ * that fills in while the page is already responding.
+ */
+function* terrainTiles(map: GameMap, layers: LayerStores, hf: Heightfield): Generator<THREE.Mesh | null, void, void> {
   const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
-  const meshes: THREE.Mesh[] = [];
   const cell = hf.cellSize;
   const lastC = hf.cols - 1;
   const lastR = hf.rows - 1;
@@ -769,9 +882,9 @@ function buildTerrainTiles(map: GameMap, layers: LayerStores, hf: Heightfield): 
   const py = (r: number): number => (r === lastR ? map.meta.height : r * cell);
 
   const mask = new Uint8Array(hf.cols * hf.rows); // CAT_GROUND
-  paintMask(featurePolys(layers.parks), hf, mask, CAT_PARK);
-  paintMask(featurePolys(layers.railYards), hf, mask, CAT_YARD);
-  paintMask(featurePolys(layers.water), hf, mask, CAT_WATER);
+  for (const _ of paintMask(featurePolys(layers.parks), hf, mask, CAT_PARK)) yield null;
+  for (const _ of paintMask(featurePolys(layers.railYards), hf, mask, CAT_YARD)) yield null;
+  for (const _ of paintMask(featurePolys(layers.water), hf, mask, CAT_WATER)) yield null;
 
   for (let r0 = 0; r0 < lastR; r0 += TERRAIN_CHUNK) {
     for (let c0 = 0; c0 < lastC; c0 += TERRAIN_CHUNK) {
@@ -828,10 +941,9 @@ function buildTerrainTiles(map: GameMap, layers: LayerStores, hf: Heightfield): 
       geo.setAttribute("normal", new THREE.BufferAttribute(nrm, 3, true));
       geo.setAttribute("color", new THREE.BufferAttribute(col, 3, true));
       geo.setIndex(index);
-      meshes.push(seal(new THREE.Mesh(geo, mat)));
+      yield seal(new THREE.Mesh(geo, mat));
     }
   }
-  return meshes;
 }
 
 const DRAPE_EDGE = 10; // m — subdivide draped triangles down to this
@@ -1061,20 +1173,48 @@ function waterTester(
   };
 }
 
-function buildTrails(
+/**
+ * Every trail as ONE mesh, but built in slices.
+ *
+ * Trails are thin and scattered city-wide, so splitting them into tiles would
+ * buy nothing but draw calls. What costs time is the ribbon loop, and that
+ * chunks fine: the soup grows across several steps and becomes a mesh at the
+ * end. Same shape for rails below.
+ */
+function* trailTiles(
   trails: { polyline: [number, number][] }[],
   ground: GroundFn,
   cell: number,
   overWater: (p: [number, number][]) => boolean,
-): THREE.Mesh | null {
-  if (trails.length === 0) return null;
-  const soup: Soup = { pos: [], nrm: [] };
-  for (const t of trails) {
+): Generator<THREE.Mesh | null, void, void> {
+  if (trails.length === 0) return;
+  const mat = decalMat({ color: TRAIL_COLOR });
+  let soup: Soup = { pos: [], nrm: [] };
+  for (let i = 0; i < trails.length; i++) {
+    const t = trails[i]!;
     pushRibbon(soup.pos, t.polyline, 2.5, DECAL_Y, ground, cell, overWater(t.polyline), Infinity);
+    if (soup.pos.length / 3 >= SOUP_FLUSH) {
+      yield soupMesh(soup, mat);
+      soup = { pos: [], nrm: [] };
+    } else if (i % RIBBON_SLICE === RIBBON_SLICE - 1) {
+      yield null;
+    }
   }
-  if (soup.pos.length === 0) return null;
-  return soupMesh(soup, decalMat({ color: TRAIL_COLOR }));
+  if (soup.pos.length > 0) yield soupMesh(soup, mat);
 }
+
+/** Features per boot slice for the ribbon layers. Sized so one slice is a few
+ * milliseconds on a phone, not so small that yielding dominates. */
+const RIBBON_SLICE = 2000;
+/**
+ * Vertices per mesh in the ribbon layers.
+ *
+ * Turning a soup into a BufferGeometry is one unsplittable pass, so the soup
+ * itself has to be bounded or that pass becomes the worst slice in the boot —
+ * every rail line in the city was a single 75 ms conversion. Capping trades a
+ * handful of extra draw calls for a slice that always fits in a frame.
+ */
+const SOUP_FLUSH = 120_000;
 
 /** Turn a soup into a mesh (normals constant-up when nrm is empty). */
 /**
@@ -1169,25 +1309,34 @@ function soupMesh(soup: Soup, material: THREE.Material, sealed = true, packed = 
 }
 
 /** Street ribbons, written straight into per-tile buffers (all normals up). */
-function buildStreetTiles(
+function* streetTiles(
   edges: StreetEdge[],
   mat: THREE.MeshLambertMaterial,
   ground: GroundFn,
   cell: number,
   overWater: (p: [number, number][]) => boolean,
   step = RIBBON_STEP,
-): THREE.Mesh[] {
-  const tiles = new Map<number, Soup>();
+): Generator<THREE.Mesh | null, void, void> {
+  // Bucket first (cheap, no geometry), then build one tile per slice — so the
+  // street grid appears tile by tile instead of all at once at the end.
+  const buckets = new Map<number, StreetEdge[]>();
   for (const edge of edges) {
     if (edge.struct === "tunnel") continue; // roads vanish into the hillside
     const [mx, my] = edge.polyline[Math.floor(edge.polyline.length / 2)]!;
     const key = tileKey(mx, my);
-    let soup = tiles.get(key);
-    if (!soup) tiles.set(key, (soup = { pos: [], nrm: [] }));
-    const span = edge.struct === "bridge" || overWater(edge.polyline);
-    pushRibbon(soup.pos, edge.polyline, RENDER_WIDTH[edge.class] ?? edge.width, DECAL_Y, ground, cell, span, step);
+    let list = buckets.get(key);
+    if (!list) buckets.set(key, (list = []));
+    list.push(edge);
   }
-  return [...tiles.values()].map((soup) => soupMesh(soup, mat));
+  yield null;
+  for (const list of buckets.values()) {
+    const soup: Soup = { pos: [], nrm: [] };
+    for (const edge of list) {
+      const span = edge.struct === "bridge" || overWater(edge.polyline);
+      pushRibbon(soup.pos, edge.polyline, RENDER_WIDTH[edge.class] ?? edge.width, DECAL_Y, ground, cell, span, step);
+    }
+    yield soupMesh(soup, mat);
+  }
 }
 
 const RIBBON_STEP = 15; // m — max span between ribbon cross-sections
@@ -1349,21 +1498,34 @@ function pushRibbon(
     }
   }
 }
-function buildRails(
+function* railTiles(
   rails: { polyline: [number, number][]; kind: RailLine["kind"] }[],
   ground: GroundFn,
   cell: number,
   overWater: (p: [number, number][]) => boolean,
-): THREE.Mesh[] {
+): Generator<THREE.Mesh | null, void, void> {
+  const mats = new Map<RailLine["kind"], THREE.Material>();
+  const matOf = (kind: RailLine["kind"]): THREE.Material => {
+    let m = mats.get(kind);
+    if (!m) mats.set(kind, (m = decalMat({ color: RAIL_STYLE[kind].color })));
+    return m;
+  };
   const soups = new Map<RailLine["kind"], Soup>();
-  for (const r of rails) {
+  for (let i = 0; i < rails.length; i++) {
+    const r = rails[i]!;
     let soup = soups.get(r.kind);
     if (!soup) soups.set(r.kind, (soup = { pos: [], nrm: [] }));
     pushRibbon(soup.pos, r.polyline, RAIL_STYLE[r.kind].width, DECAL_Y, ground, cell, overWater(r.polyline), Infinity);
+    if (soup.pos.length / 3 >= SOUP_FLUSH) {
+      soups.delete(r.kind);
+      yield soupMesh(soup, matOf(r.kind));
+    } else if (i % RIBBON_SLICE === RIBBON_SLICE - 1) {
+      yield null;
+    }
   }
-  return [...soups.entries()].map(([kind, soup]) =>
-    soupMesh(soup, decalMat({ color: RAIL_STYLE[kind].color })),
-  );
+  for (const [kind, soup] of soups) {
+    if (soup.pos.length > 0) yield soupMesh(soup, matOf(kind));
+  }
 }
 
 /** Rail stops as flat platform discs in their line's color (one mesh). */
@@ -1419,13 +1581,27 @@ export interface BuildingTiles {
   sync(want: Iterable<number>, budget?: number): { built: [number, number][]; evicted: number };
   /** Build the whole city at once — the old behaviour, for headless tools. */
   buildAll(): void;
+  /**
+   * Place the far tier's boxes, a batch of tiles per step.
+   *
+   * Filling 538k instances is ~0.3 s on a laptop and seconds on a phone, so
+   * with `deferFar` the mesh starts empty (`count = 0`) and grows here. Safe
+   * to drain lazily: `sync` may build prisms for tiles this has not reached
+   * yet, and the fill checks residency before un-hiding a tile's boxes.
+   * Already complete (a no-op) unless `deferFar` was set.
+   */
+  fillFar(): Generator<void, void, void>;
   stats(): { tiles: number; verts: number };
 }
+
+/** Far-tier tiles placed per fill step. */
+const FAR_FILL_SLICE = 64;
 
 export function createBuildingTiles(
   store: BuildingStore,
   landmarks: Map<number, Landmark["kind"]>,
   city: CityModel,
+  deferFar = false,
 ): BuildingTiles {
   const group = new THREE.Group();
   const shells = new BuildingShells(store, city.baseZ);
@@ -1537,17 +1713,42 @@ export function createBuildingTiles(
     far.setMatrixAt(bi, m4);
   }
 
-  for (let bi = 0; bi < store.count; bi++) {
-    setBox(bi, false);
+  /** Resident tiles by index into store.tileKey. Declared before the far fill
+   * because that fill has to know which tiles already have prisms. */
+  const live = new Map<number, THREE.Mesh[]>();
+  let residentVerts = 0;
+
+  /** Tint keyed on a coarse spatial hash — see `build` for why not per part. */
+  function tintOf(bi: number): number[] {
     const palette = palettes.get(buildingUse(store, bi)) ?? palettes.get("other")!;
     const qx = Math.round(city.cx[bi]! / 45);
     const qy = Math.round(city.cy[bi]! / 45);
     const hash = ((qx * 73856093) ^ (qy * 19349663)) >>> 0;
-    const rgb = palette[hash % palette.length]!;
-    far.setColorAt(bi, col.setRGB(rgb[0]!, rgb[1]!, rgb[2]!));
+    return palette[hash % palette.length]!;
   }
-  far.instanceMatrix.needsUpdate = true;
-  if (far.instanceColor) far.instanceColor.needsUpdate = true;
+
+  /** Boxes placed so far, as a count of tiles. `far.count` tracks it, so the
+   * unfilled tail is simply not drawn rather than drawn wrong. */
+  let farFilled = 0;
+  function growFar(upto: number): void {
+    for (; farFilled < upto; farFilled++) {
+      const from = store.tileStart[farFilled]!;
+      const to = store.tileStart[farFilled + 1]!;
+      // A tile whose prisms are already up must stay hidden — `sync` can run
+      // ahead of this fill, and un-hiding here would double-draw it.
+      const hidden = live.has(farFilled);
+      for (let bi = from; bi < to; bi++) {
+        setBox(bi, hidden);
+        const rgb = tintOf(bi);
+        far.setColorAt(bi, col.setRGB(rgb[0]!, rgb[1]!, rgb[2]!));
+      }
+    }
+    far.count = store.tileStart[farFilled]!;
+    far.instanceMatrix.needsUpdate = true;
+    if (far.instanceColor) far.instanceColor.needsUpdate = true;
+  }
+  far.count = 0;
+  if (!deferFar) growFar(store.tileKey.length);
 
   /** Show or hide a tile's boxes — hidden exactly when its prisms are up, so
    * the two tiers never overlap and never z-fight. */
@@ -1557,10 +1758,6 @@ export function createBuildingTiles(
     for (let bi = from; bi < to; bi++) setBox(bi, hidden);
     far.instanceMatrix.needsUpdate = true;
   }
-
-  /** Resident tiles by index into store.tileKey. */
-  const live = new Map<number, THREE.Mesh[]>();
-  let residentVerts = 0;
 
   function build(t: number): void {
     if (live.has(t)) return;
@@ -1589,11 +1786,7 @@ export function createBuildingTiles(
       // splits one building into stacked parts (podium/tower/penthouse), and
       // per-part colors painted those as random patches. Nearby parts of the
       // same use now share a tint, so the massing reads as ONE structure.
-      const palette = palettes.get(buildingUse(store, bi)) ?? palettes.get("other")!;
-      const qx = Math.round(city.cx[bi]! / 45);
-      const qy = Math.round(city.cy[bi]! / 45);
-      const hash = ((qx * 73856093) ^ (qy * 19349663)) >>> 0;
-      const rgb = palette[hash % palette.length]!;
+      const rgb = tintOf(bi);
       const s0 = base.pos.length / 3;
       pushPrism(base, store, bi, rgb, z);
       pending.push({ bi, slot: 0, start: s0, count: base.pos.length / 3 - s0, rgb });
@@ -1660,7 +1853,14 @@ export function createBuildingTiles(
       return { built, evicted };
     },
     buildAll(): void {
+      growFar(store.tileKey.length);
       for (let t = 0; t < store.tileKey.length; t++) build(t);
+    },
+    *fillFar(): Generator<void, void, void> {
+      while (farFilled < store.tileKey.length) {
+        growFar(Math.min(store.tileKey.length, farFilled + FAR_FILL_SLICE));
+        yield;
+      }
     },
     stats: () => ({ tiles: live.size, verts: residentVerts }),
   };

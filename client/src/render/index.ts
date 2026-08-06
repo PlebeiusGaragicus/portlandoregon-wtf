@@ -98,6 +98,10 @@ const DETAIL = HANDHELD
  *
  * 2x is still retina-sharp for edges, which is all this scene has.
  */
+/** Milliseconds per frame given to the unfinished world build. Small enough
+ * that the camera stays smooth while the city arrives. */
+const BOOT_BUDGET_MS = HANDHELD ? 6 : 10;
+
 const MAX_PIXEL_RATIO = 2;
 function pixelRatio(): number {
   return Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
@@ -112,6 +116,18 @@ export interface PrebuiltLayers {
 export interface RendererOpts {
   /** World geometry built ahead of time (loading-screen time). */
   prebuilt?: PrebuiltLayers;
+  /**
+   * Remaining world build, drained from the frame loop.
+   *
+   * `prebuilt.world` from {@link beginWorld} is renderable but empty of
+   * terrain and streets; this is the rest of it. The renderer spends a slice
+   * of every frame on it until it runs out, so the city fills in while the
+   * page is already interactive instead of before it exists.
+   */
+  boot?: Generator<string, void, void>;
+  /** Called with the phase name each time the boot generator advances, and
+   * with null when it finishes. Feeds the boot console. */
+  onBootProgress?: (phase: string | null) => void;
   /** Terrain heightfield; absent = flat ground. */
   heightfield?: Heightfield | null;
   /** Prebuilt city model. Must be the same one `prebuilt.world` was built
@@ -186,6 +202,10 @@ export class Renderer {
 
   private lastFrame = 0;
   private disposed = false;
+  /** Remaining world build; null once drained. See pourWorld. */
+  private boot: Generator<string, void, void> | null = null;
+  private bootPhase: string | null = null;
+  private onBootProgress?: (phase: string | null) => void;
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -215,6 +235,8 @@ export class Renderer {
     this.sun.shadow.normalBias = 2;
     this.scene.add(this.hemi, this.sun, this.sun.target);
 
+    this.boot = opts.boot ?? null;
+    this.onBootProgress = opts.onBootProgress;
     this.hf = opts.heightfield ?? null;
     const hf = this.hf;
     this.ground = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
@@ -740,6 +762,35 @@ export class Renderer {
     }
   }
 
+  /**
+   * Spend this frame's share of the remaining world build.
+   *
+   * Time-budgeted rather than slice-counted: a terrain chunk and a street tile
+   * are wildly different amounts of work, and what matters is that the frame
+   * still lands. BOOT_BUDGET_MS is the slack in a 60 Hz frame after the scene
+   * is drawn — overshooting by one slice is unavoidable (a slice is atomic),
+   * which is why the slices themselves are small.
+   *
+   * Also why the whole thing is checked against a wall clock and not a slice
+   * count: on a phone one slice may already blow the budget, and the loop must
+   * then do exactly one and get out.
+   */
+  private pourWorld(): void {
+    if (!this.boot) return;
+    const until = performance.now() + BOOT_BUDGET_MS;
+    let phase: string | null = null;
+    do {
+      const r = this.boot.next();
+      if (r.done) {
+        this.boot = null;
+        this.onBootProgress?.(null);
+        return;
+      }
+      phase = r.value;
+    } while (performance.now() < until);
+    if (phase !== this.bootPhase) this.onBootProgress?.((this.bootPhase = phase));
+  }
+
   private applyCamera(): void {
     const aspect = (this.canvas.clientWidth || 1) / (this.canvas.clientHeight || 1);
     this.rig.apply(this.camera, aspect, this.ground(this.rig.target.x, this.rig.target.y));
@@ -751,6 +802,7 @@ export class Renderer {
     const dt = Math.min(0.1, (now - this.lastFrame) / 1000);
     this.lastFrame = now;
 
+    this.pourWorld();
     this.daynight.update(Date.now());
 
     // Both camera modes stream buildings, and FPV especially: walking is the
