@@ -3,6 +3,7 @@ export * from "./geo.js";
 export * from "./heightfield.js";
 export * from "./los.js";
 export * from "./map.js";
+export * from "./mapbin.js";
 export * from "./maps/index.js";
 export * from "./path.js";
 export * from "./protocol.js";
