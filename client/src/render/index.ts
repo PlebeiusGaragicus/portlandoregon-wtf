@@ -180,6 +180,8 @@ export class Renderer {
   private tileCx = NaN;
   private tileCy = NaN;
   private tileRadius = -1;
+  private tileDetailRadius = -2;
+  private tilePropRadius = -2;
   private wantBuildings: number[] = [];
   private wantDressing: number[] = [];
   private wantProps: number[] = [];
@@ -712,20 +714,34 @@ export class Renderer {
     // At altitude a prism and a box are the same handful of pixels, so the
     // near tier shrinks to nothing rather than growing to cover the view.
     const radius = viewHeight < PRISM_NEAR_VIEW ? DETAIL.prism : viewHeight < PRISM_FAR_VIEW ? DETAIL.prism - 1 : 0;
+    // Three independent windows: prisms upgrade the boxes near the camera,
+    // dressing and props exist wherever their zoom gates would show them.
+    const detailRadius = viewHeight < DETAIL.propsView ? DETAIL.dressing : -1;
+    const propRadius = viewHeight < DETAIL.propsView ? DETAIL.props : -1;
     const cx = Math.floor(x / store.tileSize);
     const cy = Math.floor(y / store.tileSize);
 
     // Recompute the wanted windows only when the view actually moved; the
     // build queue below is drained every frame regardless.
-    if (cx !== this.tileCx || cy !== this.tileCy || radius !== this.tileRadius) {
+    //
+    // Every radius has to be in this test, not just the prism one. On a
+    // handheld the props gate (1400 m) sits inside a prism band (1200-3000 m),
+    // so zooming from 1500 to 1300 changes what props want without changing
+    // `radius` — and the windows were never recomputed, leaving the phone with
+    // no props at all until the camera happened to cross a tile line.
+    if (
+      cx !== this.tileCx ||
+      cy !== this.tileCy ||
+      radius !== this.tileRadius ||
+      detailRadius !== this.tileDetailRadius ||
+      propRadius !== this.tilePropRadius
+    ) {
       this.tileCx = cx;
       this.tileCy = cy;
       this.tileRadius = radius;
+      this.tileDetailRadius = detailRadius;
+      this.tilePropRadius = propRadius;
 
-      // Three independent windows: prisms upgrade the boxes near the camera,
-      // dressing and props exist wherever their zoom gates would show them.
-      const detailRadius = viewHeight < DETAIL.propsView ? DETAIL.dressing : -1;
-      const propRadius = viewHeight < DETAIL.propsView ? DETAIL.props : -1;
       const span = Math.max(radius, detailRadius, propRadius);
       // Nearest first, so a window fills in from the camera outward instead of
       // from a corner — it matters once building is rationed per frame.

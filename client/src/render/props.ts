@@ -53,8 +53,10 @@ export function radialGlowTexture(size = 128): THREE.CanvasTexture {
 export interface PropLayers {
   /** Everything (contains `near`). */
   group: THREE.Group;
-  /** Lamplight pools — kept OUT of `group` so the city keeps its night glow
-   * at any zoom, even when the lamp geometry itself is culled. */
+  /** Lamplight pools: every lamp in the city, always resident, in one draw
+   * call. Kept OUT of `group` — and out of the tile streaming — so the night
+   * city glows at any zoom and anywhere on the map, whether or not the lamp
+   * posts themselves are currently built. */
   glow: THREE.Group;
   /**
    * Make exactly these 1 km tiles resident, building and evicting as needed.
@@ -163,7 +165,7 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
   const lightHeadMat = new THREE.MeshBasicMaterial({ color: 0xffd9a0 }); // warm glow, unlit
   // Additive pool of lamplight on the pavement under each luminaire: a wide
   // quad with a radial-gradient texture — soft-edged, bloom-ish, one instanced
-  // draw per tile.
+  // draw for the whole city.
   // Life-size (FPV) pools stay tighter: at eye level the wide quads stack
   // into additive overdraw across the whole frustum.
   const POOL_R = s > 1 ? 9 * s : 7;
@@ -199,6 +201,41 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
   const up = new THREE.Vector3(0, 1, 0);
   const one = new THREE.Vector3(1, 1, 1);
   const color = new THREE.Color();
+
+  /**
+   * Every lamplight pool in the city, in one instanced mesh that is never
+   * evicted.
+   *
+   * The pools used to be built per tile alongside the poles, which meant they
+   * vanished the moment a tile was evicted — so zooming out turned the night
+   * city dark, which is the one view the glow exists for. Keeping `glow` out
+   * of `group` protected it from the zoom VISIBILITY gate but not from
+   * eviction.
+   *
+   * A pool is a quad and a matrix, so all 65,868 of them cost ~4 MB and one
+   * draw call, and the rasterizer's bill is set by screen area rather than
+   * instance count — a lamp two miles away is a few pixels whether or not its
+   * pole exists. So the lamp geometry keeps streaming and the light itself
+   * simply stays.
+   */
+  {
+    let lights = 0;
+    for (let i = 0; i < store.count; i++) if (PROP_KINDS[store.kind[i]!] === "light") lights++;
+    const all = new THREE.InstancedMesh(poolGeo, poolMat, Math.max(1, lights));
+    all.frustumCulled = false; // one mesh spanning the whole map
+    let i = 0;
+    for (let pi = 0; pi < store.count; pi++) {
+      if (PROP_KINDS[store.kind[pi]!] !== "light") continue;
+      const lx = px[pi]!;
+      const ly = py[pi]!;
+      m.makeTranslation(toScene(lx, ly, g(lx, ly) + 0.4));
+      all.setMatrixAt(i++, m);
+    }
+    all.count = lights;
+    all.visible = false; // setNight turns it on
+    pools.push(all);
+    glow.add(all);
+  }
 
   /** Tiles currently built, and the meshes each contributed. */
   const live = new Map<number, THREE.Object3D[]>();
@@ -269,9 +306,10 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
       add(near, poles, heads);
     }
     if (bucket.lights.length) {
+      // The lamp itself is geometry and streams like everything else. Its
+      // light does NOT — see the city-wide pool tier below.
       const poles = new THREE.InstancedMesh(lightPoleGeo, lightPoleMat, bucket.lights.length);
       const heads = new THREE.InstancedMesh(lightHeadGeo, lightHeadMat, bucket.lights.length);
-      const pool = new THREE.InstancedMesh(poolGeo, poolMat, bucket.lights.length);
       poles.castShadow = true;
       bucket.lights.forEach((pi, i) => {
         const si = { x: px[pi]!, y: py[pi]! };
@@ -280,13 +318,8 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
         poles.setMatrixAt(i, m);
         m.makeTranslation(toScene(si.x, si.y, gz + 7.1 * s));
         heads.setMatrixAt(i, m);
-        m.makeTranslation(toScene(si.x, si.y, gz + 0.4));
-        pool.setMatrixAt(i, m);
       });
-      pool.visible = false;
-      pools.push(pool);
       add(group, poles, heads);
-      add(glow, pool);
     }
     if (bucket.meters.length) {
       const poles = new THREE.InstancedMesh(meterGeo, meterMat, bucket.meters.length);
