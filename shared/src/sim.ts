@@ -10,6 +10,7 @@ import {
   SQUAD_POP,
   TICK_MS,
 } from "./constants.js";
+import { latLonToWorld, withinMap } from "./geo.js";
 import { buildLosIndex, hasLineOfSight, type LosIndex } from "./los.js";
 import type { GameMap } from "./map.js";
 import { buildPathGraph, findPath, nearestOnStreets, type PathGraph } from "./path.js";
@@ -73,9 +74,8 @@ export function createWorld(map: GameMap): World {
 const MUSTER = { lat: 45.519, lon: -122.6794 };
 
 function musterXY(map: GameMap): { x: number; y: number } {
-  const x = (MUSTER.lon - map.meta.origin.lon) * 111320 * Math.cos((MUSTER.lat * Math.PI) / 180);
-  const y = (MUSTER.lat - map.meta.origin.lat) * 110574;
-  if (x < 0 || y < 0 || x > map.meta.width || y > map.meta.height) {
+  const { x, y } = latLonToWorld(map.meta, MUSTER);
+  if (!withinMap(map.meta, x, y)) {
     return { x: map.meta.width / 2, y: map.meta.height / 2 };
   }
   return { x, y };

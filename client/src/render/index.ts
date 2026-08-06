@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { heightAt, raycastHeightfield, type GameMap, type Heightfield } from "@battle-juice/shared";
+import { heightAt, raycastHeightfield, worldToLatLon, type GameMap, type Heightfield } from "@battle-juice/shared";
 import { Actors } from "./actors.js";
 import { CameraRig, toScene, toWorldXY } from "./camera.js";
 import { Controls, type ControlDelegate } from "./controls.js";
@@ -10,6 +10,7 @@ import { buildLandmarks, type LandmarkLayer } from "./landmarks.js";
 import { Minimap } from "./minimap.js";
 import { buildProps, radialGlowTexture, type PropLayers } from "./props.js";
 import { buildWorld, type WorldLayers } from "./world.js";
+import { createViewSaver, restoreView } from "../view.js";
 
 // Zoom thresholds (meters of vertical view).
 const BLEND_START = 2200; // street tint starts brightening
@@ -17,7 +18,6 @@ const BLEND_END = 3200;
 const PROPS_VIEW = 3000; // above: hide trees/street lights (subpixel anyway)
 const NEAR_PROPS_VIEW = 1000; // above: hide small street furniture (signs, hydrants, benches...)
 
-const START_VIEW = 2600; // spectator reveal: district scale, then explore
 
 const SKY_R = 20000; // FPV sky dome radius, inside the FPV far plane
 const SHADOW_MAX_VIEW = 8000; // above: shadows are subpixel, skip the pass
@@ -45,6 +45,10 @@ export class Renderer {
   private scene = new THREE.Scene();
   private camera = new THREE.PerspectiveCamera();
   private rig: CameraRig;
+  private saveView: () => void;
+  /** Wall-clock of the last camera-position write; throttled, see frame(). */
+  private lastViewSave = 0;
+  private onPageHide: () => void;
   private controls: Controls;
   private world: WorldLayers;
   private props: PropLayers;
@@ -163,7 +167,10 @@ export class Renderer {
     };
 
     this.rig = new CameraRig(map);
-    this.rig.viewHeight = START_VIEW;
+    // First visit opens on the default place at full zoom; a returning visitor
+    // picks up where they left the camera.
+    restoreView(this.rig, map);
+    this.saveView = createViewSaver(this.rig, map);
 
     // Spectator delegate: everything is map navigation; command hooks no-op.
     const delegate: ControlDelegate = {
@@ -228,6 +235,13 @@ export class Renderer {
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(canvas);
     this.resize();
+
+    // The frame loop stops when the tab is hidden or closed, so catch the last
+    // second of movement here. pagehide fires on mobile Safari's bfcache path
+    // where unload does not.
+    this.onPageHide = () => this.saveView();
+    window.addEventListener("pagehide", this.onPageHide);
+    document.addEventListener("visibilitychange", this.onPageHide);
 
     this.lastFrame = performance.now();
     requestAnimationFrame(() => this.frame());
@@ -531,6 +545,9 @@ export class Renderer {
 
   dispose(): void {
     this.disposed = true;
+    this.saveView();
+    window.removeEventListener("pagehide", this.onPageHide);
+    document.removeEventListener("visibilitychange", this.onPageHide);
     for (const d of this.fpvDisposers) d();
     this.fpvDisposers = [];
     this.actors.dispose();
@@ -563,6 +580,13 @@ export class Renderer {
     this.lastFrame = now;
 
     this.daynight.update(Date.now());
+
+    // Remember where the camera is, at most once a second. The saver itself
+    // no-ops when nothing moved, so a parked camera costs one comparison.
+    if (now - this.lastViewSave > 1000) {
+      this.lastViewSave = now;
+      this.saveView();
+    }
 
     if (this.fpvOn && this.fpv) {
       this.fpv.update(dt);
@@ -698,9 +722,7 @@ export class Renderer {
     const alt = this.fpvOn ? ` · ▲${Math.round(fz)} m` : "";
     // Focus position, world meters + WGS84 — so a screenshot pins the exact
     // spot for debugging (world x/y feed rig.target / fpv.place directly).
-    const o = this.map.meta.origin;
-    const lat = o.lat + fy / 111320;
-    const lon = o.lon + fx / (111320 * Math.cos((lat * Math.PI) / 180));
+    const { lat, lon } = worldToLatLon(this.map.meta, fx, fy);
     const pos = ` · ${Math.round(fx)}E ${Math.round(fy)}N · ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
     const label = `${dn.day ? "☀" : "☾"} ${dn.clock}${alt}${pos}`;
     if (this.hudClock.textContent !== label) this.hudClock.textContent = label;

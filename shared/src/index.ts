@@ -1,4 +1,5 @@
 export * from "./constants.js";
+export * from "./geo.js";
 export * from "./heightfield.js";
 export * from "./los.js";
 export * from "./map.js";
