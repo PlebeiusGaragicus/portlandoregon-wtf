@@ -57,11 +57,14 @@ else
     gh release download "$RELEASE_TAG" --repo "$MAP_REPO" \
         --pattern 'map.json.gz' --output "$DEST_DIR/map.json.gz" --clobber \
         || fail "couldn't download map.json.gz from release '$RELEASE_TAG'.
-  Create the release once from a machine that has data/maps/:
-    gh release create $RELEASE_TAG --repo $MAP_REPO \\
-      --title 'Map data' --notes 'Static map assets for the serverless build' \\
-      data/maps/<name>.json.gz#map.json.gz \\
-      data/maps/<name>-heightmap.bin.gz#heightmap.bin.gz"
+  Refresh it from a machine that has data/maps/ — stage locally first, because
+  the asset NAMES are what this script matches on (gh's file#label syntax only
+  sets a display label, so uploading data/maps/portland.json.gz directly would
+  publish an asset this script can't find):
+    ./scripts/stage-map.sh
+    gh release upload $RELEASE_TAG --repo $MAP_REPO --clobber \\
+      client/src/public/map/map.json.gz \\
+      client/src/public/map/heightmap.bin.gz"
     gh release download "$RELEASE_TAG" --repo "$MAP_REPO" \
         --pattern 'heightmap.bin.gz' --output "$DEST_DIR/heightmap.bin.gz" --clobber \
         || note "no heightmap in the release — the client falls back to flat ground"
