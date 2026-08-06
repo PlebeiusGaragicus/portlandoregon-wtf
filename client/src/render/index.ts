@@ -31,7 +31,9 @@ const BLEND_END = 3200;
 
 
 const SKY_R = 20000; // FPV sky dome radius, inside the FPV far plane
-const SHADOW_MAX_VIEW = 8000; // above: shadows are subpixel, skip the pass
+/** Desktop shadow cutoff: above this the shadows are subpixel, so skip the
+ * pass. DETAIL.shadowView carries the per-device value. */
+const SHADOW_MAX_VIEW = 8000;
 /**
  * Building detail tiers.
  *
@@ -77,6 +79,17 @@ const DETAIL = HANDHELD
       propsView: 1400,
       nearPropsView: 700,
       perFrame: { buildings: 1, dressing: 1, props: 1 },
+      // A shadow pass re-renders every resident mesh into the map. At 2048
+      // that is four times the fill of 1024 for a difference you cannot see
+      // on a 6-inch screen, and fill rate is exactly what makes a phone hot.
+      shadowMap: 1024,
+      // Shadows are subpixel long before this, and the pass is the single
+      // most expensive thing a frame does.
+      shadowView: 2500,
+      // 30 fps. The scene is a strategy map, not a shooter, and halving the
+      // frame rate roughly halves the GPU energy per second — the thing the
+      // phone was reporting as heat and stutter.
+      frameGapMs: 1000 / 30,
     }
   : {
       prism: 2,
@@ -85,6 +98,9 @@ const DETAIL = HANDHELD
       propsView: 3000,
       nearPropsView: 1000,
       perFrame: { buildings: 2, dressing: 2, props: 4 },
+      shadowMap: 2048,
+      shadowView: SHADOW_MAX_VIEW,
+      frameGapMs: 0,
     };
 
 /**
@@ -203,6 +219,10 @@ export class Renderer {
   private fpvDrag: { id: number; x: number; y: number; moved: boolean } | null = null;
 
   private lastFrame = 0;
+  /** When the last frame was actually rendered, for the frame-rate cap. */
+  private lastRender = 0;
+  /** True while the tab is hidden and the loop has stopped scheduling. */
+  private paused = false;
   private disposed = false;
   /** Remaining world build; null once drained. See pourWorld. */
   private boot: Generator<string, void, void> | null = null;
@@ -230,7 +250,7 @@ export class Renderer {
     this.webgl.shadowMap.enabled = true;
     this.webgl.shadowMap.type = THREE.PCFShadowMap;
     this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(2048, 2048);
+    this.sun.shadow.mapSize.set(DETAIL.shadowMap, DETAIL.shadowMap);
     this.sun.shadow.camera.near = 1;
     this.sun.shadow.camera.far = 6000;
     this.sun.shadow.bias = -0.0004;
@@ -359,7 +379,18 @@ export class Renderer {
     // The frame loop stops when the tab is hidden or closed, so catch the last
     // second of movement here. pagehide fires on mobile Safari's bfcache path
     // where unload does not.
-    this.onPageHide = () => this.saveView();
+    this.onPageHide = () => {
+      this.saveView();
+      // A hidden tab that keeps simulating is pure battery drain. Most
+      // browsers stop rAF on their own, but not reliably when the tab is
+      // merely occluded, and the day/night sim and actor update would keep
+      // running regardless of whether anything was drawn.
+      if (!document.hidden && this.paused) {
+        this.paused = false;
+        this.lastFrame = performance.now();
+        requestAnimationFrame(() => this.frame());
+      }
+    };
     window.addEventListener("pagehide", this.onPageHide);
     document.addEventListener("visibilitychange", this.onPageHide);
 
@@ -815,6 +846,20 @@ export class Renderer {
   private frame(): void {
     if (this.disposed) return;
     const now = performance.now();
+    if (typeof document !== "undefined" && document.hidden) {
+      // Stop the loop outright; onPageHide restarts it. Nothing is scheduled
+      // from here, so a backgrounded tab costs exactly nothing.
+      this.paused = true;
+      return;
+    }
+    // Frame-rate cap, skipped while the world is still filling in — the pour
+    // is budgeted per executed frame, so capping during boot would just make
+    // the city take twice as long to arrive.
+    if (DETAIL.frameGapMs && !this.boot && now - this.lastRender < DETAIL.frameGapMs) {
+      requestAnimationFrame(() => this.frame());
+      return;
+    }
+    this.lastRender = now;
     const dt = Math.min(0.1, (now - this.lastFrame) / 1000);
     this.lastFrame = now;
 
@@ -912,7 +957,7 @@ export class Renderer {
     this.actors.setListener(null);
     this.actors.update(dt, now / 1000, this.rig.target, this.daynight.night, this.daynight.t * 24);
     this.fire.update(dt, this.rig.target, this.actors.fireUnitsOnScene());
-    this.applyDayNight(this.rig.target.x, this.rig.target.y, this.ground(this.rig.target.x, this.rig.target.y), vh < SHADOW_MAX_VIEW);
+    this.applyDayNight(this.rig.target.x, this.rig.target.y, this.ground(this.rig.target.x, this.rig.target.y), vh < DETAIL.shadowView);
     this.updateScaleBar(vh);
 
     this.webgl.render(this.scene, this.camera);
