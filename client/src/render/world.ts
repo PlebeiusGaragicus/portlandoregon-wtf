@@ -772,8 +772,11 @@ function buildTerrainTiles(map: GameMap, layers: LayerStores, hf: Heightfield): 
       const w = c1 - c0 + 1;
       const h = r1 - r0 + 1;
       const pos = new Float32Array(w * h * 3);
-      const nrm = new Float32Array(w * h * 3);
-      const col = new Float32Array(w * h * 3);
+      // Normals and colours as normalized bytes: the terrain is the largest
+      // always-resident mesh in the map, and it never needs more than a byte
+      // of either.
+      const nrm = new Int8Array(w * h * 3);
+      const col = new Uint8Array(w * h * 3);
       let i = 0;
       for (let r = r0; r <= r1; r++) {
         for (let c = c0; c <= c1; c++) {
@@ -784,9 +787,9 @@ function buildTerrainTiles(map: GameMap, layers: LayerStores, hf: Heightfield): 
           pos[i + 1] = wz;
           pos[i + 2] = -wy;
           const rgb = CAT_RGB[mask[r * hf.cols + c]!]!;
-          col[i] = rgb[0]!;
-          col[i + 1] = rgb[1]!;
-          col[i + 2] = rgb[2]!;
+          col[i] = Math.round(rgb[0]! * 255);
+          col[i + 1] = Math.round(rgb[1]! * 255);
+          col[i + 2] = Math.round(rgb[2]! * 255);
           // Central differences on the raw grid (cheap, no bilinear).
           const cm = Math.max(0, c - 1);
           const cp = Math.min(lastC, c + 1);
@@ -794,10 +797,10 @@ function buildTerrainTiles(map: GameMap, layers: LayerStores, hf: Heightfield): 
           const rp = Math.min(lastR, r + 1);
           const gx = ((hf.data[r * hf.cols + cp]! - hf.data[r * hf.cols + cm]!) * hf.scale) / ((cp - cm) * cell);
           const gy = ((hf.data[rp * hf.cols + c]! - hf.data[rm * hf.cols + c]!) * hf.scale) / ((rp - rm) * cell);
-          const inv = 1 / Math.hypot(gx, 1, gy);
-          nrm[i] = -gx * inv;
-          nrm[i + 1] = inv;
-          nrm[i + 2] = gy * inv;
+          const inv = 127 / Math.hypot(gx, 1, gy);
+          nrm[i] = Math.round(-gx * inv);
+          nrm[i + 1] = Math.round(inv);
+          nrm[i + 2] = Math.round(gy * inv);
           i += 3;
         }
       }
@@ -814,8 +817,8 @@ function buildTerrainTiles(map: GameMap, layers: LayerStores, hf: Heightfield): 
       }
       const geo = new THREE.BufferGeometry();
       geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
-      geo.setAttribute("normal", new THREE.BufferAttribute(nrm, 3));
-      geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
+      geo.setAttribute("normal", new THREE.BufferAttribute(nrm, 3, true));
+      geo.setAttribute("color", new THREE.BufferAttribute(col, 3, true));
       geo.setIndex(index);
       meshes.push(seal(new THREE.Mesh(geo, mat)));
     }
@@ -1101,17 +1104,58 @@ function seal(mesh: THREE.Mesh): THREE.Mesh {
   return mesh;
 }
 
-function soupMesh(soup: Soup, material: THREE.Material, sealed = true): THREE.Mesh {
+/**
+ * A unit-range attribute (normal, colour) as normalized bytes instead of
+ * floats.
+ *
+ * Both only ever carry values WebGL can reconstruct from a byte: a colour
+ * channel in 0..1 and a normal component in -1..1. Storing them as Float32 is
+ * 12 bytes each where 3 will do, and vertex data is now the single largest
+ * thing the tab holds — so this is 24 bytes off every vertex of every static
+ * mesh, on the GPU as well as in the heap.
+ *
+ * The precision is well inside what is visible: 1/255 of a colour channel,
+ * and about half a degree of normal, on flat-shaded ground.
+ *
+ * Buildings keep their Float32 colours regardless — see soupMesh's `packed`.
+ */
+function packUnit(values: number[], signed: boolean): THREE.BufferAttribute {
+  const n = values.length;
+  if (signed) {
+    const out = new Int8Array(n);
+    for (let i = 0; i < n; i++) out[i] = Math.max(-127, Math.min(127, Math.round(values[i]! * 127)));
+    return new THREE.BufferAttribute(out, 3, true);
+  }
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) out[i] = Math.max(0, Math.min(255, Math.round(values[i]! * 255)));
+  return new THREE.BufferAttribute(out, 3, true);
+}
+
+/**
+ * `packed` is false for building tiles: BufferAttribute.setXYZ writes raw
+ * values, so the fire sim's charLocal would have to know it was writing into
+ * a normalized byte array. Their geometry is streamed and small; the ground
+ * layers it would save on are the ones that are always resident anyway.
+ */
+function soupMesh(soup: Soup, material: THREE.Material, sealed = true, packed = true): THREE.Mesh {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.Float32BufferAttribute(soup.pos, 3));
-  if (soup.nrm.length) {
-    geo.setAttribute("normal", new THREE.Float32BufferAttribute(soup.nrm, 3));
+  const nrm = soup.nrm.length ? soup.nrm : null;
+  if (nrm) {
+    geo.setAttribute("normal", packed ? packUnit(nrm, true) : new THREE.Float32BufferAttribute(nrm, 3));
+  } else if (packed) {
+    // All-up normals: one byte per component, 127 being 1.0.
+    const up = new Int8Array(soup.pos.length);
+    for (let i = 1; i < up.length; i += 3) up[i] = 127;
+    geo.setAttribute("normal", new THREE.BufferAttribute(up, 3, true));
   } else {
     const up = new Float32Array(soup.pos.length);
     for (let i = 1; i < up.length; i += 3) up[i] = 1;
     geo.setAttribute("normal", new THREE.BufferAttribute(up, 3));
   }
-  if (soup.col) geo.setAttribute("color", new THREE.Float32BufferAttribute(soup.col, 3));
+  if (soup.col) {
+    geo.setAttribute("color", packed ? packUnit(soup.col, false) : new THREE.Float32BufferAttribute(soup.col, 3));
+  }
   const mesh = new THREE.Mesh(geo, material);
   return sealed ? seal(mesh) : mesh;
 }
@@ -1521,11 +1565,11 @@ export function createBuildingTiles(
     const meshes: THREE.Mesh[] = [];
     const slotOf = new Map<number | Landmark["kind"], number>();
     if (base.pos.length) {
-      slotOf.set(0, shells.addMesh(soupMesh(base, material, false)));
+      slotOf.set(0, shells.addMesh(soupMesh(base, material, false, false)));
       meshes.push(shells.meshAt(slotOf.get(0)!)!);
     }
     for (const [kind, soup] of lmSoups) {
-      slotOf.set(kind, shells.addMesh(soupMesh(soup, lmMaterial(kind), false)));
+      slotOf.set(kind, shells.addMesh(soupMesh(soup, lmMaterial(kind), false, false)));
       meshes.push(shells.meshAt(slotOf.get(kind)!)!);
     }
     for (const p of pending) shells.record(p.bi, slotOf.get(p.slot)!, p.start, p.count, p.rgb);

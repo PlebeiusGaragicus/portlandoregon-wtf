@@ -95,5 +95,36 @@ let changed = 0;
 for (let i = 0; i < before.length; i++) if (before[i] !== (col.array as Float32Array)[i]) changed++;
 check("charring a building still reaches its vertices", changed > 0, `${changed} components changed`);
 
+// --- attribute packing ----------------------------------------------------
+// Normals and colours on static geometry are normalized bytes, not floats:
+// 24 bytes off every vertex, on the GPU as well as in the heap. Buildings are
+// the exception, because charLocal writes raw floats into their colours.
+let packedStatic = 0;
+let floatStatic = 0;
+let bytes = 0;
+let verts = 0;
+world.group.traverse((o) => {
+  if (!(o instanceof THREE.Mesh) || o instanceof THREE.InstancedMesh) return;
+  if (buildingGeos.has(o.geometry)) return;
+  const n = o.geometry.getAttribute("normal") as THREE.BufferAttribute | undefined;
+  const c = o.geometry.getAttribute("color") as THREE.BufferAttribute | undefined;
+  const packedHere = (!n || n.array.BYTES_PER_ELEMENT === 1) && (!c || c.array.BYTES_PER_ELEMENT === 1);
+  if (packedHere) packedStatic++;
+  else floatStatic++;
+  const count = (o.geometry.getAttribute("position") as THREE.BufferAttribute).count;
+  verts += count;
+  for (const a of Object.values(o.geometry.attributes)) {
+    bytes += (a as THREE.BufferAttribute).itemSize * (a as THREE.BufferAttribute).array.BYTES_PER_ELEMENT * count;
+  }
+});
+check("static normals and colours are byte-packed", floatStatic === 0, `${floatStatic} of ${packedStatic + floatStatic} still float`);
+check("that lands under 20 bytes per vertex", bytes / verts < 20, `${(bytes / verts).toFixed(1)} B/vertex`);
+
+for (const g of buildingGeos) {
+  const c = g.getAttribute("color") as THREE.BufferAttribute;
+  check("building colours stay float", c.array.BYTES_PER_ELEMENT === 4, `${c.array.BYTES_PER_ELEMENT} bytes`);
+  break;
+}
+
 console.log(failed ? `\n${failed} failed` : "\nall passed");
 process.exit(failed ? 1 : 0);
