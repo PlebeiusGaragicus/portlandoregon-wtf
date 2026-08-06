@@ -16,8 +16,15 @@ client-side interpolation.
 
 ```sh
 npm install
-cp .env.sample .env   # then set a real GAME_PASSWORD
+cp .env.sample .env      # then set a real GAME_PASSWORD
+./scripts/stage-map.sh   # put the city where the client can load it
 ```
+
+`stage-map.sh` is required before the client will show anything. The map is
+~30 MB gzipped and deliberately not in git, so it is staged into
+`client/src/public/map/` from `data/maps/` — or downloaded from the map release
+if you don't have the extracts locally. Without it the client loads and then
+reports that it couldn't download the map.
 
 ## Development
 
@@ -32,6 +39,14 @@ each window controls its own dot and sees the other's move.
 
 Invite-link form: `http://localhost:5173/?join=<password>` pre-fills the
 password field.
+
+The city itself needs no server — it is a static asset (see Setup). A cold load
+is ~30 s, almost all of it `buildWorld` turning 538k buildings into geometry.
+To measure that without a browser in the way:
+
+```sh
+npx tsx scripts/profile-world.ts
+```
 
 ## Production
 
