@@ -49,10 +49,18 @@ function only(keys: (keyof GameMap)[]): GameMap {
   return out as unknown as GameMap;
 }
 
-function measure(label: string, sub: GameMap, withTerrain: boolean): void {
+/** Terrain mesh cost, subtracted from every feature row. Feature layers MUST
+ * be built against the real heightfield — measuring them on flat ground makes
+ * every draped layer look free, which is exactly the mistake that hid the
+ * sidewalk problem for two rounds. */
+let terrainVerts = 0;
+let terrainMeshes = 0;
+let terrainMem = 0;
+
+function measure(label: string, sub: GameMap, isTerrainBaseline = false): void {
   const before = mem();
   const t0 = performance.now();
-  const world = buildWorld(sub, empty, withTerrain ? hf : null, undefined, false);
+  const world = buildWorld(sub, empty, hf, undefined, true);
   const ms = performance.now() - t0;
   let verts = 0;
   let meshes = 0;
@@ -64,9 +72,15 @@ function measure(label: string, sub: GameMap, withTerrain: boolean): void {
     verts += pos.count;
   });
   const used = mem() - before;
+  if (isTerrainBaseline) {
+    terrainVerts = verts;
+    terrainMeshes = meshes;
+    terrainMem = used;
+  }
   console.log(
-    `  ${label.padEnd(22)} ${String(meshes).padStart(6)} ${(verts / 1e6).toFixed(2).padStart(8)}M` +
-      ` ${mb(used).padStart(9)} ${`${ms.toFixed(0)} ms`.padStart(9)}`,
+    `  ${label.padEnd(22)} ${String(meshes - (isTerrainBaseline ? 0 : terrainMeshes)).padStart(6)}` +
+      ` ${((verts - (isTerrainBaseline ? 0 : terrainVerts)) / 1e6).toFixed(2).padStart(8)}M` +
+      ` ${mb(used - (isTerrainBaseline ? 0 : terrainMem)).padStart(9)} ${`${ms.toFixed(0)} ms`.padStart(9)}`,
   );
 }
 
@@ -74,18 +88,18 @@ console.log("  layer                 meshes    verts    memory      time");
 console.log("  " + "-".repeat(58));
 
 // Terrain alone: no map features at all, just the heightfield mesh.
-measure("terrain", only([]), true);
-// Then each feature layer WITHOUT terrain, so the terrain cost is not counted
-// five times over. Draping still happens against the heightfield inside each.
-measure("streets", only(["edges"]), false);
-measure("sidewalks", only(["sidewalks"]), false);
-measure("lane markings", only(["markingLines", "markingAreas"]), false);
-measure("trails", only(["trails"]), false);
-measure("rails + stops", only(["rails", "railStops", "railYards"]), false);
-measure("water + parks", only(["water", "parks"]), false);
+measure("terrain (baseline)", only([]), true);
+// Every row below is built against the same heightfield and reported net of
+// that baseline.
+measure("streets", only(["edges"]));
+measure("sidewalks", only(["sidewalks"]));
+measure("lane markings", only(["markingLines", "markingAreas"]));
+measure("trails", only(["trails"]));
+measure("rails + stops", only(["rails", "railStops", "railYards"]));
+measure("water + parks", only(["water", "parks"]));
 
 console.log("");
-measure("everything (no bldgs)", map, true);
+measure("everything (no bldgs)", map);
 console.log(
   `\n  Counts: ${map.edges.length} edges, ${(map.sidewalks ?? []).length} sidewalks, ` +
     `${(map.markingLines ?? []).length} lane lines, ${(map.markingAreas ?? []).length} painted areas`,
