@@ -104,8 +104,9 @@ async function boot(): Promise<void> {
   );
   const est = estimatePeakBytes(buildings);
   log.line(
-    `city geometry if built whole: ~${(est.verts / 1e6).toFixed(1)}M vertices, ~${fmtBytes(est.bytes)} — ` +
-      `streaming ${buildings.tileKey.length} tiles instead`,
+    `buildings: whole city always drawn as boxes (1 draw call); ` +
+      `full prisms stream near the camera, ${buildings.tileKey.length} tiles ` +
+      `(~${(est.verts / 1e6).toFixed(1)}M vertices, ~${fmtBytes(est.bytes)} if built at once)`,
   );
 
   done = log.step("city model");

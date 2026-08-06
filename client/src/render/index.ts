@@ -32,21 +32,18 @@ const NEAR_PROPS_VIEW = 1000; // above: hide small street furniture (signs, hydr
 const SKY_R = 20000; // FPV sky dome radius, inside the FPV far plane
 const SHADOW_MAX_VIEW = 8000; // above: shadows are subpixel, skip the pass
 /**
- * Resident building tiles.
+ * Building detail tiers.
  *
- * Building geometry is streamed: only tiles near the camera exist as meshes,
- * and the rest of the city exists only in the model. The whole city at once is
- * 30.6M vertices and ~1.1 GB of buffers, which is what killed the tab; a 5x5
- * window is ~1M vertices and ~50 MB.
+ * The whole city is ALWAYS drawn — every building, to the horizon — as one
+ * instanced-box draw call costing ~48 MB. Full prisms, which are ~57 vertices
+ * each and 1.1 GB for the city, exist only for the tiles you are close enough
+ * to tell the difference on.
  *
- * The budget is a tile COUNT, not a distance, so footprint is bounded no
- * matter how far out the camera zooms. Beyond it, buildings simply are not
- * drawn — which is the honest current limitation: there is no LOD yet, so a
- * full zoom-out shows buildings near the focus and bare terrain further out.
- * Baked LOD is what fixes that.
+ * So these thresholds are not a visibility budget; they only decide where the
+ * boxes get upgraded to real geometry. Zooming out never removes the city.
  */
-const TILE_BUDGET = 121; // 11x11 km of buildings, ~200 MB
-const TILE_RADIUS_MIN = 2; // always keep a 5x5 window, however close the zoom
+const PRISM_NEAR_VIEW = 1200; // below: 5x5 km of full prisms
+const PRISM_FAR_VIEW = 3000; // below: 3x3. above: boxes alone read fine
 
 export interface PrebuiltLayers {
   world: WorldLayers;
@@ -615,11 +612,9 @@ export class Renderer {
     const store = this.store;
     if (!store.tileKey.length || !Number.isFinite(store.tileSize)) return;
     const { x, y } = focus;
-    // Radius from zoom: what the camera can actually see, capped by the
-    // budget so footprint never depends on how far out you zoom.
-    const seen = Math.ceil(viewHeight / store.tileSize);
-    const capped = Math.floor((Math.sqrt(TILE_BUDGET) - 1) / 2);
-    const radius = Math.max(TILE_RADIUS_MIN, Math.min(capped, seen));
+    // At altitude a prism and a box are the same handful of pixels, so the
+    // near tier shrinks to nothing rather than growing to cover the view.
+    const radius = viewHeight < PRISM_NEAR_VIEW ? 2 : viewHeight < PRISM_FAR_VIEW ? 1 : 0;
     const cx = Math.floor(x / store.tileSize);
     const cy = Math.floor(y / store.tileSize);
     if (cx === this.tileCx && cy === this.tileCy && radius === this.tileRadius) return;
@@ -628,7 +623,7 @@ export class Renderer {
     this.tileRadius = radius;
 
     const want: number[] = [];
-    for (let dy = -radius; dy <= radius; dy++) {
+    for (let dy = -radius; dy <= radius && radius >= 0; dy++) {
       for (let dx = -radius; dx <= radius; dx++) {
         const t = findTile(store, tileKeyAt((cx + dx) * store.tileSize, (cy + dy) * store.tileSize, store.tileSize));
         if (t >= 0) want.push(t);

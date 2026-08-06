@@ -66,21 +66,56 @@ console.log(`store: ${store.count} buildings in ${store.tileKey.length} tiles of
 console.log("radius   tiles   buildings      verts    geometry     build");
 console.log("-".repeat(64));
 
-const base = mem();
+// The far tier on its own: every building in the city, always resident.
+const beforeFar = mem();
+const farOnly = createBuildingTiles(store, landmarks, city);
+const farMs = performance.now();
+console.log(
+  `   far  ${String(store.tileKey.length).padStart(6)} ${String(store.count).padStart(11)}` +
+    ` ${"boxes".padStart(10)} ${mb(mem() - beforeFar).padStart(11)}` +
+    `   whole city, 1 draw call`,
+);
+void farMs;
+farOnly.sync([]);
+
+// Prism cost is measured against a tile set that already has its far tier, so
+// the column is the cost of UPGRADING that window to full geometry.
 for (const radius of [1, 2, 3, 5]) {
   const tiles = createBuildingTiles(store, landmarks, city);
+  const withFar = mem();
   const keys = window(downtown.x, downtown.y, radius);
   const t0 = performance.now();
   const { built } = tiles.sync(keys);
   const ms = performance.now() - t0;
   const n = built.reduce((a, [f, t]) => a + (t - f), 0);
   const { tiles: live, verts } = tiles.stats();
-  const used = mem() - base;
   console.log(
     `${`${radius * 2 + 1}x${radius * 2 + 1}`.padStart(6)} ${String(live).padStart(7)} ${String(n).padStart(11)}` +
-      ` ${(verts / 1e6).toFixed(2).padStart(9)}M ${mb(used).padStart(11)} ${`${ms.toFixed(0)} ms`.padStart(9)}`,
+      ` ${(verts / 1e6).toFixed(2).padStart(9)}M ${mb(mem() - withFar).padStart(11)} ${`${ms.toFixed(0)} ms`.padStart(9)}` +
+      `   prisms on top of the boxes`,
   );
-  tiles.sync([]); // release before the next measurement
+  tiles.sync([]);
+}
+
+// The two tiers must never both draw a building, or they z-fight.
+{
+  const tiles = createBuildingTiles(store, landmarks, city);
+  const keys = window(downtown.x, downtown.y, 2);
+  tiles.sync(keys);
+  const m = new THREE.Matrix4();
+  let visible = 0;
+  for (let bi = 0; bi < store.count; bi++) {
+    tiles.far.getMatrixAt(bi, m);
+    if (m.elements[0] !== 0 || m.elements[5] !== 0 || m.elements[10] !== 0) visible++;
+  }
+  const upgraded = keys.reduce((a, t) => a + (store.tileStart[t + 1]! - store.tileStart[t]!), 0);
+  let degenerate = 0;
+  for (let bi = 0; bi < store.count; bi++) if (!city.valid[bi]) degenerate++;
+  console.log(
+    `\n  boxes drawn ${visible}, prisms drawn ${upgraded}, degenerate ${degenerate}` +
+      ` — ${visible + upgraded + degenerate === store.count ? "every building drawn exactly once" : "OVERLAP"}`,
+  );
+  tiles.sync([]);
 }
 
 // --- panning --------------------------------------------------------------

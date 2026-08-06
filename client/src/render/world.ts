@@ -1062,6 +1062,8 @@ function buildRailStops(stops: RailStop[], ground: GroundFn): THREE.Mesh | null 
 export interface BuildingTiles {
   group: THREE.Group;
   shells: BuildingShells;
+  /** Whole-city massing, one draw call, always resident. */
+  far: THREE.InstancedMesh;
   /**
    * Make exactly `want` resident. Returns the building index ranges that were
    * newly built, so the caller can repaint their damage.
@@ -1103,6 +1105,110 @@ export function createBuildingTiles(
     }
     return m;
   };
+
+  /**
+   * Far tier: every building in the city as one instanced box.
+   *
+   * Full prisms are ~57 vertices each and 1.1 GB for the city, which is why
+   * they have to stream. A box is a shared geometry plus a per-instance
+   * transform and colour — about 76 bytes each, 48 MB for all 538k, in a
+   * SINGLE draw call. So the whole city can just... stay. Flying at altitude
+   * shows the real skyline again, and nothing pops at the horizon.
+   *
+   * The trade is per-building detail: an instance has one colour, so it
+   * cannot carry charLocal's soot gradient or collapse's rubble mound. That
+   * is exactly why it is the FAR tier — anything near the camera is a real
+   * prism with all of that intact, and its box is hidden.
+   */
+  const boxGeo = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
+  const far = new THREE.InstancedMesh(
+    boxGeo,
+    new THREE.MeshLambertMaterial({ flatShading: true }),
+    Math.max(1, store.count),
+  );
+  far.frustumCulled = false; // one mesh spanning the whole map
+  far.castShadow = false; // the near prisms cast; boxes at range would not read
+  far.receiveShadow = true;
+  far.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  group.add(far);
+
+  const m4 = new THREE.Matrix4();
+  const col = new THREE.Color();
+
+  /** Oriented box for one building, from the longest footprint edge. An
+   * axis-aligned box would fatten every diagonal building; using the longest
+   * edge as the axis keeps blocks looking like blocks. */
+  function setBox(bi: number, hidden: boolean): void {
+    if (!city.valid[bi] || hidden) {
+      m4.makeScale(0, 0, 0);
+      far.setMatrixAt(bi, m4);
+      return;
+    }
+    const from = ringBase(store, bi, 0);
+    const n = ringLength(store, bi, 0);
+    const c = store.coords;
+    let ux = 1;
+    let uy = 0;
+    let best = -1;
+    for (let i = 0; i < n; i++) {
+      const p = (from + i) * 2;
+      const q = (from + ((i + 1) % n)) * 2;
+      const dx = c[q]! - c[p]!;
+      const dy = c[q + 1]! - c[p + 1]!;
+      const len = dx * dx + dy * dy;
+      if (len > best) {
+        best = len;
+        const l = Math.sqrt(len) || 1;
+        ux = dx / l;
+        uy = dy / l;
+      }
+    }
+    let uMin = Infinity;
+    let uMax = -Infinity;
+    let vMin = Infinity;
+    let vMax = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const p = (from + i) * 2;
+      const u = c[p]! * ux + c[p + 1]! * uy;
+      const v = -c[p]! * uy + c[p + 1]! * ux;
+      if (u < uMin) uMin = u;
+      if (u > uMax) uMax = u;
+      if (v < vMin) vMin = v;
+      if (v > vMax) vMax = v;
+    }
+    const cu = (uMin + uMax) / 2;
+    const cv = (vMin + vMax) / 2;
+    // Back to world: the frame is (u along the edge, v perpendicular).
+    const wx = cu * ux - cv * uy;
+    const wy = cu * uy + cv * ux;
+    // Match pushPrism's roof height so the tiers agree where they meet.
+    const h = 1 + buildingHeight(store, bi);
+    m4.makeRotationY(-Math.atan2(uy, ux));
+    m4.scale(new THREE.Vector3(Math.max(0.5, uMax - uMin), h, Math.max(0.5, vMax - vMin)));
+    m4.setPosition(wx, city.baseZ[bi]!, -wy);
+    far.setMatrixAt(bi, m4);
+  }
+
+  for (let bi = 0; bi < store.count; bi++) {
+    setBox(bi, false);
+    const palette = palettes.get(buildingUse(store, bi)) ?? palettes.get("other")!;
+    const qx = Math.round(city.cx[bi]! / 45);
+    const qy = Math.round(city.cy[bi]! / 45);
+    const hash = ((qx * 73856093) ^ (qy * 19349663)) >>> 0;
+    const rgb = palette[hash % palette.length]!;
+    far.setColorAt(bi, col.setRGB(rgb[0]!, rgb[1]!, rgb[2]!));
+  }
+  far.instanceMatrix.needsUpdate = true;
+  if (far.instanceColor) far.instanceColor.needsUpdate = true;
+
+  /** Show or hide a tile's boxes — hidden exactly when its prisms are up, so
+   * the two tiers never overlap and never z-fight. */
+  function setFarTile(t: number, hidden: boolean): void {
+    const from = store.tileStart[t]!;
+    const to = store.tileStart[t + 1]!;
+    for (let bi = from; bi < to; bi++) setBox(bi, hidden);
+    far.instanceMatrix.needsUpdate = true;
+  }
 
   /** Resident tiles by index into store.tileKey. */
   const live = new Map<number, THREE.Mesh[]>();
@@ -1163,6 +1269,7 @@ export function createBuildingTiles(
       residentVerts += (m.geometry.getAttribute("position") as THREE.BufferAttribute).count;
     }
     live.set(t, meshes);
+    setFarTile(t, true);
   }
 
   function evict(t: number): void {
@@ -1177,11 +1284,13 @@ export function createBuildingTiles(
     // The buildings themselves keep existing — only their geometry is gone.
     shells.forget(store.tileStart[t]!, store.tileStart[t + 1]!);
     live.delete(t);
+    setFarTile(t, false);
   }
 
   return {
     group,
     shells,
+    far,
     sync(want: Iterable<number>): { built: [number, number][]; evicted: number } {
       const keep = want instanceof Set ? (want as Set<number>) : new Set(want);
       const built: [number, number][] = [];
