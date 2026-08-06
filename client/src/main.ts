@@ -141,9 +141,9 @@ async function boot(): Promise<void> {
   const world = next.value;
   log.line(`city built in ${((performance.now() - t0) / 1000).toFixed(2)}s`, "ok");
 
-  done = log.step("planting trees and street lights");
+  done = log.step("indexing trees and street lights");
   const propLayers = buildProps(map, props, hf);
-  done(`${props.count} placed`);
+  done(`${props.count} indexed — tiles stream with the camera`);
   await paint();
 
   done = log.step("labeling landmarks");

@@ -55,6 +55,19 @@ export interface PropLayers {
   /** Lamplight pools — kept OUT of `group` so the city keeps its night glow
    * at any zoom, even when the lamp geometry itself is culled. */
   glow: THREE.Group;
+  /**
+   * Make exactly these 1 km tiles resident, building and evicting as needed.
+   * Returns true when anything changed, so the caller can restore state that
+   * lives on the meshes — burnt tree tints, most of all.
+   *
+   * Props are ~864k instances and 59 MB of matrices city-wide, and they are
+   * already invisible above PROPS_VIEW. Streaming them at a radius WIDER than
+   * that gate means nothing ever pops: a tile leaves the resident set only
+   * once it is too far to be drawn anyway.
+   */
+  sync(want: Iterable<number>): boolean;
+  /** Build the whole city — headless tools and the FPV prop set. */
+  buildAll(): void;
   /** Day/night dial: 0 = daylight (lamps off) .. 1 = deep night (full glow). */
   setNight(n: number): void;
   /** Small street furniture — signs, signals, meters, benches, racks, speed
@@ -181,7 +194,22 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
   const one = new THREE.Vector3(1, 1, 1);
   const color = new THREE.Color();
 
-  for (const bucket of byTile.values()) {
+  /** Tiles currently built, and the meshes each contributed. */
+  const live = new Map<number, THREE.Object3D[]>();
+  /** Tree slots each tile registered, so eviction can drop exactly those.
+   * Scanning treeSlots for the meshes being evicted would be a 252k-entry
+   * sweep per mesh, several times per tile crossing. */
+  const liveTrees = new Map<number, number[]>();
+
+  function buildTile(key: number): void {
+    const bucket = byTile.get(key);
+    if (!bucket || live.has(key)) return;
+    const made: THREE.Object3D[] = [];
+    const add = (parent: THREE.Group, ...ms: THREE.Object3D[]): void => {
+      parent.add(...ms);
+      made.push(...ms);
+    };
+    {
     if (bucket.trees.length) {
       const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, bucket.trees.length);
       const canopies = new THREE.InstancedMesh(canopyGeo, canopyMat, bucket.trees.length);
@@ -201,7 +229,7 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
         const gi = treeGi.get(pi);
         if (gi !== undefined) treeSlots.set(gi, { mesh: canopies, i });
       });
-      group.add(trunks, canopies);
+      add(group, trunks, canopies);
     }
     if (bucket.signs.length) {
       const poles = new THREE.InstancedMesh(poleGeo, poleMat, bucket.signs.length);
@@ -218,7 +246,7 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
         faces.setMatrixAt(i, m);
         faces.setColorAt(i, color.setHex(SIGN_FACE[SIGN_VARIANTS[store.variant[pi]!] ?? "other"]!));
       });
-      near.add(poles, faces);
+      add(near, poles, faces);
     }
     if (bucket.signals.length) {
       const poles = new THREE.InstancedMesh(sigPoleGeo, sigPoleMat, bucket.signals.length);
@@ -232,7 +260,7 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
         m.makeTranslation(toScene(si.x, si.y, gz + 4.6 * s));
         heads.setMatrixAt(i, m);
       });
-      near.add(poles, heads);
+      add(near, poles, heads);
     }
     if (bucket.lights.length) {
       const poles = new THREE.InstancedMesh(lightPoleGeo, lightPoleMat, bucket.lights.length);
@@ -251,8 +279,8 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
       });
       pool.visible = false;
       pools.push(pool);
-      group.add(poles, heads);
-      glow.add(pool);
+      add(group, poles, heads);
+      add(glow, pool);
     }
     if (bucket.meters.length) {
       const poles = new THREE.InstancedMesh(meterGeo, meterMat, bucket.meters.length);
@@ -266,7 +294,7 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
         m.compose(toScene(si.x, si.y, gz + 1.4 * s), q, one);
         heads.setMatrixAt(i, m);
       });
-      near.add(poles, heads);
+      add(near, poles, heads);
     }
     if (bucket.furniture.length) {
       const benches = new THREE.InstancedMesh(benchGeo, benchMat, bucket.furniture.length);
@@ -276,7 +304,7 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
         m.compose(toScene(si.x, si.y, g(si.x, si.y) + 0.25 * s), q, one);
         benches.setMatrixAt(i, m);
       });
-      near.add(benches);
+      add(near, benches);
     }
     if (bucket.racks.length) {
       const racks = new THREE.InstancedMesh(rackGeo, rackMat, bucket.racks.length);
@@ -286,7 +314,7 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
         m.compose(toScene(si.x, si.y, g(si.x, si.y) + 0.42 * s), q, one);
         racks.setMatrixAt(i, m);
       });
-      near.add(racks);
+      add(near, racks);
     }
     if (bucket.bumps.length) {
       const bumps = new THREE.InstancedMesh(bumpGeo, bumpMat, bucket.bumps.length);
@@ -295,7 +323,7 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
         m.makeTranslation(toScene(si.x, si.y, g(si.x, si.y) + 0.32 * s));
         bumps.setMatrixAt(i, m);
       });
-      near.add(bumps);
+      add(near, bumps);
     }
     if (bucket.hydrants.length) {
       const barrels = new THREE.InstancedMesh(hydrantGeo, hydrantMat, bucket.hydrants.length);
@@ -308,15 +336,53 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
         m.makeTranslation(toScene(si.x, si.y, gz + 0.62 * s));
         caps.setMatrixAt(i, m);
       });
-      near.add(barrels, caps);
+      add(near, barrels, caps);
     }
   }
+    live.set(key, made);
+    liveTrees.set(key, bucket.trees.map((pi) => treeGi.get(pi)!).filter((gi) => gi !== undefined));
+  }
+
+  function evictTile(key: number): void {
+    const made = live.get(key);
+    if (!made) return;
+    for (const o of made) {
+      o.removeFromParent();
+      if (o instanceof THREE.Mesh) o.geometry.dispose();
+      if (o instanceof THREE.InstancedMesh) {
+        const at = pools.indexOf(o);
+        if (at >= 0) pools.splice(at, 1);
+      }
+    }
+    for (const gi of liveTrees.get(key) ?? []) treeSlots.delete(gi);
+    liveTrees.delete(key);
+    live.delete(key);
+  }
+
   const dayOff = new THREE.Color(0x565c66);
   const nightOn = new THREE.Color(0xffd9a0);
   return {
     group,
     near,
     glow,
+    sync(want: Iterable<number>): boolean {
+      const keep = want instanceof Set ? (want as Set<number>) : new Set(want);
+      let changed = false;
+      for (const key of [...live.keys()]) {
+        if (keep.has(key)) continue;
+        evictTile(key);
+        changed = true;
+      }
+      for (const key of keep) {
+        if (live.has(key) || !byTile.has(key)) continue;
+        buildTile(key);
+        changed = true;
+      }
+      return changed;
+    },
+    buildAll(): void {
+      for (const key of byTile.keys()) buildTile(key);
+    },
     setNight(n: number): void {
       lightHeadMat.color.copy(dayOff).lerp(nightOn, n);
       poolMat.opacity = 0.5 * n;

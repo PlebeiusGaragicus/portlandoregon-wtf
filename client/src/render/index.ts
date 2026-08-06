@@ -50,6 +50,14 @@ const PRISM_FAR_VIEW = 3000; // below: 3x3. above: boxes alone read fine
  * them at all. They were 18.6M vertices city-wide and are subpixel past
  * PROPS_VIEW anyway. */
 const DETAIL_RADIUS = 2;
+/**
+ * Prop tiles, wider than anything that draws them: 4.5 km against PROPS_VIEW's
+ * 3 km and FPV's 3.8 km glow range. Trees popping in would be far more
+ * noticeable than sidewalks, so a tile is evicted only once it is already
+ * invisible either way. 9x9 tiles of props is a few MB against 59 MB for the
+ * city, which is why the radius can afford to be generous.
+ */
+const PROP_RADIUS = 4;
 
 export interface PrebuiltLayers {
   world: WorldLayers;
@@ -120,8 +128,6 @@ export class Renderer {
   private skyBodyMat: THREE.MeshBasicMaterial | null = null;
   private fpvProps: PropLayers | null = null;
   /** FPV distance culling: small geometry hidden past its threshold. */
-  private fpvCull: { obj: THREE.Object3D; x: number; z: number; range: number }[] = [];
-  private fpvCullDirty = false;
   private fpv: FpvMode | null = null;
   private fpvOn = false;
   private fpvHint: HTMLDivElement;
@@ -355,37 +361,9 @@ export class Renderer {
       this.fpvProps.setNight(this.daynight.night);
       this.fire.addPropSet(this.fpvProps);
       this.scene.add(this.fpvProps.group, this.fpvProps.glow);
-      // Distance-cull registry: 1 km prop/paint tiles vanish once they're too
-      // far to read; the altitude fog swallows the transition.
-      const seen = new Set<THREE.Object3D>();
-      const register = (root: THREE.Object3D, range: number): void => {
-        root.traverse((o) => {
-          if (!(o instanceof THREE.Mesh) || seen.has(o)) return;
-          seen.add(o);
-          let c: THREE.Vector3;
-          let rad: number;
-          if (o instanceof THREE.InstancedMesh) {
-            // Instanced tiles (trees, hydrants, furniture): the GEOMETRY
-            // sphere sits at the origin — bounds must come from the
-            // instance matrices or the whole tile culls out everywhere.
-            o.computeBoundingSphere();
-            c = o.boundingSphere!.center;
-            rad = o.boundingSphere!.radius;
-          } else {
-            if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere();
-            c = o.geometry.boundingSphere!.center;
-            rad = o.geometry.boundingSphere!.radius;
-          }
-          this.fpvCull.push({ obj: o, x: c.x, z: c.z, range: range + rad });
-        });
-      };
-      register(this.fpvProps.near, 2200); // street furniture: unreadable past 2 km
-      register(this.fpvProps.group, 3200); // trees/street lights
-      register(this.fpvProps.glow, 3800);
-      // world.detail is deliberately NOT registered any more. It streams now,
-      // so this list — built once on entry — went stale the moment a tile was
-      // evicted, and kept the evicted mesh alive by holding a reference to it.
-      // The 5x5 tile window is a tighter bound than the 2400 m cull was.
+      // No distance-cull registry any more: prop and dressing tiles stream on
+      // a radius tighter than the ranges it used, and it kept evicted meshes
+      // alive by holding references to them.
     }
     // Enter skydiving from roughly the map camera's altitude — dramatic from
     // street zoom, capped so strategic view doesn't mean a minute of freefall.
@@ -673,13 +651,16 @@ export class Renderer {
     // Two independent windows: prisms upgrade the boxes near the camera,
     // dressing exists wherever the zoom gate would show it.
     const detailRadius = viewHeight < PROPS_VIEW ? DETAIL_RADIUS : -1;
+    const propRadius = viewHeight < PROPS_VIEW ? PROP_RADIUS : -1;
     const want: number[] = [];
     const detailKeys: number[] = [];
-    const span = Math.max(radius, detailRadius);
+    const propKeys: number[] = [];
+    const span = Math.max(radius, detailRadius, propRadius);
     for (let dy = -span; dy <= span; dy++) {
       for (let dx = -span; dx <= span; dx++) {
         const key = tileKeyAt((cx + dx) * store.tileSize, (cy + dy) * store.tileSize, store.tileSize);
         if (Math.abs(dx) <= detailRadius && Math.abs(dy) <= detailRadius) detailKeys.push(key);
+        if (Math.abs(dx) <= propRadius && Math.abs(dy) <= propRadius) propKeys.push(key);
         if (Math.abs(dx) > radius || Math.abs(dy) > radius) continue;
         const t = findTile(store, key);
         if (t >= 0) want.push(t);
@@ -687,6 +668,12 @@ export class Renderer {
     }
     const { built } = this.world.buildings.sync(want);
     this.world.detailTiles.sync(detailKeys);
+    // Props stream one ring wider than the zoom gate that hides them, so a
+    // tile is only ever dropped once it is already invisible.
+    let propsChanged = this.props.sync(propKeys);
+    // The life-size FPV set streams on the same window.
+    if (this.fpvProps && this.fpvProps.sync(propKeys)) propsChanged = true;
+    if (propsChanged) this.fire.repaintTrees();
     // A rebuilt tile comes back pristine — the fire sim owns what happened to
     // it, so it repaints the damage. This is why scars had to move out of the
     // colour buffer before tiling could exist.
@@ -760,24 +747,12 @@ export class Renderer {
       this.compass.style.setProperty("--rot", `${this.fpv.yaw}rad`);
       this.sky!.position.copy(this.camera.position);
       this.updateSkyBody();
-      const cx = this.camera.position.x;
-      const cz = this.camera.position.z;
-      for (const e of this.fpvCull) {
-        e.obj.visible = (e.x - cx) ** 2 + (e.z - cz) ** 2 < e.range * e.range;
-      }
-      this.fpvCullDirty = true;
       this.applyDayNight(this.fpv.x, this.fpv.y, this.fpv.z, true);
       this.webgl.render(this.scene, this.camera);
       requestAnimationFrame(() => this.frame());
       return;
     }
     if (this.scene.fog) this.scene.fog = null;
-    if (this.fpvCullDirty) {
-      // FPV prop sets are hidden in the map view anyway, but restoring them
-      // keeps the two modes from disagreeing about what is visible.
-      for (const e of this.fpvCull) e.obj.visible = true;
-      this.fpvCullDirty = false;
-    }
     if (this.sky) this.sky.visible = false;
     if (this.skyBody) this.skyBody.visible = false;
     this.props.glow.visible = true;

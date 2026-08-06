@@ -495,7 +495,18 @@ export class FireSim {
   /** Prop sets whose trees this sim recolors (map set + lazy FPV set). */
   addPropSet(p: PropLayers): void {
     this.propSets.push(p);
-    // A late-built set must show already-burnt trees.
+    this.repaintTrees();
+  }
+
+  /**
+   * Re-apply every burning and burnt tree's tint.
+   *
+   * Prop tiles stream, so a tree's instanced slot comes and goes; a rebuilt
+   * tile gets fresh green canopies regardless of what happened to them. The
+   * sim owns tree state, so it repaints — the same split as buildings, where
+   * ScarField owns the damage and restoreAppearance puts it back.
+   */
+  repaintTrees(): void {
     for (const gi of this.burningTrees) this.paintTreeState(gi);
     for (let gi = 0; gi < this.trees.length; gi++) {
       if (this.trees[gi]!.state === 2) this.paintTreeState(gi);

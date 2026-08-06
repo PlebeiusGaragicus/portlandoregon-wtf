@@ -175,8 +175,8 @@ export class Controls {
       if (!this.active) return;
       const k = e.key.toLowerCase();
       if (e.repeat) return;
-      if (k === "q") this.snapRotate(1);
-      else if (k === "e") this.snapRotate(-1);
+      if (k === "q") this.snapRotate(-1);
+      else if (k === "e") this.snapRotate(1);
       else if (k === "n") this.faceNorth();
       else if (k === "escape") this.delegate.deselect();
       else this.keys.add(k);
