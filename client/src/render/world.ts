@@ -30,33 +30,81 @@ const WATER_COLOR = 0x1b2f42; // deep river blue
 const PARK_COLOR = 0x2c4434; // greenspace
 const TRAIL_COLOR = 0x6b5f4c; // dirt path
 const STREET_COLOR = 0x3a4150; // asphalt
-const WATER_Y = 0.1; // between ground and streets
-const PARK_Y = 0.18;
 const SIDEWALK_COLOR = 0x555c66; // concrete, lighter than asphalt
-// Draped layers hug the terrain: centimeter hovers order the paved layers
-// among themselves, while a shared polygonOffset depth bias wins the fight
-// against the ground mesh itself — decals painted on the ground, not paper
-// sheets floating above it. The bias must be IDENTICAL for every decal:
-// its slope-scaled term varies per triangle, so distinct biases between
-// near-coplanar layers tear into sawtooth patches on steep grazing views.
+/**
+ * Every flat paved layer sits at ONE height, and their order is decided by
+ * draw order rather than by geometry.
+ *
+ * They used to be stacked in centimetre steps — street 0.09, rail 0.10, stop
+ * 0.12, marking 0.15, trail 0.18 — with a shared polygonOffset bias holding
+ * the whole stack above the terrain. That works only while a draped triangle
+ * stays within a centimetre or two of the ground it is painted on, and it
+ * doesn't: measured on real tiles, rail inverted against street across 11% of
+ * the ground they share, because the gap between them was 1 cm and the drape
+ * error is larger than that almost everywhere interesting.
+ *
+ * A hover cannot express layer order at this scale. So none of them hover
+ * relative to each other: they are coplanar, they do not write depth (so they
+ * never depth-test against each other), and DECAL_ORDER decides who paints
+ * last. Ordering becomes exact and terrain-independent.
+ *
+ * The polygonOffset bias still does its original job — winning against the
+ * terrain mesh — and must stay IDENTICAL for every decal: its slope-scaled
+ * term varies per triangle, so distinct biases between coplanar layers tear
+ * into sawtooth patches on steep grazing views.
+ */
+const DECAL_Y = 0.09;
+/** Assign a decal's place in the paint order. Coplanar decals write no
+ * depth, so this is the ONLY thing deciding which one is visible. */
+function order<T extends THREE.Object3D>(meshes: T[], at: number): T[] {
+  for (const m of meshes) m.renderOrder = at;
+  return meshes;
+}
+
+/** Paint order, low to high. Terrain and buildings are 0. */
+const DECAL_ORDER = {
+  water: 1,
+  park: 2,
+  yard: 3,
+  trail: 4,
+  street: 5,
+  rail: 6,
+  railStop: 7,
+  marking: 8,
+  laneLine: 9,
+} as const;
+/** Sidewalks are the exception: a raised slab with skirt walls is real
+ * geometry, not paint, so it keeps writing depth and occludes properly. It
+ * draws before the decals so its depth is there to reject anything the curb
+ * covers. */
+const SIDEWALK_ORDER = 0.5;
 const SIDEWALK_Y = 0.03;
 const CURB_H = 0.14; // raised concrete: sidewalk tops sit a curb above grade
-const STREET_Y = 0.09;
 // Rendered curb-to-curb widths, wider than the baked graph widths: the paved
 // roadway should fill its right-of-way up to the sidewalks, leaving only a
 // planting strip. (edge.width stays the sim/graph number.)
 const RENDER_WIDTH: Record<RoadClass, number> = { arterial: 17, collector: 13.5, local: 11, alley: 5, path: 2.5 };
 const MARK_WHITE = 0xb9c0c8; // painted pavement markings
 const MARK_YELLOW = 0xc2a53a;
-const MARK_Y = 0.15;
-const TRAIL_Y = 0.18;
 
-/** Decal-style material: drawn essentially on the terrain surface, pulled
- * toward the camera in depth so it always wins against the ground mesh. */
-function decalMat(opts: THREE.MeshLambertMaterialParameters): THREE.MeshLambertMaterial {
+/**
+ * Decal-style material: drawn essentially on the terrain surface, pulled
+ * toward the camera in depth so it always wins against the ground mesh.
+ *
+ * `solid` opts out of the coplanar scheme for geometry that has real height
+ * (sidewalk slabs): it writes depth so it can occlude, at the cost of being
+ * ordered by depth rather than by draw order.
+ */
+function decalMat(
+  opts: THREE.MeshLambertMaterialParameters & { solid?: boolean },
+): THREE.MeshLambertMaterial {
+  const { solid, ...rest } = opts;
   return new THREE.MeshLambertMaterial({
-    ...opts,
+    ...rest,
     side: THREE.DoubleSide,
+    // Coplanar decals must not depth-test against each other — with no depth
+    // written, the only thing they test against is the terrain.
+    depthWrite: solid === true,
     polygonOffset: true,
     polygonOffsetFactor: -2,
     polygonOffsetUnits: -2,
@@ -109,9 +157,6 @@ const RAIL_STYLE: Record<RailLine["kind"], { color: number; width: number }> = {
   wes: { color: 0x8055d9, width: 3.2 },
 };
 const YARD_COLOR = 0x36322b; // ballast/gravel
-const YARD_Y = 0.14; // flat-fallback only (with terrain, yards are painted in)
-const RAIL_Y = 0.1; // over streets/trails so crossings read
-const STOP_Y = 0.12;
 const STOP_RADIUS = 5; // m platform disc
 
 // Tile size for chunked meshes — one merged mesh per tile so the GPU
@@ -337,12 +382,12 @@ export function* buildWorldSteps(
     for (const mesh of buildTerrainTiles(map, hf)) group.add(mesh);
   } else {
     group.add(buildGround(map));
-    const parks = flatPolys(map.parks ?? [], PARK_COLOR, PARK_Y);
-    if (parks) group.add(parks);
-    const water = flatPolys(map.water ?? [], WATER_COLOR, WATER_Y);
-    if (water) group.add(water);
-    const yards = flatPolys(map.railYards ?? [], YARD_COLOR, YARD_Y);
-    if (yards) group.add(yards);
+    const parks = flatPolys(map.parks ?? [], PARK_COLOR, DECAL_Y);
+    if (parks) group.add(...order([parks], DECAL_ORDER.park));
+    const water = flatPolys(map.water ?? [], WATER_COLOR, DECAL_Y);
+    if (water) group.add(...order([water], DECAL_ORDER.water));
+    const yards = flatPolys(map.railYards ?? [], YARD_COLOR, DECAL_Y);
+    if (yards) group.add(...order([yards], DECAL_ORDER.yard));
   }
 
   // Ribbon legs that cross water are bridges: their deck spans between the
@@ -357,16 +402,18 @@ export function* buildWorldSteps(
 
   yield `${(map.trails ?? []).length} trails`;
   const trails = buildTrails(map.trails ?? [], ground, cell, overWater);
-  if (trails) group.add(trails);
+  if (trails) group.add(...order([trails], DECAL_ORDER.trail));
 
   yield `${map.edges.length} street edges`;
   const streetMat = decalMat({ color: STREET_COLOR });
-  for (const mesh of buildStreetTiles(map.edges, streetMat, ground, cell, overWater)) group.add(mesh);
+  for (const mesh of order(buildStreetTiles(map.edges, streetMat, ground, cell, overWater), DECAL_ORDER.street)) {
+    group.add(mesh);
+  }
 
   yield `${(map.rails ?? []).length} rail lines + ${(map.railStops ?? []).length} stops`;
-  for (const mesh of buildRails(map.rails ?? [], ground, cell, overWater)) group.add(mesh);
+  for (const mesh of order(buildRails(map.rails ?? [], ground, cell, overWater), DECAL_ORDER.rail)) group.add(mesh);
   const stops = buildRailStops(map.railStops ?? [], ground);
-  if (stops) group.add(stops);
+  if (stops) group.add(...order([stops], DECAL_ORDER.railStop));
 
   yield `${map.buildings.length} building prisms`;
   const landmarkBuildings = new Map<number, Landmark["kind"]>();
@@ -378,17 +425,23 @@ export function* buildWorldSteps(
   const detail = new THREE.Group();
   group.add(detail);
   yield `${(map.sidewalks ?? []).length} sidewalk slabs`;
-  for (const mesh of drapedPolyTiles(
-    (map.sidewalks ?? []).map((s) => ({ rings: s.rings, color: SIDEWALK_COLOR })),
-    SIDEWALK_Y,
-    ground,
-    CURB_H,
+  for (const mesh of order(
+    drapedPolyTiles(
+      (map.sidewalks ?? []).map((s) => ({ rings: s.rings, color: SIDEWALK_COLOR })),
+      SIDEWALK_Y,
+      ground,
+      CURB_H,
+    ),
+    SIDEWALK_ORDER,
   )) detail.add(mesh);
   yield `${(map.markingAreas ?? []).length} painted areas + ${(map.markingLines ?? []).length} lane lines`;
-  for (const mesh of drapedPolyTiles(
-    (map.markingAreas ?? []).map((a) => ({ rings: a.rings, color: a.style === "yellow" ? MARK_YELLOW : MARK_WHITE })),
-    MARK_Y,
-    ground,
+  for (const mesh of order(
+    drapedPolyTiles(
+      (map.markingAreas ?? []).map((a) => ({ rings: a.rings, color: a.style === "yellow" ? MARK_YELLOW : MARK_WHITE })),
+      DECAL_Y,
+      ground,
+    ),
+    DECAL_ORDER.marking,
   )) detail.add(mesh);
   {
     const laneTiles = new Map<number, Soup>();
@@ -396,10 +449,11 @@ export function* buildWorldSteps(
       const [mx, my] = l.polyline[Math.floor(l.polyline.length / 2)]!;
       let soup = laneTiles.get(tileKey(mx, my));
       if (!soup) laneTiles.set(tileKey(mx, my), (soup = { pos: [], nrm: [] }));
-      pushRibbon(soup.pos, l.polyline, 0.35, MARK_Y, ground, cell);
+      pushRibbon(soup.pos, l.polyline, 0.35, DECAL_Y, ground, cell);
     }
     const laneMat = decalMat({ color: MARK_YELLOW });
-    for (const soup of laneTiles.values()) detail.add(soupMesh(soup, laneMat));
+    const lanes = [...laneTiles.values()].map((soup) => soupMesh(soup, laneMat));
+    for (const mesh of order(lanes, DECAL_ORDER.laneLine)) detail.add(mesh);
   }
 
   const streetNear = new THREE.Color(STREET_COLOR);
@@ -647,7 +701,7 @@ function drapedPolyTiles(
   }
   const meshes: THREE.Mesh[] = [];
   for (const [color, tiles] of byColor) {
-    const mat = decalMat({ color });
+    const mat = decalMat({ color, solid: curb > 0 });
     for (const soup of tiles.values()) meshes.push(soupMesh(soup, mat));
   }
   return meshes;
@@ -741,7 +795,7 @@ function buildTrails(
   if (trails.length === 0) return null;
   const soup: Soup = { pos: [], nrm: [] };
   for (const t of trails) {
-    pushRibbon(soup.pos, t.polyline, 2.5, TRAIL_Y, ground, cell, overWater(t.polyline));
+    pushRibbon(soup.pos, t.polyline, 2.5, DECAL_Y, ground, cell, overWater(t.polyline));
   }
   if (soup.pos.length === 0) return null;
   return soupMesh(soup, decalMat({ color: TRAIL_COLOR }));
@@ -778,7 +832,7 @@ function buildStreetTiles(
     let soup = tiles.get(key);
     if (!soup) tiles.set(key, (soup = { pos: [], nrm: [] }));
     const span = edge.struct === "bridge" || overWater(edge.polyline);
-    pushRibbon(soup.pos, edge.polyline, RENDER_WIDTH[edge.class] ?? edge.width, STREET_Y, ground, cell, span);
+    pushRibbon(soup.pos, edge.polyline, RENDER_WIDTH[edge.class] ?? edge.width, DECAL_Y, ground, cell, span);
   }
   return [...tiles.values()].map((soup) => soupMesh(soup, mat));
 }
@@ -917,7 +971,7 @@ function buildRails(
   for (const r of rails) {
     let soup = soups.get(r.kind);
     if (!soup) soups.set(r.kind, (soup = { pos: [], nrm: [] }));
-    pushRibbon(soup.pos, r.polyline, RAIL_STYLE[r.kind].width, RAIL_Y, ground, cell, overWater(r.polyline));
+    pushRibbon(soup.pos, r.polyline, RAIL_STYLE[r.kind].width, DECAL_Y, ground, cell, overWater(r.polyline));
   }
   return [...soups.entries()].map(([kind, soup]) =>
     soupMesh(soup, decalMat({ color: RAIL_STYLE[kind].color })),
@@ -931,7 +985,7 @@ function buildRailStops(stops: RailStop[], ground: GroundFn): THREE.Mesh | null 
   const SEGS = 12;
   for (const s of stops) {
     const c = new THREE.Color(RAIL_STYLE[s.kind].color).multiplyScalar(1.35);
-    const y = STOP_Y + ground(s.x, s.y);
+    const y = DECAL_Y + ground(s.x, s.y);
     for (let i = 0; i < SEGS; i++) {
       const a0 = (i / SEGS) * Math.PI * 2;
       const a1 = ((i + 1) / SEGS) * Math.PI * 2;
