@@ -1,5 +1,13 @@
 import * as THREE from "three";
-import { heightAt, type GameMap, type Heightfield } from "@battle-juice/shared";
+import {
+  buildingHeight,
+  heightAt,
+  ringBase,
+  ringLength,
+  type BuildingStore,
+  type GameMap,
+  type Heightfield,
+} from "@battle-juice/shared";
 import type { CityModel } from "../city.js";
 import { toScene } from "./camera.js";
 
@@ -46,22 +54,27 @@ class SolidIndex {
   private cols: number;
   private rows: number;
 
-  constructor(map: GameMap, city: CityModel) {
+  constructor(map: GameMap, store: BuildingStore, city: CityModel) {
     this.cols = Math.max(1, Math.ceil(map.meta.width / CELL));
     this.rows = Math.max(1, Math.ceil(map.meta.height / CELL));
-    // Solid index == map.buildings index (see `dead`), which is also the city
+    // Solid index == building store index (see `dead`), which is also the city
     // model's index — every building gets an entry, degenerate or not.
-    for (let bi = 0; bi < map.buildings.length; bi++) {
-      const b = map.buildings[bi]!;
+    const coords = store.coords;
+    for (let bi = 0; bi < store.count; bi++) {
       let xmin = Infinity;
       let ymin = Infinity;
       let xmax = -Infinity;
       let ymax = -Infinity;
       const segs: number[] = [];
-      const ring = b.footprint;
-      for (let i = 0; i < ring.length; i++) {
-        const [x1, y1] = ring[i]!;
-        const [x2, y2] = ring[(i + 1) % ring.length]!;
+      const from = ringBase(store, bi, 0);
+      const n = ringLength(store, bi, 0);
+      for (let i = 0; i < n; i++) {
+        const p = (from + i) * 2;
+        const q = (from + ((i + 1) % n)) * 2;
+        const x1 = coords[p]!;
+        const y1 = coords[p + 1]!;
+        const x2 = coords[q]!;
+        const y2 = coords[q + 1]!;
         segs.push(x1, y1, x2, y2);
         xmin = Math.min(xmin, x1);
         ymin = Math.min(ymin, y1);
@@ -70,7 +83,7 @@ class SolidIndex {
       }
       // The city model sinks the prism base 1 m (so uphill walls show no gap);
       // the roof you can stand on is the visible top, so add it back.
-      this.solids.push({ xmin, ymin, xmax, ymax, segs, top: city.baseZ[bi]! + 1 + b.height });
+      this.solids.push({ xmin, ymin, xmax, ymax, segs, top: city.baseZ[bi]! + 1 + buildingHeight(store, bi) });
       const c0 = this.clampC(Math.floor(xmin / CELL));
       const c1 = this.clampC(Math.floor(xmax / CELL));
       const r0 = this.clampR(Math.floor(ymin / CELL));
@@ -242,6 +255,7 @@ export class FpvMode {
 
   constructor(
     map: GameMap,
+    store: BuildingStore,
     hf: Heightfield | null,
     city: CityModel,
     start: { x: number; y: number },
@@ -249,7 +263,7 @@ export class FpvMode {
     dropHeight = 0,
   ) {
     this.terrain = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
-    this.solids = new SolidIndex(map, city);
+    this.solids = new SolidIndex(map, store, city);
     this.mapW = map.meta.width;
     this.mapH = map.meta.height;
     this.x = start.x;

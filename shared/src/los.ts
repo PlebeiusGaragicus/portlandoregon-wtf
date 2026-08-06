@@ -2,7 +2,8 @@
 // fire (docs/design.md terrain pillar); streets do not. Built to city scale:
 // buildings are bucketed into a uniform grid so a range-limited LOS query
 // touches only nearby footprints.
-import type { GameMap } from "./map.js";
+import type { MapMeta } from "./map.js";
+import { forEachRingVertex, ringLength, type BuildingStore } from "./mapbin.js";
 
 interface BuildingIndexEntry {
   xmin: number;
@@ -22,24 +23,32 @@ export interface LosIndex {
   rows: number;
 }
 
-export function buildLosIndex(map: GameMap): LosIndex {
+export function buildLosIndex(store: BuildingStore, meta: MapMeta): LosIndex {
   const buildings: BuildingIndexEntry[] = [];
-  const cols = Math.max(1, Math.ceil(map.meta.width / GRID_CELL));
-  const rows = Math.max(1, Math.ceil(map.meta.height / GRID_CELL));
+  const cols = Math.max(1, Math.ceil(meta.width / GRID_CELL));
+  const rows = Math.max(1, Math.ceil(meta.height / GRID_CELL));
   const grid = new Map<number, number[]>();
   const clampCol = (c: number): number => Math.max(0, Math.min(cols - 1, c));
   const clampRow = (r: number): number => Math.max(0, Math.min(rows - 1, r));
 
-  for (const b of map.buildings) {
+  for (let bi = 0; bi < store.count; bi++) {
     let xmin = Infinity;
     let ymin = Infinity;
     let xmax = -Infinity;
     let ymax = -Infinity;
     const segs: number[] = [];
-    const ring = b.footprint;
-    for (let i = 0; i < ring.length; i++) {
-      const [x1, y1] = ring[i]!;
-      const [x2, y2] = ring[(i + 1) % ring.length]!;
+    const n = ringLength(store, bi, 0);
+    const rx = new Float64Array(n);
+    const ry = new Float64Array(n);
+    forEachRingVertex(store, bi, 0, (x, y, i) => {
+      rx[i] = x;
+      ry[i] = y;
+    });
+    for (let i = 0; i < n; i++) {
+      const x1 = rx[i]!;
+      const y1 = ry[i]!;
+      const x2 = rx[(i + 1) % n]!;
+      const y2 = ry[(i + 1) % n]!;
       segs.push(x1, y1, x2, y2);
       xmin = Math.min(xmin, x1);
       ymin = Math.min(ymin, y1);

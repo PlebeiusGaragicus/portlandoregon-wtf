@@ -11,7 +11,7 @@
 // Node — no renderer is constructed), damages one the slow way and the other
 // in a single paint, and diffs every vertex colour in the scene.
 import * as THREE from "three";
-import type { GameMap } from "@battle-juice/shared";
+import { storeFromBuildings, type GameMap } from "@battle-juice/shared";
 import { ScarField } from "../client/src/scars.js";
 import { buildWorld, type WorldLayers } from "../client/src/render/world.js";
 
@@ -73,8 +73,8 @@ const CELL_R = 14;
  * about the damage on them. */
 const chars = (v: number[]): { char: number }[] => v.map((char) => ({ char }));
 
-const slow = buildWorld(map);
-const fast = buildWorld(map);
+const slow = buildWorld(map, storeFromBuildings(map.buildings));
+const fast = buildWorld(map, storeFromBuildings(map.buildings));
 check("two builds of one map are identical", diff(colors(slow), colors(fast)) === 0);
 
 const pristine = colors(slow).slice();
@@ -108,7 +108,7 @@ check("repaint is idempotent", diff(colors(slow), colors(fast)) === 0);
 // --- accumulation: the bug this record fixes ------------------------------
 // charLocal rebuilds pristine colours every call, so painting a later event's
 // sources ALONE erases earlier damage. Going through the record composes.
-const onlyBlast = buildWorld(map);
+const onlyBlast = buildWorld(map, storeFromBuildings(map.buildings));
 onlyBlast.shells.charLocal(0, [{ x: 138, y: 138, f: 0.6, r: 9 }]);
 check(
   "a blast alone would erase fire scars",

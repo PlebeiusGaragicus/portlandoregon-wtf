@@ -1,8 +1,14 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import {
+  buildingHeight,
+  buildingUse,
+  forEachRingVertex,
   heightAt,
-  type Building,
+  ringBase,
+  ringCount,
+  ringLength,
+  type BuildingStore,
   type GameMap,
   type Heightfield,
   type Landmark,
@@ -178,7 +184,7 @@ export interface WorldLayers {
  * Every building's vertex range inside its merged tile mesh, so the fire and
  * destruction sim can recolor (char) or rewrite (collapse to rubble) ONE
  * building in place — no per-building meshes, no soup rebuilds. Buildings
- * are addressed by their index in map.buildings.
+ * are addressed by their index in the building store.
  */
 export class BuildingShells {
   /** mesh slot per building (-1 = no geometry, e.g. degenerate footprint). */
@@ -192,11 +198,11 @@ export class BuildingShells {
   /** `baseZ` is borrowed from the city model, not copied: rebuilding a prism
    * has to use the SAME base the original build used, and the city model is
    * where that now comes from. */
-  constructor(private buildings: Building[], private baseZ: Float32Array) {
-    this.meshIdx = new Int32Array(buildings.length).fill(-1);
-    this.start = new Uint32Array(buildings.length);
-    this.vcount = new Uint32Array(buildings.length);
-    this.rgb = new Float32Array(buildings.length * 3);
+  constructor(private store: BuildingStore, private baseZ: Float32Array) {
+    this.meshIdx = new Int32Array(store.count).fill(-1);
+    this.start = new Uint32Array(store.count);
+    this.vcount = new Uint32Array(store.count);
+    this.rgb = new Float32Array(store.count * 3);
   }
 
   record(bi: number, meshIdx: number, vertStart: number, vertCount: number, rgb: number[]): void {
@@ -217,13 +223,12 @@ export class BuildingShells {
     const mi = this.meshIdx[bi]!;
     if (mi < 0) return;
     const mesh = this.meshes[mi];
-    const b = this.buildings[bi];
-    if (!mesh || !b) return;
+    if (!mesh) return;
     const col = mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
     // Rebuild the original per-vertex color pattern and lerp toward char —
     // no snapshots needed; the pattern is deterministic from the soup layout.
     const tmp: Soup = { pos: [], nrm: [], col: [] };
-    pushPrism(tmp, b, [this.rgb[bi * 3]!, this.rgb[bi * 3 + 1]!, this.rgb[bi * 3 + 2]!], this.baseZ[bi]!);
+    pushPrism(tmp, this.store, bi, [this.rgb[bi * 3]!, this.rgb[bi * 3 + 1]!, this.rgb[bi * 3 + 2]!], this.baseZ[bi]!);
     const s = this.start[bi]!;
     const n = this.vcount[bi]!;
     const [cr, cg, cb] = this.charRGB as [number, number, number];
@@ -250,16 +255,15 @@ export class BuildingShells {
     const mi = this.meshIdx[bi]!;
     if (mi < 0 || srcs.length === 0) return;
     const mesh = this.meshes[mi];
-    const b = this.buildings[bi];
-    if (!mesh || !b) return;
+    if (!mesh) return;
     const col = mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
     const tmp: Soup = { pos: [], nrm: [], col: [] };
-    pushPrism(tmp, b, [this.rgb[bi * 3]!, this.rgb[bi * 3 + 1]!, this.rgb[bi * 3 + 2]!], this.baseZ[bi]!);
+    pushPrism(tmp, this.store, bi, [this.rgb[bi * 3]!, this.rgb[bi * 3 + 1]!, this.rgb[bi * 3 + 2]!], this.baseZ[bi]!);
     const s = this.start[bi]!;
     const n = Math.min(this.vcount[bi]!, tmp.pos.length / 3);
     const [cr, cg, cb] = this.charRGB as [number, number, number];
     const base = this.baseZ[bi]!;
-    const hInv = 1 / Math.max(1, b.height);
+    const hInv = 1 / Math.max(1, buildingHeight(this.store, bi));
     const src = tmp.col!;
     for (let v = 0; v < n; v++) {
       const wx = tmp.pos[v * 3]!;
@@ -292,19 +296,19 @@ export class BuildingShells {
     const mi = this.meshIdx[bi]!;
     if (mi < 0) return;
     const mesh = this.meshes[mi];
-    const b = this.buildings[bi];
-    if (!mesh || !b) return;
+    if (!mesh) return;
     const tmp: Soup = { pos: [], nrm: [], col: [] };
-    const rubbleH = Math.max(1.4, Math.min(5, b.height * 0.16));
-    pushPrism(tmp, { ...b, height: rubbleH }, [0.16, 0.15, 0.14], this.baseZ[bi]!);
+    const rubbleH = Math.max(1.4, Math.min(5, buildingHeight(this.store, bi) * 0.16));
+    pushPrism(tmp, this.store, bi, [0.16, 0.15, 0.14], this.baseZ[bi]!, rubbleH);
     let ccx = 0;
     let ccy = 0;
-    for (const [px, py] of b.footprint) {
+    forEachRingVertex(this.store, bi, 0, (px, py) => {
       ccx += px;
       ccy += py;
-    }
-    ccx /= b.footprint.length;
-    ccy /= b.footprint.length;
+    });
+    const nOuter = Math.max(1, ringLength(this.store, bi, 0));
+    ccx /= nOuter;
+    ccy /= nOuter;
     const base = this.baseZ[bi]!;
     const nv = tmp.pos.length / 3;
     for (let v = 0; v < nv; v++) {
@@ -351,8 +355,13 @@ export class BuildingShells {
  *
  * Drains {@link buildWorldSteps}. Callers that want to report progress (the
  * boot console) should drive the generator instead. */
-export function buildWorld(map: GameMap, hf?: Heightfield | null, city?: CityModel): WorldLayers {
-  const it = buildWorldSteps(map, hf, city);
+export function buildWorld(
+  map: GameMap,
+  buildings: BuildingStore,
+  hf?: Heightfield | null,
+  city?: CityModel,
+): WorldLayers {
+  const it = buildWorldSteps(map, buildings, hf, city);
   let r = it.next();
   while (!r.done) r = it.next();
   return r.value;
@@ -367,8 +376,9 @@ export function buildWorld(map: GameMap, hf?: Heightfield | null, city?: CityMod
  */
 export function* buildWorldSteps(
   map: GameMap,
+  buildings: BuildingStore,
   hf?: Heightfield | null,
-  city: CityModel = buildCityModel(map, hf),
+  city: CityModel = buildCityModel(buildings, hf),
 ): Generator<string, WorldLayers, void> {
   const ground: GroundFn = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
   const group = new THREE.Group();
@@ -415,10 +425,10 @@ export function* buildWorldSteps(
   const stops = buildRailStops(map.railStops ?? [], ground);
   if (stops) group.add(...order([stops], DECAL_ORDER.railStop));
 
-  yield `${map.buildings.length} building prisms`;
+  yield `${buildings.count} building prisms`;
   const landmarkBuildings = new Map<number, Landmark["kind"]>();
   for (const m of map.landmarks ?? []) for (const id of m.buildingIds ?? []) landmarkBuildings.set(id, m.kind);
-  const { meshes: buildingMeshes, shells } = buildBuildingTiles(map.buildings, landmarkBuildings, city);
+  const { meshes: buildingMeshes, shells } = buildBuildingTiles(buildings, landmarkBuildings, city);
   for (const mesh of buildingMeshes) group.add(mesh);
 
   // Street-level dressing, in its own zoom-gated group.
@@ -1002,7 +1012,7 @@ function buildRailStops(stops: RailStop[], ground: GroundFn): THREE.Mesh | null 
 
 /** Buildings written straight into per-tile buffers (keyed by first vertex). */
 function buildBuildingTiles(
-  buildings: Building[],
+  store: BuildingStore,
   landmarks: Map<number, Landmark["kind"]>,
   city: CityModel,
 ): { meshes: THREE.Mesh[]; shells: BuildingShells } {
@@ -1018,27 +1028,26 @@ function buildBuildingTiles(
   // Landmark prisms get their own soup per kind: an emissive material makes
   // the building itself glow in its civic color, day and night.
   const lmSoups = new Map<Landmark["kind"], Soup>();
-  const shells = new BuildingShells(buildings, city.baseZ);
+  const shells = new BuildingShells(store, city.baseZ);
   // Per-building vertex ranges, resolved to mesh indices after the loop
   // (tile and landmark soups interleave while building).
   const pending: { bi: number; key: number | string; start: number; count: number; rgb: number[] }[] = [];
-  for (let bi = 0; bi < buildings.length; bi++) {
-    const b = buildings[bi]!;
+  for (let bi = 0; bi < store.count; bi++) {
     if (!city.valid[bi]) continue;
-    const [fx, fy] = b.footprint[0]!;
-    const key = tileKey(fx, fy);
+    const v0 = ringBase(store, bi, 0);
+    const key = tileKey(store.coords[v0 * 2]!, store.coords[v0 * 2 + 1]!);
     let soup = tiles.get(key);
     if (!soup) tiles.set(key, (soup = { pos: [], nrm: [], col: [] }));
     const base = city.baseZ[bi]!;
     const cx = city.cx[bi]!;
     const cy = city.cy[bi]!;
-    const landmarkKind = landmarks.get(b.id);
+    const landmarkKind = landmarks.get(store.id[bi]!);
     if (landmarkKind) {
       let ls = lmSoups.get(landmarkKind);
       if (!ls) lmSoups.set(landmarkKind, (ls = { pos: [], nrm: [], col: [] }));
       const lmRgb = LANDMARK_RGB.get(landmarkKind)!;
       const s0 = ls.pos.length / 3;
-      pushPrism(ls, b, lmRgb, base);
+      pushPrism(ls, store, bi, lmRgb, base);
       pending.push({ bi, key: `lm:${landmarkKind}`, start: s0, count: ls.pos.length / 3 - s0, rgb: lmRgb });
       continue;
     }
@@ -1046,13 +1055,13 @@ function buildBuildingTiles(
     // splits one building into stacked parts (podium/tower/penthouse), and
     // per-part colors painted those as random patches. Nearby parts of the
     // same use now share a tint, so the massing reads as ONE structure.
-    const palette = palettes.get(b.use ?? "other") ?? palettes.get("other")!;
+    const palette = palettes.get(buildingUse(store, bi)) ?? palettes.get("other")!;
     const qx = Math.round(cx / 45);
     const qy = Math.round(cy / 45);
     const hash = ((qx * 73856093) ^ (qy * 19349663)) >>> 0;
     const rgb = palette[hash % palette.length]!;
     const s0 = soup.pos.length / 3;
-    pushPrism(soup, b, rgb, base);
+    pushPrism(soup, store, bi, rgb, base);
     pending.push({ bi, key, start: s0, count: soup.pos.length / 3 - s0, rgb });
   }
   const material = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
@@ -1099,11 +1108,14 @@ function hash2(x: number, y: number): number {
   return s - Math.floor(s);
 }
 
-function pushPrism(soup: Soup, b: Building, rgb: number[], base = 0): void {
+/** One building's prism, read straight out of the store — no object graph,
+ * no per-vertex arrays. `height` overrides the stored height (collapse
+ * rebuilds the same footprint as a low rubble mound). */
+function pushPrism(soup: Soup, store: BuildingStore, bi: number, rgb: number[], base = 0, height?: number): void {
   // Tiny deterministic per-part lift: the footprint DB nests same-height
   // parts (podium duplicates), and exactly coplanar roofs shimmer.
-  const h = base + 1 + b.height + (b.id % 7) * 0.06;
-  const rings = [b.footprint, ...(b.holes ?? [])];
+  const h = base + 1 + (height ?? buildingHeight(store, bi)) + (store.id[bi]! % 7) * 0.06;
+  const nRings = ringCount(store, bi);
   const r = rgb[0]!;
   const g = rgb[1]!;
   const bl = rgb[2]!;
@@ -1111,10 +1123,16 @@ function pushPrism(soup: Soup, b: Building, rgb: number[], base = 0): void {
 
   // Walls: bottom vertices shaded, top full color — the GPU interpolates a
   // smooth ambient-occlusion-ish gradient up the facade.
-  for (const ring of rings) {
-    for (let i = 0; i < ring.length; i++) {
-      const [ax, ay] = ring[i]!;
-      const [bx, by] = ring[(i + 1) % ring.length]!;
+  for (let k = 0; k < nRings; k++) {
+    const from = ringBase(store, bi, k);
+    const n = ringLength(store, bi, k);
+    for (let i = 0; i < n; i++) {
+      const a = (from + i) * 2;
+      const bIdx = (from + ((i + 1) % n)) * 2;
+      const ax = store.coords[a]!;
+      const ay = store.coords[a + 1]!;
+      const bx = store.coords[bIdx]!;
+      const by = store.coords[bIdx + 1]!;
       const dx = bx - ax;
       const dy = by - ay;
       const len = Math.hypot(dx, dy);
@@ -1131,8 +1149,16 @@ function pushPrism(soup: Soup, b: Building, rgb: number[], base = 0): void {
   }
 
   // Roof: earcut over outer + holes (indices into the concatenated rings).
-  const outerV = b.footprint.map(([x, y]) => new THREE.Vector2(x, y));
-  const holesV = (b.holes ?? []).map((ring) => ring.map(([x, y]) => new THREE.Vector2(x, y)));
+  // THREE's triangulator wants Vector2s, so this is the one place a building
+  // still allocates — bounded by its own ring, not by the city.
+  const toV = (k: number): THREE.Vector2[] => {
+    const out: THREE.Vector2[] = [];
+    forEachRingVertex(store, bi, k, (x, y) => out.push(new THREE.Vector2(x, y)));
+    return out;
+  };
+  const outerV = toV(0);
+  const holesV: THREE.Vector2[][] = [];
+  for (let k = 1; k < nRings; k++) holesV.push(toV(k));
   const flat: THREE.Vector2[] = outerV.concat(...holesV);
   const triangles = THREE.ShapeUtils.triangulateShape(outerV, holesV);
   const rr = r * ROOF_SHADE;

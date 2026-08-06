@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
 import * as THREE from "three";
-import { decodeHeightfield, heightAt, latLonToWorld, type GameMap, type Heightfield } from "@battle-juice/shared";
+import { decodeHeightfield, heightAt, latLonToWorld, type GameMap, type Heightfield, storeFromBuildings } from "@battle-juice/shared";
 import { buildWorld } from "../client/src/render/world.js";
 
 const MAP_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "../client/src/public/map");
@@ -87,7 +87,7 @@ for (const site of SITES) {
     railYards: poly(map.railYards ?? []),
   } as GameMap;
 
-  const world = buildWorld(sub, hf);
+  const world = buildWorld(sub, storeFromBuildings(sub.buildings), hf);
   let decalVerts = 0;
   let decalTris = 0;
   world.group.traverse((o) => {

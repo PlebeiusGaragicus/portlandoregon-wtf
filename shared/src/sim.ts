@@ -12,6 +12,7 @@ import {
 } from "./constants.js";
 import { latLonToWorld, withinMap } from "./geo.js";
 import { buildLosIndex, hasLineOfSight, type LosIndex } from "./los.js";
+import { storeFromBuildings } from "./mapbin.js";
 import type { GameMap } from "./map.js";
 import { buildPathGraph, findPath, nearestOnStreets, type PathGraph } from "./path.js";
 
@@ -61,7 +62,7 @@ export function createWorld(map: GameMap): World {
     tick: 0,
     map,
     graph: buildPathGraph(map),
-    los: buildLosIndex(map),
+    los: buildLosIndex(storeFromBuildings(map.buildings), map.meta),
     entities: [],
     everOwners: new Set(),
     winner: null,

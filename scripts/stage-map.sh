@@ -8,8 +8,12 @@ set -euo pipefail
 # committing it would add 30 MB to history on every regeneration. It lives as a
 # GitHub Release asset instead. This script puts it where Vite will publish it:
 #
-#   client/src/public/map/map.json.gz        the city
+#   client/src/public/map/buildings.bin.gz   538k footprints, binary store
+#   client/src/public/map/map-lite.json.gz   every other layer, still JSON
 #   client/src/public/map/heightmap.bin.gz   terrain (optional; flat if absent)
+#
+# The release asset stays map.json.gz — the split is a local bake step, so a
+# re-bake never needs a new upload.
 #
 # Locally it copies from data/maps/. In CI, where data/maps/ doesn't exist, it
 # downloads the release asset instead.
@@ -69,6 +73,15 @@ else
         --pattern 'heightmap.bin.gz' --output "$DEST_DIR/heightmap.bin.gz" --clobber \
         || note "no heightmap in the release — the client falls back to flat ground"
 fi
+
+# Bake: buildings move out of the JSON into a binary store. Parsing them as
+# JSON cost ~820 MB of browser heap; the store costs 38 MB. map.json.gz is the
+# bake INPUT and is removed afterwards so Vite doesn't publish 32 MB nobody
+# downloads — re-run this script to get it back.
+note "Baking the binary building store"
+( cd "$REPO_ROOT" && npx tsx --max-old-space-size=10240 scripts/bake-map.ts ) \
+    || fail "bake failed — map.json.gz left in place so you can retry"
+rm -f "$DEST_DIR/map.json.gz"
 
 du -h "$DEST_DIR"/* | sed 's/^/    /'
 note "Staged into client/src/public/map/ — the build will publish these"

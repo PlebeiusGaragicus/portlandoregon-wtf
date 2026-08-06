@@ -1,5 +1,14 @@
 import * as THREE from "three";
-import { heightAt, type Building, type GameMap, type Heightfield, type Landmark } from "@battle-juice/shared";
+import {
+  buildingHeight,
+  heightAt,
+  ringBase,
+  ringLength,
+  type BuildingStore,
+  type GameMap,
+  type Heightfield,
+  type Landmark,
+} from "@battle-juice/shared";
 import { toScene } from "./camera.js";
 import { LANDMARK_THEMES } from "./world.js";
 
@@ -24,12 +33,14 @@ export interface LandmarkLayer {
   setViewScale(viewHeight: number): void;
 }
 
-export function buildLandmarks(map: GameMap, hf?: Heightfield | null): LandmarkLayer {
+export function buildLandmarks(map: GameMap, store: BuildingStore, hf?: Heightfield | null): LandmarkLayer {
   const ground = hf ? (x: number, y: number): number => heightAt(hf, x, y) : (): number => 0;
   const group = new THREE.Group();
   const marks = map.landmarks ?? [];
-  const byId = new Map<number, Building>();
-  for (const b of map.buildings) byId.set(b.id, b);
+  // Landmarks reference building ids, and the store is written in tile order,
+  // so the lookup is id -> store index.
+  const byId = new Map<number, number>();
+  for (let bi = 0; bi < store.count; bi++) byId.set(store.id[bi]!, bi);
 
   const pads = new THREE.Group();
   const plates = new THREE.Group();
@@ -56,8 +67,8 @@ export function buildLandmarks(map: GameMap, hf?: Heightfield | null): LandmarkL
     const bs = (m.buildingIds ?? []).flatMap((id) => byId.get(id) ?? []);
     // Plates ride the roof of the painted cluster; unmatched ones get a pad
     // on the ground so the station is still findable.
-    const anchor = bs.length ? clusterCenter(bs) : [m.x, m.y];
-    const tallest = bs.reduce((h, b) => Math.max(h, b.height), 0);
+    const anchor = bs.length ? clusterCenter(store, bs) : [m.x, m.y];
+    const tallest = bs.reduce((h, bi) => Math.max(h, buildingHeight(store, bi)), 0);
     const gz = ground(anchor[0]!, anchor[1]!);
     const h = gz + Math.max(MIN_PLATE_H, tallest + PLATE_CLEARANCE);
     if (m.kind === "school") {
@@ -89,23 +100,31 @@ export function buildLandmarks(map: GameMap, hf?: Heightfield | null): LandmarkL
 
 /** Area-weighted center of the cluster's footprints, so the plate hangs over
  * the hall rather than a corner shed. */
-function clusterCenter(bs: Building[]): [number, number] {
+function clusterCenter(store: BuildingStore, bs: number[]): [number, number] {
   let x = 0;
   let y = 0;
   let total = 0;
-  for (const b of bs) {
+  for (const bi of bs) {
     let cx = 0;
     let cy = 0;
-    for (const [px, py] of b.footprint) {
-      cx += px;
-      cy += py;
+    let a = 0;
+    const from = ringBase(store, bi, 0);
+    const n = ringLength(store, bi, 0);
+    const c = store.coords;
+    for (let i = 0; i < n; i++) {
+      const p = (from + i) * 2;
+      const q = (from + ((i + 1) % n)) * 2;
+      cx += c[p]!;
+      cy += c[p + 1]!;
+      a += c[p]! * c[q + 1]! - c[q]! * c[p + 1]!;
     }
-    const w = Math.max(1, ringArea(b.footprint));
-    x += (cx / b.footprint.length) * w;
-    y += (cy / b.footprint.length) * w;
+    if (n === 0) continue;
+    const w = Math.max(1, Math.abs(a / 2));
+    x += (cx / n) * w;
+    y += (cy / n) * w;
     total += w;
   }
-  return [x / total, y / total];
+  return total > 0 ? [x / total, y / total] : [0, 0];
 }
 
 function ringArea(ring: [number, number][]): number {

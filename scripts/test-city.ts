@@ -12,7 +12,7 @@
 //
 // Runs on a synthetic map in milliseconds; verified separately against the
 // real Portland extract (538,519 buildings, zero mismatches).
-import { heightAt, type GameMap, type Heightfield } from "@battle-juice/shared";
+import { heightAt, storeFromBuildings, type GameMap, type Heightfield } from "@battle-juice/shared";
 import { buildCityModel } from "../client/src/city.js";
 
 let failed = 0;
@@ -51,7 +51,7 @@ const map = {
   ],
 } as unknown as GameMap;
 
-const city = buildCityModel(map, hf);
+const city = buildCityModel(storeFromBuildings(map.buildings), hf);
 
 // Existence: a ring needs three vertices to be anything at all. This is the
 // test that replaced BuildingShells.has() — under tile streaming that meant

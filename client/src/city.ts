@@ -1,4 +1,10 @@
-import { heightAt, type GameMap, type Heightfield } from "@battle-juice/shared";
+import {
+  forEachRingVertex,
+  heightAt,
+  ringLength,
+  type BuildingStore,
+  type Heightfield,
+} from "@battle-juice/shared";
 
 /**
  * The city model: compact, whole-city, always resident.
@@ -22,7 +28,7 @@ import { heightAt, type GameMap, type Heightfield } from "@battle-juice/shared";
 export interface CityModel {
   /** 1 when the footprint is a real ring. A degenerate building has no
    * geometry and no presence in any spatial index — but it still occupies an
-   * index in `map.buildings`, so the sim needs to be able to ask. */
+   * index in the building store, so the sim needs to be able to ask. */
   valid: Uint8Array;
   /** Prism base elevation: the lowest ground height under the footprint, sunk
    * 1 m so a slope never shows a gap under the uphill wall. */
@@ -32,9 +38,9 @@ export interface CityModel {
   cy: Float32Array;
 }
 
-export function buildCityModel(map: GameMap, hf?: Heightfield | null): CityModel {
+export function buildCityModel(store: BuildingStore, hf?: Heightfield | null): CityModel {
   const ground = hf ? (x: number, y: number): number => heightAt(hf, x, y) : (): number => 0;
-  const n = map.buildings.length;
+  const n = store.count;
   const city: CityModel = {
     valid: new Uint8Array(n),
     baseZ: new Float32Array(n),
@@ -42,20 +48,20 @@ export function buildCityModel(map: GameMap, hf?: Heightfield | null): CityModel
     cy: new Float32Array(n),
   };
   for (let bi = 0; bi < n; bi++) {
-    const ring = map.buildings[bi]!.footprint;
+    const len = ringLength(store, bi, 0);
     let base = Infinity;
     let cx = 0;
     let cy = 0;
-    for (const [vx, vy] of ring) {
+    forEachRingVertex(store, bi, 0, (vx, vy) => {
       base = Math.min(base, ground(vx, vy));
       cx += vx;
       cy += vy;
-    }
+    });
     city.baseZ[bi] = (Number.isFinite(base) ? base : 0) - 1;
-    if (ring.length < 3) continue;
+    if (len < 3) continue;
     city.valid[bi] = 1;
-    city.cx[bi] = cx / ring.length;
-    city.cy[bi] = cy / ring.length;
+    city.cx[bi] = cx / len;
+    city.cy[bi] = cy / len;
   }
   return city;
 }

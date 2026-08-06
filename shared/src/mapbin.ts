@@ -262,6 +262,47 @@ export function decodeBuildings(bytes: Uint8Array): BuildingStore {
   return { count, ringStart, ringOffset, coords, heightDm, use, id };
 }
 
+/**
+ * Build a store straight from the object-graph form, without going through
+ * bytes. For the server's sim (which loads small synthetic maps where the
+ * object graph costs nothing) and for tests. Preserves the input order —
+ * unlike {@link encodeBuildings}, which sorts into tile order.
+ */
+export function storeFromBuildings(buildings: Building[]): BuildingStore {
+  const count = buildings.length;
+  const ringStart = new Uint32Array(count + 1);
+  const lens: number[] = [];
+  for (let b = 0; b < count; b++) {
+    const src = buildings[b]!;
+    const rings = 1 + (src.holes?.length ?? 0);
+    ringStart[b + 1] = ringStart[b]! + rings;
+    lens.push(src.footprint.length);
+    for (const h of src.holes ?? []) lens.push(h.length);
+  }
+  const ringOffset = new Uint32Array(lens.length + 1);
+  for (let i = 0; i < lens.length; i++) ringOffset[i + 1] = ringOffset[i]! + lens[i]!;
+  const coords = new Float32Array(ringOffset[lens.length]! * 2);
+  const heightDm = new Uint16Array(count);
+  const use = new Uint8Array(count);
+  const id = new Uint32Array(count);
+  let at = 0;
+  for (let b = 0; b < count; b++) {
+    const src = buildings[b]!;
+    for (const ring of [src.footprint, ...(src.holes ?? [])]) {
+      for (const [x, y] of ring) {
+        coords[at * 2] = x;
+        coords[at * 2 + 1] = y;
+        at++;
+      }
+    }
+    heightDm[b] = Math.max(0, Math.min(65535, Math.round(src.height * 10)));
+    const k = (BUILDING_USES as readonly string[]).indexOf(src.use ?? "other");
+    use[b] = k < 0 ? BUILDING_USES.indexOf("other") : k;
+    id[b] = src.id;
+  }
+  return { count, ringStart, ringOffset, coords, heightDm, use, id };
+}
+
 // ------------------------------------------------------------- read helpers
 
 /** Height in metres. */

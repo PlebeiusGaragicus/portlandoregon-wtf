@@ -13,7 +13,7 @@
 // depth, silently brings the bug back — hence this test.
 import * as THREE from "three";
 import type { GameMap, Heightfield } from "@battle-juice/shared";
-import { heightAt } from "@battle-juice/shared";
+import { heightAt, storeFromBuildings } from "@battle-juice/shared";
 import { buildWorld } from "../client/src/render/world.js";
 
 let failed = 0;
@@ -44,7 +44,7 @@ const map = {
   sidewalks: [{ id: 1, rings: [ring(20, 115, 60)] }],
 } as unknown as GameMap;
 
-const world = buildWorld(map, hf);
+const world = buildWorld(map, storeFromBuildings(map.buildings), hf);
 
 interface Layer {
   order: number;

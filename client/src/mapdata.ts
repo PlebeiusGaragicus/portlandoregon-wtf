@@ -4,9 +4,18 @@
 // src/public/map/, which Vite publishes). Paths are relative so they resolve
 // whether the site is mounted at a domain root or at /battle-juice/.
 
-import { decodeHeightfield, type GameMap, type Heightfield } from "@battle-juice/shared";
+import {
+  decodeBuildings,
+  decodeHeightfield,
+  type BuildingStore,
+  type GameMap,
+  type Heightfield,
+} from "@battle-juice/shared";
 
-const MAP_URL = new URL("./map/map.json.gz", document.baseURI).href;
+// Baked by scripts/bake-map.ts: buildings split out of the JSON into a binary
+// store, everything else left as map-lite.
+const MAP_URL = new URL("./map/map-lite.json.gz", document.baseURI).href;
+const BUILDINGS_URL = new URL("./map/buildings.bin.gz", document.baseURI).href;
 const HEIGHTMAP_URL = new URL("./map/heightmap.bin.gz", document.baseURI).href;
 
 /** Thrown when the map asset itself is missing or unreadable — without it
@@ -75,11 +84,31 @@ async function openGzipped(url: string, onProgress?: Progress): Promise<Response
 export async function loadMap(onProgress?: Progress): Promise<GameMap> {
   try {
     // Response.json() parses straight off the stream — no intermediate string.
-    return (await (await openGzipped(MAP_URL, onProgress)).json()) as GameMap;
+    const map = (await (await openGzipped(MAP_URL, onProgress)).json()) as GameMap;
+    // map-lite carries no buildings — those arrive as a binary store. Keeping
+    // the field present but empty means nothing has to null-check it.
+    if (!map.buildings) map.buildings = [];
+    return map;
   } catch (err) {
     if (err instanceof MapUnavailableError) throw err;
     // Network-level failure: offline, or the asset never got deployed.
     throw new MapUnavailableError(`couldn't download the map (${String(err)})`);
+  }
+}
+
+/**
+ * The 538k building footprints, as a binary store rather than an object graph.
+ *
+ * This is the whole point of the split: parsing them as JSON cost ~820 MB of
+ * heap, decoding them here costs 38 MB of typed arrays.
+ */
+export async function loadBuildings(onProgress?: Progress): Promise<BuildingStore> {
+  try {
+    const buf = await (await openGzipped(BUILDINGS_URL, onProgress)).arrayBuffer();
+    return decodeBuildings(new Uint8Array(buf));
+  } catch (err) {
+    if (err instanceof MapUnavailableError) throw err;
+    throw new MapUnavailableError(`${BUILDINGS_URL} unreachable`);
   }
 }
 

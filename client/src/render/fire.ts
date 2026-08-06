@@ -1,5 +1,15 @@
 import * as THREE from "three";
-import { heightAt, type GameMap, type Heightfield } from "@battle-juice/shared";
+import {
+  buildingHeight,
+  buildingUse,
+  forEachRingVertex,
+  heightAt,
+  ringBase,
+  ringLength,
+  type BuildingStore,
+  type GameMap,
+  type Heightfield,
+} from "@battle-juice/shared";
 import { toScene } from "./camera.js";
 import { radialGlowTexture } from "./props.js";
 import type { PropLayers } from "./props.js";
@@ -423,12 +433,13 @@ export class FireSim {
 
   constructor(
     private map: GameMap,
+    private store: BuildingStore,
     hf: Heightfield | null,
     private city: CityModel,
     private shells: BuildingShells,
   ) {
     this.terrain = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
-    const n = map.buildings.length;
+    const n = store.count;
     this.status = new Uint8Array(n);
     this.cx = city.cx;
     this.cy = city.cy;
@@ -524,35 +535,55 @@ export class FireSim {
   }
 
   private area(bi: number): number {
-    const fp = this.map.buildings[bi]!.footprint;
+    const from = ringBase(this.store, bi, 0);
+    const n = ringLength(this.store, bi, 0);
+    const c = this.store.coords;
     let a = 0;
-    for (let i = 0; i < fp.length; i++) {
-      const [x1, y1] = fp[i]!;
-      const [x2, y2] = fp[(i + 1) % fp.length]!;
-      a += x1 * y2 - x2 * y1;
+    for (let i = 0; i < n; i++) {
+      const p = (from + i) * 2;
+      const q = (from + ((i + 1) % n)) * 2;
+      a += c[p]! * c[q + 1]! - c[q]! * c[p + 1]!;
     }
     return Math.abs(a / 2);
   }
 
+  /** Point-in-footprint against the store, without materialising the ring. */
+  private inFootprint(x: number, y: number, bi: number): boolean {
+    const from = ringBase(this.store, bi, 0);
+    const n = ringLength(this.store, bi, 0);
+    const c = this.store.coords;
+    let inside = false;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const p = (from + i) * 2;
+      const q = (from + j) * 2;
+      const yi = c[p + 1]!;
+      const yj = c[q + 1]!;
+      if (yi > y !== yj > y && x < ((c[q]! - c[p]!) * (y - yi)) / (yj - yi) + c[p]!) inside = !inside;
+    }
+    return inside;
+  }
+
   private maxHp(bi: number): number {
-    const b = this.map.buildings[bi]!;
-    return 2 + Math.sqrt(this.area(bi)) / 7 + b.height / 12;
+    return 2 + Math.sqrt(this.area(bi)) / 7 + buildingHeight(this.store, bi) / 12;
   }
 
   /** Sample fire cells over the building: perimeter columns + roof points.
    * The front creeps outward from the ignition point at a speed that has the
    * whole building involved by ~40% of the burn. */
   private makeCells(bi: number, dur: number, ix: number, iy: number): { cells: FireCell[]; cellR: number } {
-    const b = this.map.buildings[bi]!;
+    const height = buildingHeight(this.store, bi);
     const base = this.baseZ[bi]!;
-    const roof = base + b.height;
-    const ring = b.footprint;
+    const roof = base + height;
+    const from = ringBase(this.store, bi, 0);
+    const nRing = ringLength(this.store, bi, 0);
+    const coords = this.store.coords;
+    const ring = (i: number): [number, number] => [coords[(from + i) * 2]!, coords[(from + i) * 2 + 1]!];
     const ccx = this.cx[bi]!;
     const ccy = this.cy[bi]!;
     let perim = 0;
-    for (let i = 0; i < ring.length; i++) {
-      const [x1, y1] = ring[i]!;
-      const [x2, y2] = ring[(i + 1) % ring.length]!;
+    for (let i = 0; i < nRing; i++) {
+      const [x1, y1] = ring(i);
+      const [x2, y2] = ring((i + 1) % nRing);
       perim += Math.hypot(x2 - x1, y2 - y1);
     }
     const spacing = Math.max(6, perim / 22);
@@ -571,15 +602,15 @@ export class FireSim {
       });
     };
     let carry = spacing * 0.5;
-    for (let i = 0; i < ring.length; i++) {
-      const [x1, y1] = ring[i]!;
-      const [x2, y2] = ring[(i + 1) % ring.length]!;
+    for (let i = 0; i < nRing; i++) {
+      const [x1, y1] = ring(i);
+      const [x2, y2] = ring((i + 1) % nRing);
       const len = Math.hypot(x2 - x1, y2 - y1);
       if (len < 1e-6) continue;
       let along = carry;
       while (along < len) {
         const t = along / len;
-        addCell(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, base + 0.4, roof + 3 + b.height * 0.25);
+        addCell(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, base + 0.4, roof + 3 + height * 0.25);
         along += spacing;
       }
       carry = along - len;
@@ -589,16 +620,16 @@ export class FireSim {
     const area = this.area(bi);
     if (area > 500) {
       let xmin = Infinity, ymin = Infinity, xmax = -Infinity, ymax = -Infinity;
-      for (const [px, py] of ring) {
+      forEachRingVertex(this.store, bi, 0, (px, py) => {
         xmin = Math.min(xmin, px); ymin = Math.min(ymin, py);
         xmax = Math.max(xmax, px); ymax = Math.max(ymax, py);
-      }
+      });
       const step = Math.max(10, Math.sqrt(area / 10));
       let added = 0;
       for (let y = ymin + step * 0.5; y < ymax && added < 12; y += step) {
         for (let x = xmin + step * 0.5; x < xmax && added < 12; x += step) {
-          if (!pointInRing(x, y, ring)) continue;
-          cells.push({ x, y, fx: x, fy: y, z: roof, top: roof + 6 + b.height * 0.3, delay: 0, i: 0, char: 0, douse: 0, doused: false });
+          if (!this.inFootprint(x, y, bi)) continue;
+          cells.push({ x, y, fx: x, fy: y, z: roof, top: roof + 6 + height * 0.3, delay: 0, i: 0, char: 0, douse: 0, doused: false });
           added++;
         }
       }
@@ -622,9 +653,8 @@ export class FireSim {
   /** Ignite; (ix, iy) localizes where on the building the fire starts. */
   igniteBuilding(bi: number, ix?: number, iy?: number): boolean {
     if (!this.city.valid[bi] || this.status[bi] !== 0 || this.burns.has(bi)) return false;
-    const b = this.map.buildings[bi]!;
     const area = this.area(bi);
-    const use = b.use ?? "other";
+    const use = buildingUse(this.store, bi);
     const sizeScale = 0.8 + Math.min(1.6, Math.sqrt(area) / 40);
     const dur = (BURN_H[use] ?? BURN_H["other"]!) * REAL_PER_GAME_H * sizeScale;
     const ox = ix ?? this.cx[bi]! + (Math.random() - 0.5) * 6;
@@ -643,9 +673,9 @@ export class FireSim {
       suppressed: false,
       x: this.cx[bi]!,
       y: this.cy[bi]!,
-      z: this.baseZ[bi]! + b.height,
+      z: this.baseZ[bi]! + buildingHeight(this.store, bi),
       size: Math.min(30, 5 + Math.sqrt(area) * 0.55),
-      height: b.height,
+      height: buildingHeight(this.store, bi),
       smoky: WOOD.has(use) ? 1 : 1.9,
       wood: WOOD.has(use),
       cells,
@@ -695,7 +725,7 @@ export class FireSim {
     // takes immediately — or stokes a fire that's already going.
     const direct = this.buildingAt(x, y, this.terrain(x, y) + 1);
     const z = (direct >= 0
-      ? this.baseZ[direct]! + this.map.buildings[direct]!.height
+      ? this.baseZ[direct]! + buildingHeight(this.store, direct)
       : this.terrain(x, y)) + 1.2;
     this.flash(x, y, z + 3, 22, 0xffb066);
     if (direct >= 0 && !this.igniteBuilding(direct, x, y)) this.stoke(direct, x, y);
@@ -790,9 +820,8 @@ export class FireSim {
     let hit = -1;
     this.nearBuildings(x, y, 42, (bi) => {
       if (hit >= 0 || this.status[bi] === 3) return;
-      const b = this.map.buildings[bi]!;
-      if (this.baseZ[bi]! + b.height < z + 0.5) return;
-      if (pointInRing(x, y, b.footprint)) hit = bi;
+      if (this.baseZ[bi]! + buildingHeight(this.store, bi) < z + 0.5) return;
+      if (this.inFootprint(x, y, bi)) hit = bi;
     });
     return hit;
   }
@@ -1188,7 +1217,7 @@ export class FireSim {
           const dx = (this.cx[bi]! - burn.x) / (d || 1);
           const dy = (this.cy[bi]! - burn.y) / (d || 1);
           const downwind = 0.55 + 0.45 * (dx * wx + dy * wy) * Math.min(1, this.windSpeed / 5);
-          const nUse = this.map.buildings[bi]!.use ?? "other";
+          const nUse = buildingUse(this.store, bi);
           const catchMul = WOOD.has(nUse) ? 1 : 0.55;
           if (Math.random() < baseP * downwind * catchMul * (1 - d / (reach + 1))) {
             // The neighbor catches on the side FACING this fire.
@@ -1325,7 +1354,7 @@ export class FireSim {
           const cy = fb.y + Math.sin(a) * d;
           const cb = this.buildingAt(cx, cy, this.terrain(cx, cy) + 1);
           const cz = (cb >= 0
-            ? this.baseZ[cb]! + this.map.buildings[cb]!.height
+            ? this.baseZ[cb]! + buildingHeight(this.store, cb)
             : this.terrain(cx, cy)) + 1.2;
           const subs = [];
           for (let i = 0; i < 6; i++) {

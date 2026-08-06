@@ -1,5 +1,12 @@
 import * as THREE from "three";
-import { heightAt, raycastHeightfield, worldToLatLon, type GameMap, type Heightfield } from "@battle-juice/shared";
+import {
+  heightAt,
+  raycastHeightfield,
+  worldToLatLon,
+  type BuildingStore,
+  type GameMap,
+  type Heightfield,
+} from "@battle-juice/shared";
 import { Actors } from "./actors.js";
 import { CameraRig, toScene, toWorldXY } from "./camera.js";
 import { Controls, type ControlDelegate } from "./controls.js";
@@ -103,6 +110,7 @@ export class Renderer {
   constructor(
     private canvas: HTMLCanvasElement,
     map: GameMap,
+    private store: BuildingStore,
     opts: RendererOpts = {},
   ) {
     // Log depth: a perspective frustum spanning tens of km would otherwise
@@ -128,8 +136,8 @@ export class Renderer {
     this.hf = opts.heightfield ?? null;
     const hf = this.hf;
     this.ground = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
-    this.city = opts.city ?? buildCityModel(map, hf);
-    this.world = opts.prebuilt?.world ?? buildWorld(map, hf, this.city);
+    this.city = opts.city ?? buildCityModel(store, hf);
+    this.world = opts.prebuilt?.world ?? buildWorld(map, store, hf, this.city);
     this.world.group.traverse((o) => {
       if (!(o instanceof THREE.Mesh)) return;
       o.receiveShadow = true;
@@ -142,14 +150,14 @@ export class Renderer {
     this.scene.add(this.world.group);
     this.props = opts.prebuilt?.props ?? buildProps(map, hf);
     this.scene.add(this.props.group, this.props.glow);
-    this.landmarks = opts.prebuilt?.landmarks ?? buildLandmarks(map, hf);
+    this.landmarks = opts.prebuilt?.landmarks ?? buildLandmarks(map, store, hf);
     this.scene.add(this.landmarks.group);
     this.actors = new Actors(map, hf);
     this.scene.add(this.actors.group);
 
     // Disaster sim: fires, spread, destruction — wired into dispatch both
     // ways (real fires open calls; dispatch fire incidents ignite for real).
-    this.fire = new FireSim(map, hf, this.city, this.world.shells);
+    this.fire = new FireSim(map, store, hf, this.city, this.world.shells);
     this.fire.addPropSet(this.props);
     this.scene.add(this.fire.group);
     this.fire.onNewFire = (x, y) => this.actors.reportFire(x, y, this.ground(x, y));
@@ -350,7 +358,7 @@ export class Renderer {
     // street zoom, capped so strategic view doesn't mean a minute of freefall.
     const dropH = Math.min(600, Math.max(200, this.rig.viewHeight * 1.2));
     if (!this.fpv) {
-      this.fpv = new FpvMode(this.map, this.hf, this.city, this.rig.target, this.rig.theta, dropH);
+      this.fpv = new FpvMode(this.map, this.store, this.hf, this.city, this.rig.target, this.rig.theta, dropH);
       // Buildings that pancaked before FPV existed are already walk-through.
       for (const bi of this.fire.collapsed) this.fpv.markCollapsed(bi);
     } else {

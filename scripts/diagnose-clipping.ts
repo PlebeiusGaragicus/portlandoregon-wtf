@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
 import * as THREE from "three";
-import { decodeHeightfield, heightAt, latLonToWorld, type GameMap, type Heightfield } from "@battle-juice/shared";
+import { decodeHeightfield, heightAt, latLonToWorld, type GameMap, type Heightfield, storeFromBuildings } from "@battle-juice/shared";
 import { buildWorld } from "../client/src/render/world.js";
 
 const MAP_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "../client/src/public/map");
@@ -119,7 +119,7 @@ for (const site of SITES) {
     const gy = Math.floor((y - y0) / WM);
     return gx >= 0 && gy >= 0 && gx < WN && gy < WN ? waterMask[gy * WN + gx] === 1 : false;
   };
-  const world = buildWorld(sub, hf);
+  const world = buildWorld(sub, storeFromBuildings(sub.buildings), hf);
 
   let lo = Infinity;
   let hi = -Infinity;
