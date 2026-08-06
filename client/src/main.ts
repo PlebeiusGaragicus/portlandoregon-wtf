@@ -5,6 +5,7 @@
 import * as THREE from "three";
 import type { GameMap, Heightfield } from "@battle-juice/shared";
 import { BootLog, CRASH_LIMIT, fmtBytes, probeDevice } from "./bootlog.js";
+import { buildCityModel } from "./city.js";
 import { loadHeightfield, loadMap, MapUnavailableError } from "./mapdata.js";
 import { Renderer } from "./render/index.js";
 import { buildLandmarks } from "./render/landmarks.js";
@@ -111,9 +112,14 @@ async function boot(): Promise<void> {
     log.line("→ this exceeds what a phone browser will allow; a crash here is expected", "warn");
   }
 
+  done = log.step("city model");
+  const city = buildCityModel(map, hf);
+  done(`${city.valid.reduce((a, v) => a + v, 0)} buildings with usable footprints`);
+  await paint();
+
   await announce("building the city");
   const t0 = performance.now();
-  const steps = buildWorldSteps(map, hf);
+  const steps = buildWorldSteps(map, hf, city);
   let next = steps.next();
   while (!next.done) {
     // The generator yields the label of the step it is about to run, so the
@@ -136,7 +142,7 @@ async function boot(): Promise<void> {
   await paint();
 
   done = log.step("starting renderer");
-  const renderer = new Renderer(canvas, map, { prebuilt: { world, props, landmarks }, heightfield: hf });
+  const renderer = new Renderer(canvas, map, { prebuilt: { world, props, landmarks }, heightfield: hf, city });
   done();
 
   log.line(`ready — total ${((performance.now() - bootStart) / 1000).toFixed(2)}s`, "ok");

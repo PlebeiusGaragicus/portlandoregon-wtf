@@ -5,6 +5,7 @@ import { CameraRig, toScene, toWorldXY } from "./camera.js";
 import { Controls, type ControlDelegate } from "./controls.js";
 import { DayNight } from "./daynight.js";
 import { FireSim } from "./fire.js";
+import { buildCityModel, type CityModel } from "../city.js";
 import { FpvMode } from "./fpv.js";
 import { buildLandmarks, type LandmarkLayer } from "./landmarks.js";
 import { Minimap } from "./minimap.js";
@@ -33,6 +34,9 @@ export interface RendererOpts {
   prebuilt?: PrebuiltLayers;
   /** Terrain heightfield; absent = flat ground. */
   heightfield?: Heightfield | null;
+  /** Prebuilt city model. Must be the same one `prebuilt.world` was built
+   * from — the sim and the geometry have to agree on where the ground is. */
+  city?: CityModel;
 }
 
 /**
@@ -75,6 +79,7 @@ export class Renderer {
   private hudScaleLabel!: HTMLSpanElement;
   private lastScaleText = "";
   private hf: Heightfield | null;
+  private city: CityModel;
   private ground: (x: number, y: number) => number;
 
   private map: GameMap;
@@ -123,7 +128,8 @@ export class Renderer {
     this.hf = opts.heightfield ?? null;
     const hf = this.hf;
     this.ground = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
-    this.world = opts.prebuilt?.world ?? buildWorld(map, hf);
+    this.city = opts.city ?? buildCityModel(map, hf);
+    this.world = opts.prebuilt?.world ?? buildWorld(map, hf, this.city);
     this.world.group.traverse((o) => {
       if (!(o instanceof THREE.Mesh)) return;
       o.receiveShadow = true;
@@ -143,7 +149,7 @@ export class Renderer {
 
     // Disaster sim: fires, spread, destruction — wired into dispatch both
     // ways (real fires open calls; dispatch fire incidents ignite for real).
-    this.fire = new FireSim(map, hf, this.world.shells);
+    this.fire = new FireSim(map, hf, this.city, this.world.shells);
     this.fire.addPropSet(this.props);
     this.scene.add(this.fire.group);
     this.fire.onNewFire = (x, y) => this.actors.reportFire(x, y, this.ground(x, y));
@@ -344,7 +350,7 @@ export class Renderer {
     // street zoom, capped so strategic view doesn't mean a minute of freefall.
     const dropH = Math.min(600, Math.max(200, this.rig.viewHeight * 1.2));
     if (!this.fpv) {
-      this.fpv = new FpvMode(this.map, this.hf, this.rig.target, this.rig.theta, dropH);
+      this.fpv = new FpvMode(this.map, this.hf, this.city, this.rig.target, this.rig.theta, dropH);
       // Buildings that pancaked before FPV existed are already walk-through.
       for (const bi of this.fire.collapsed) this.fpv.markCollapsed(bi);
     } else {

@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { heightAt, type GameMap, type Heightfield } from "@battle-juice/shared";
+import type { CityModel } from "../city.js";
 import { toScene } from "./camera.js";
 
 // First-person walk/fly mode. Physics runs in world meters (x east, y north,
@@ -45,15 +46,17 @@ class SolidIndex {
   private cols: number;
   private rows: number;
 
-  constructor(map: GameMap, ground: (x: number, y: number) => number) {
+  constructor(map: GameMap, city: CityModel) {
     this.cols = Math.max(1, Math.ceil(map.meta.width / CELL));
     this.rows = Math.max(1, Math.ceil(map.meta.height / CELL));
-    for (const b of map.buildings) {
+    // Solid index == map.buildings index (see `dead`), which is also the city
+    // model's index — every building gets an entry, degenerate or not.
+    for (let bi = 0; bi < map.buildings.length; bi++) {
+      const b = map.buildings[bi]!;
       let xmin = Infinity;
       let ymin = Infinity;
       let xmax = -Infinity;
       let ymax = -Infinity;
-      let base = Infinity;
       const segs: number[] = [];
       const ring = b.footprint;
       for (let i = 0; i < ring.length; i++) {
@@ -64,10 +67,10 @@ class SolidIndex {
         ymin = Math.min(ymin, y1);
         xmax = Math.max(xmax, x1);
         ymax = Math.max(ymax, y1);
-        base = Math.min(base, ground(x1, y1));
       }
-      const idx = this.solids.length;
-      this.solids.push({ xmin, ymin, xmax, ymax, segs, top: (Number.isFinite(base) ? base : 0) + b.height });
+      // The city model sinks the prism base 1 m (so uphill walls show no gap);
+      // the roof you can stand on is the visible top, so add it back.
+      this.solids.push({ xmin, ymin, xmax, ymax, segs, top: city.baseZ[bi]! + 1 + b.height });
       const c0 = this.clampC(Math.floor(xmin / CELL));
       const c1 = this.clampC(Math.floor(xmax / CELL));
       const r0 = this.clampR(Math.floor(ymin / CELL));
@@ -76,8 +79,8 @@ class SolidIndex {
         for (let c = c0; c <= c1; c++) {
           const key = r * this.cols + c;
           const list = this.grid.get(key);
-          if (list) list.push(idx);
-          else this.grid.set(key, [idx]);
+          if (list) list.push(bi);
+          else this.grid.set(key, [bi]);
         }
       }
     }
@@ -237,9 +240,16 @@ export class FpvMode {
   private mapW: number;
   private mapH: number;
 
-  constructor(map: GameMap, hf: Heightfield | null, start: { x: number; y: number }, yaw: number, dropHeight = 0) {
+  constructor(
+    map: GameMap,
+    hf: Heightfield | null,
+    city: CityModel,
+    start: { x: number; y: number },
+    yaw: number,
+    dropHeight = 0,
+  ) {
     this.terrain = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
-    this.solids = new SolidIndex(map, this.terrain);
+    this.solids = new SolidIndex(map, city);
     this.mapW = map.meta.width;
     this.mapH = map.meta.height;
     this.x = start.x;

@@ -3,6 +3,7 @@ import { heightAt, type GameMap, type Heightfield } from "@battle-juice/shared";
 import { toScene } from "./camera.js";
 import { radialGlowTexture } from "./props.js";
 import type { PropLayers } from "./props.js";
+import type { CityModel } from "../city.js";
 import type { BuildingShells } from "./world.js";
 import { CYCLES_PER_DAY } from "./daynight.js";
 
@@ -383,8 +384,11 @@ export class FireSim {
   private burningTrees = new Set<number>();
   private treeGrid = new Map<number, number[]>();
   private grid = new Map<number, number[]>(); // building centroid buckets
+  /** Aliases into the city model — centroids and ground heights are facts
+   * about the map, not about what is currently drawn. */
   private cx: Float32Array;
   private cy: Float32Array;
+  private baseZ: Float32Array;
   private terrain: (x: number, y: number) => number;
   private propSets: PropLayers[] = [];
   private windDir = Math.random() * Math.PI * 2;
@@ -416,27 +420,18 @@ export class FireSim {
   constructor(
     private map: GameMap,
     hf: Heightfield | null,
+    private city: CityModel,
     private shells: BuildingShells,
   ) {
     this.terrain = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
     const n = map.buildings.length;
     this.status = new Uint8Array(n);
-    this.cx = new Float32Array(n);
-    this.cy = new Float32Array(n);
+    this.cx = city.cx;
+    this.cy = city.cy;
+    this.baseZ = city.baseZ;
     for (let i = 0; i < n; i++) {
-      const fp = map.buildings[i]!.footprint;
-      if (fp.length < 3) continue;
-      let x = 0;
-      let y = 0;
-      for (const [px, py] of fp) {
-        x += px;
-        y += py;
-      }
-      x /= fp.length;
-      y /= fp.length;
-      this.cx[i] = x;
-      this.cy[i] = y;
-      const key = this.cellKey(x, y);
+      if (!city.valid[i]) continue;
+      const key = this.cellKey(this.cx[i]!, this.cy[i]!);
       const cell = this.grid.get(key);
       if (cell) cell.push(i);
       else this.grid.set(key, [i]);
@@ -545,7 +540,7 @@ export class FireSim {
    * whole building involved by ~40% of the burn. */
   private makeCells(bi: number, dur: number, ix: number, iy: number): { cells: FireCell[]; cellR: number } {
     const b = this.map.buildings[bi]!;
-    const base = this.shells.base(bi);
+    const base = this.baseZ[bi]!;
     const roof = base + b.height;
     const ring = b.footprint;
     const ccx = this.cx[bi]!;
@@ -622,7 +617,7 @@ export class FireSim {
 
   /** Ignite; (ix, iy) localizes where on the building the fire starts. */
   igniteBuilding(bi: number, ix?: number, iy?: number): boolean {
-    if (!this.shells.has(bi) || this.status[bi] !== 0 || this.burns.has(bi)) return false;
+    if (!this.city.valid[bi] || this.status[bi] !== 0 || this.burns.has(bi)) return false;
     const b = this.map.buildings[bi]!;
     const area = this.area(bi);
     const use = b.use ?? "other";
@@ -643,7 +638,7 @@ export class FireSim {
       suppressed: false,
       x: this.cx[bi]!,
       y: this.cy[bi]!,
-      z: this.shells.base(bi) + b.height,
+      z: this.baseZ[bi]! + b.height,
       size: Math.min(30, 5 + Math.sqrt(area) * 0.55),
       height: b.height,
       smoky: WOOD.has(use) ? 1 : 1.9,
@@ -695,7 +690,7 @@ export class FireSim {
     // takes immediately — or stokes a fire that's already going.
     const direct = this.buildingAt(x, y, this.terrain(x, y) + 1);
     const z = (direct >= 0
-      ? this.shells.base(direct) + this.map.buildings[direct]!.height
+      ? this.baseZ[direct]! + this.map.buildings[direct]!.height
       : this.terrain(x, y)) + 1.2;
     this.flash(x, y, z + 3, 22, 0xffb066);
     if (direct >= 0 && !this.igniteBuilding(direct, x, y)) this.stoke(direct, x, y);
@@ -727,7 +722,7 @@ export class FireSim {
   /** Structural damage (punch, shell). Scars locally, may ignite, may
    * collapse. (px, py) is the impact point for localized scarring. */
   damageBuilding(bi: number, dmg: number, igniteChance: number, px?: number, py?: number): void {
-    if (!this.shells.has(bi) || this.status[bi] === 3) return;
+    if (!this.city.valid[bi] || this.status[bi] === 3) return;
     let hp = this.hp.get(bi) ?? this.maxHp(bi);
     hp -= dmg;
     if (hp <= 0) {
@@ -793,7 +788,7 @@ export class FireSim {
     this.nearBuildings(x, y, 42, (bi) => {
       if (hit >= 0 || this.status[bi] === 3) return;
       const b = this.map.buildings[bi]!;
-      if (this.shells.base(bi) + b.height < z + 0.5) return;
+      if (this.baseZ[bi]! + b.height < z + 0.5) return;
       if (pointInRing(x, y, b.footprint)) hit = bi;
     });
     return hit;
@@ -809,7 +804,7 @@ export class FireSim {
   }
 
   centerOf(bi: number): { x: number; y: number; z: number } {
-    return { x: this.cx[bi]!, y: this.cy[bi]!, z: this.shells.base(bi) };
+    return { x: this.cx[bi]!, y: this.cy[bi]!, z: this.baseZ[bi]! };
   }
 
   get activeFires(): number {
@@ -862,7 +857,7 @@ export class FireSim {
     this.onCollapse?.(bi);
     const x = this.cx[bi]!;
     const y = this.cy[bi]!;
-    const z = this.shells.base(bi);
+    const z = this.baseZ[bi]!;
     // Dust cloud rolling out of the fall.
     for (let i = 0; i < 8; i++) {
       const a = Math.random() * Math.PI * 2;
@@ -1305,7 +1300,7 @@ export class FireSim {
           const cy = fb.y + Math.sin(a) * d;
           const cb = this.buildingAt(cx, cy, this.terrain(cx, cy) + 1);
           const cz = (cb >= 0
-            ? this.shells.base(cb) + this.map.buildings[cb]!.height
+            ? this.baseZ[cb]! + this.map.buildings[cb]!.height
             : this.terrain(cx, cy)) + 1.2;
           const subs = [];
           for (let i = 0; i < 6; i++) {
