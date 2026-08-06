@@ -134,10 +134,38 @@ Projected resident size (derived from the counts in §1):
 | heightfield | 3.4 MB | 3.4 MB |
 | **total** | **~880 MB** | **~55 MB** |
 
-A 16× reduction with no change to what is drawn. The `.gz` download should
-land similar to or below today's 32 MB — coordinate deltas quantised to
-tile-local `Uint16` compress considerably better than JSON decimal text, though
-this needs measuring rather than assuming.
+A 16× reduction with no change to what is drawn.
+
+**The download is measured now** (`scripts/measure-binary.ts`, every layer
+encoded including street names, so the totals are comparable to `map.json.gz`
+rather than flattering). 5.27M coordinate pairs across the whole map:
+
+| coordinate encoding | raw | gzip -9 | brotli 11 | vs 32 MB today |
+| --- | --- | --- | --- | --- |
+| f32 absolute, planar | 46.4 MB | 23.0 MB | 17.3 MB | −28% |
+| u16 tile-local | 25.4 MB | 20.9 MB | 16.5 MB | −35% |
+| **varint delta, 1 cm** | 23.5 MB | **16.8 MB** | **14.5 MB** | **−47%** |
+| varint delta, 5 cm | 21.0 MB | 14.7 MB | 12.7 MB | −54% |
+| varint delta, 25 cm | 17.1 MB | 12.1 MB | 10.9 MB | −62% |
+
+The risk is retired: every encoding beats JSON, including the naive one. Two
+things change in the design as a result.
+
+**Use varint deltas, not tile-local `Uint16`.** The `Uint16` scheme proposed
+above is the *worst* of the compact options and it is also wrong: 154,114
+vertices (2.9%) belong to features that straddle a tile line and fall outside
+their own tile, so they clamp. Fixing that needs per-feature origins and
+scales, which costs more bytes than it saves.
+
+**The wire format and the resident format are separable.** A varint stream
+decodes straight into whatever typed arrays we want, so this table has no
+bearing on the 55 MB resident figure. Decoding all 5.27M pairs into a
+42.1 MB `Float32Array` takes **232 ms** — and it *replaces* `JSON.parse`'s
+940 ms rather than adding to it. Worst round-trip error at 1 cm quantisation
+is 1.6 mm.
+
+1 cm is the recommendation: the precision is free at this scale and 5 cm is
+sitting there as a 2 MB lever if the download ever needs trimming.
 
 This stage alone probably makes the desktop tab usable. It does not make the
 phone work, because Problem B is untouched.
@@ -293,6 +321,12 @@ element-count arithmetic and should hold within ~20%. The 380 MB total is the
 softest number here — browser and WebGL baseline overhead is an estimate, and
 the tile cache figure assumes a cap we choose rather than a measurement.
 
-The compressed download size of the binary format is genuinely unknown and
+~~The compressed download size of the binary format is genuinely unknown and
 should be measured early, since it is the one number that could come out worse
-than today.
+than today.~~ **Measured** — see the table in Stage 1. It comes out 47% *below*
+today's 32 MB at 1 cm precision, and the resident-memory projections are
+unaffected by the choice, since the wire format decodes into typed arrays
+either way.
+
+The softest remaining number is the 380 MB total, which still rests on
+estimated browser and WebGL baseline overhead.
