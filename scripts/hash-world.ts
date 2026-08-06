@@ -40,40 +40,68 @@ const city = buildCityModel(buildings, hf);
 const world = buildWorld(map, buildings, layers, hf, city, false);
 
 /**
- * Split-invariant fingerprint: accumulate a per-VERTEX hash commutatively, so
- * how the vertices are distributed across meshes cannot change the result.
- * That matters because bounding a soup's size (so no single mesh conversion
- * blows a frame budget) legitimately splits one mesh into several, and that
- * must not read as a geometry change.
+ * Per-layer aggregates rather than a hash.
+ *
+ * A hash was the right tool while every refactor had to leave geometry
+ * bit-identical. Int16 positions end that: vertices legitimately move by up to
+ * ~3 cm, and how they are split across meshes is no longer fixed either. So
+ * compare things that survive both — vertex count, centroid, bounding box —
+ * read through each mesh's world matrix, which is where the geometry actually
+ * is once the transform carries the scale.
  */
-function h32(x: number): number {
-  let v = Math.round(x * 1000) | 0;
-  v = Math.imul(v ^ (v >>> 16), 0x45d9f3b);
-  v = Math.imul(v ^ (v >>> 16), 0x45d9f3b);
-  return (v ^ (v >>> 16)) | 0;
-}
+world.group.updateMatrixWorld(true);
 
-let verts = 0;
-let meshes = 0;
-let ph = 0;
-let ch = 0;
+interface Agg {
+  meshes: number;
+  verts: number;
+  sx: number;
+  sy: number;
+  sz: number;
+  min: [number, number, number];
+  max: [number, number, number];
+}
+const byOrder = new Map<number, Agg>();
+const v = new THREE.Vector3();
 world.group.traverse((o) => {
-  if (!(o instanceof THREE.Mesh)) return;
+  if (!(o instanceof THREE.Mesh) || o instanceof THREE.InstancedMesh) return;
   const pos = o.geometry.getAttribute("position") as THREE.BufferAttribute | undefined;
   if (!pos) return;
-  meshes++;
-  verts += pos.count;
-  const col = o.geometry.getAttribute("color") as THREE.BufferAttribute | undefined;
-  const layer = h32(o.renderOrder);
+  const a = byOrder.get(o.renderOrder) ?? {
+    meshes: 0,
+    verts: 0,
+    sx: 0,
+    sy: 0,
+    sz: 0,
+    min: [Infinity, Infinity, Infinity] as [number, number, number],
+    max: [-Infinity, -Infinity, -Infinity] as [number, number, number],
+  };
+  a.meshes++;
+  a.verts += pos.count;
   for (let i = 0; i < pos.count; i++) {
-    // Layer folded in so a vertex moving between paint orders still shows.
-    ph = (ph + (h32(pos.getX(i)) ^ h32(pos.getY(i) * 7) ^ h32(pos.getZ(i) * 13) ^ layer)) | 0;
+    v.set(pos.getX(i), pos.getY(i), pos.getZ(i)).applyMatrix4(o.matrixWorld);
+    a.sx += v.x;
+    a.sy += v.y;
+    a.sz += v.z;
+    a.min[0] = Math.min(a.min[0], v.x);
+    a.min[1] = Math.min(a.min[1], v.y);
+    a.min[2] = Math.min(a.min[2], v.z);
+    a.max[0] = Math.max(a.max[0], v.x);
+    a.max[1] = Math.max(a.max[1], v.y);
+    a.max[2] = Math.max(a.max[2], v.z);
   }
-  if (col) {
-    for (let i = 0; i < col.count; i++) {
-      ch = (ch + (h32(col.getX(i)) ^ h32(col.getY(i) * 7) ^ h32(col.getZ(i) * 13) ^ layer)) | 0;
-    }
-  }
+  byOrder.set(o.renderOrder, a);
 });
 
-console.log(`meshes ${meshes}  verts ${verts}  position ${ph}  colour ${ch}`);
+console.log("  order  meshes      verts        centroid (x, y, z)              bbox y");
+console.log("  " + "-".repeat(72));
+let verts = 0;
+for (const [order, a] of [...byOrder].sort((p, q) => p[0] - q[0])) {
+  verts += a.verts;
+  console.log(
+    `  ${String(order).padStart(5)} ${String(a.meshes).padStart(7)} ${String(a.verts).padStart(10)}` +
+      `   ${(a.sx / a.verts).toFixed(3).padStart(11)} ${(a.sy / a.verts).toFixed(3).padStart(9)} ${(a.sz / a.verts).toFixed(3).padStart(11)}` +
+      `   ${a.min[1].toFixed(2).padStart(8)} .. ${a.max[1].toFixed(2)}`,
+  );
+}
+console.log(`
+  ${verts} vertices in ${[...byOrder.values()].reduce((n, a) => n + a.meshes, 0)} meshes`);

@@ -1189,32 +1189,24 @@ function* trailTiles(
 ): Generator<THREE.Mesh | null, void, void> {
   if (trails.length === 0) return;
   const mat = decalMat({ color: TRAIL_COLOR });
-  let soup: Soup = { pos: [], nrm: [] };
-  for (let i = 0; i < trails.length; i++) {
-    const t = trails[i]!;
-    pushRibbon(soup.pos, t.polyline, 2.5, DECAL_Y, ground, cell, overWater(t.polyline), Infinity);
-    if (soup.pos.length / 3 >= SOUP_FLUSH) {
-      yield soupMesh(soup, mat);
-      soup = { pos: [], nrm: [] };
-    } else if (i % RIBBON_SLICE === RIBBON_SLICE - 1) {
-      yield null;
-    }
+  const buckets = new Map<number, { polyline: [number, number][] }[]>();
+  for (const t of trails) {
+    const [mx, my] = t.polyline[Math.floor(t.polyline.length / 2)] ?? [0, 0];
+    const key = tileKey(mx, my);
+    let list = buckets.get(key);
+    if (!list) buckets.set(key, (list = []));
+    list.push(t);
   }
-  if (soup.pos.length > 0) yield soupMesh(soup, mat);
+  yield null;
+  for (const list of buckets.values()) {
+    const soup: Soup = { pos: [], nrm: [] };
+    for (const t of list) {
+      pushRibbon(soup.pos, t.polyline, 2.5, DECAL_Y, ground, cell, overWater(t.polyline), Infinity);
+    }
+    yield soup.pos.length ? soupMesh(soup, mat) : null;
+  }
 }
 
-/** Features per boot slice for the ribbon layers. Sized so one slice is a few
- * milliseconds on a phone, not so small that yielding dominates. */
-const RIBBON_SLICE = 2000;
-/**
- * Vertices per mesh in the ribbon layers.
- *
- * Turning a soup into a BufferGeometry is one unsplittable pass, so the soup
- * itself has to be bounded or that pass becomes the worst slice in the boot —
- * every rail line in the city was a single 75 ms conversion. Capping trades a
- * handful of extra draw calls for a slice that always fits in a frame.
- */
-const SOUP_FLUSH = 120_000;
 
 /** Turn a soup into a mesh (normals constant-up when nrm is empty). */
 /**
@@ -1285,6 +1277,88 @@ function packUnit(values: number[], signed: boolean): THREE.BufferAttribute {
  * a normalized byte array. Their geometry is streamed and small; the ground
  * layers it would save on are the ones that are always resident anyway.
  */
+/**
+ * Largest extent, in meters, worth packing a mesh's positions into Int16.
+ *
+ * Quantization error is extent/65534, so a 2 km mesh lands at 3 cm and a
+ * city-spanning one at 66 cm. Anything past this stays Float32 rather than
+ * visibly wobble — which is also why trails and rails are tiled: as one mesh
+ * each they spanned 43 km and could not be packed at all.
+ */
+const PACK_MAX_EXTENT = 2000;
+
+/** Worst quantization error any packed mesh could show, in meters: horizontal
+ * (x + z, the diagonal bound) and vertical. Reported by the boot log and
+ * asserted by scripts/test-pack.ts. */
+export const packError = { h: 0, v: 0 };
+
+/**
+ * Positions as Int16 with the mesh transform carrying scale and offset —
+ * 6 bytes a vertex instead of 12.
+ *
+ * Only ever applied to geometry whose normals are all straight up. An
+ * axis-aligned scale transforms normals by its inverse transpose, which leaves
+ * (0, 1, 0) exactly (0, 1, 0) but tilts everything else — so a non-uniform
+ * scale is free here and would be wrong on terrain or on sidewalk skirts.
+ *
+ * The per-axis scale is what makes the precision work: a street tile is ~1 km
+ * across but only tens of meters tall, so the vertical component — the one
+ * that decides whether a decal sits on the ground or in it — quantizes to
+ * fractions of a millimeter while the horizontal lands at 1.5 cm.
+ */
+function packPositions(mesh: THREE.Mesh): void {
+  const attr = mesh.geometry.getAttribute("position") as THREE.BufferAttribute | undefined;
+  const src = attr?.array;
+  if (!attr || !(src instanceof Float32Array) || attr.count === 0) return;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let minZ = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  let maxZ = -Infinity;
+  for (let i = 0; i < src.length; i += 3) {
+    const x = src[i]!;
+    const y = src[i + 1]!;
+    const z = src[i + 2]!;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z;
+    if (z > maxZ) maxZ = z;
+  }
+  if (Math.max(maxX - minX, maxY - minY, maxZ - minZ) > PACK_MAX_EXTENT) return;
+
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const cz = (minZ + maxZ) / 2;
+  // A degenerate axis (a perfectly flat tile) gets a tiny non-zero scale, so
+  // every component quantizes to 0 and reconstructs exactly at the centre.
+  const hx = Math.max((maxX - minX) / 2, 1e-6);
+  const hy = Math.max((maxY - minY) / 2, 1e-6);
+  const hz = Math.max((maxZ - minZ) / 2, 1e-6);
+  // Reciprocals hoisted: this runs over every vertex in the city's decal
+  // layers, and a divide per component showed up as ~190 ms of the fill.
+  const kx = 32767 / hx;
+  const ky = 32767 / hy;
+  const kz = 32767 / hz;
+  const q = new Int16Array(src.length);
+  for (let i = 0; i < src.length; i += 3) {
+    q[i] = Math.round((src[i]! - cx) * kx);
+    q[i + 1] = Math.round((src[i + 1]! - cy) * ky);
+    q[i + 2] = Math.round((src[i + 2]! - cz) * kz);
+  }
+  // Both forms exist right here, so the error this introduces is measurable
+  // exactly rather than argued from the bit width. Kept because the vertical
+  // component is the one that decides whether a decal sits on the ground.
+  packError.h = Math.max(packError.h, (hx + hz) / 65534);
+  packError.v = Math.max(packError.v, hy / 65534);
+  mesh.geometry.setAttribute("position", new THREE.BufferAttribute(q, 3, true));
+  mesh.position.set(cx, cy, cz);
+  mesh.scale.set(hx, hy, hz);
+}
+
 function soupMesh(soup: Soup, material: THREE.Material, sealed = true, packed = true): THREE.Mesh {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.Float32BufferAttribute(soup.pos, 3));
@@ -1305,6 +1379,9 @@ function soupMesh(soup: Soup, material: THREE.Material, sealed = true, packed = 
     geo.setAttribute("color", packed ? packUnit(soup.col, false) : new THREE.Float32BufferAttribute(soup.col, 3));
   }
   const mesh = new THREE.Mesh(geo, material);
+  // Only the constant-up case — see packPositions. `packed` is off for the
+  // headless comparisons that read raw float attributes back.
+  if (packed && !nrm) packPositions(mesh);
   return sealed ? seal(mesh) : mesh;
 }
 
@@ -1510,21 +1587,21 @@ function* railTiles(
     if (!m) mats.set(kind, (m = decalMat({ color: RAIL_STYLE[kind].color })));
     return m;
   };
-  const soups = new Map<RailLine["kind"], Soup>();
-  for (let i = 0; i < rails.length; i++) {
-    const r = rails[i]!;
-    let soup = soups.get(r.kind);
-    if (!soup) soups.set(r.kind, (soup = { pos: [], nrm: [] }));
-    pushRibbon(soup.pos, r.polyline, RAIL_STYLE[r.kind].width, DECAL_Y, ground, cell, overWater(r.polyline), Infinity);
-    if (soup.pos.length / 3 >= SOUP_FLUSH) {
-      soups.delete(r.kind);
-      yield soupMesh(soup, matOf(r.kind));
-    } else if (i % RIBBON_SLICE === RIBBON_SLICE - 1) {
-      yield null;
-    }
+  const buckets = new Map<string, { kind: RailLine["kind"]; lines: [number, number][][] }>();
+  for (const r of rails) {
+    const [mx, my] = r.polyline[Math.floor(r.polyline.length / 2)] ?? [0, 0];
+    const key = `${tileKey(mx, my)}:${r.kind}`;
+    let b = buckets.get(key);
+    if (!b) buckets.set(key, (b = { kind: r.kind, lines: [] }));
+    b.lines.push(r.polyline);
   }
-  for (const [kind, soup] of soups) {
-    if (soup.pos.length > 0) yield soupMesh(soup, matOf(kind));
+  yield null;
+  for (const b of buckets.values()) {
+    const soup: Soup = { pos: [], nrm: [] };
+    for (const line of b.lines) {
+      pushRibbon(soup.pos, line, RAIL_STYLE[b.kind].width, DECAL_Y, ground, cell, overWater(line), Infinity);
+    }
+    yield soup.pos.length ? soupMesh(soup, matOf(b.kind)) : null;
   }
 }
 

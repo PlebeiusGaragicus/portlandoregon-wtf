@@ -54,10 +54,22 @@ const world = buildWorld(map, storeFromBuildings(map.buildings), layersFromMap(m
 interface Layer {
   order: number;
   depthWrite: boolean;
-  offsets: Set<string>;
+  /** Height above the terrain, per vertex, in millimetres. */
+  lo: number;
+  hi: number;
   tris: number;
 }
+/**
+ * Positions on the flat layers are Int16 with the scale in the mesh transform,
+ * so every reading here goes through matrixWorld — the raw attribute is in
+ * normalized units and means nothing on its own. That also puts a floor under
+ * the coplanarity test: a packed vertex can sit up to a few millimetres off
+ * where it was computed, so "coplanar" is a band, not an equality.
+ */
+const PACK_MM = 5;
 const layers = new Map<number, Layer>();
+const v3 = new THREE.Vector3();
+world.group.updateMatrixWorld(true);
 world.group.traverse((o) => {
   if (!(o instanceof THREE.Mesh)) return;
   const mat = o.material as THREE.Material & { polygonOffset?: boolean; depthWrite: boolean };
@@ -65,11 +77,14 @@ world.group.traverse((o) => {
   const pos = o.geometry.getAttribute("position") as THREE.BufferAttribute;
   const nrm = o.geometry.getAttribute("normal") as THREE.BufferAttribute | undefined;
   let l = layers.get(o.renderOrder);
-  if (!l) layers.set(o.renderOrder, (l = { order: o.renderOrder, depthWrite: mat.depthWrite, offsets: new Set(), tris: 0 }));
+  if (!l) layers.set(o.renderOrder, (l = { order: o.renderOrder, depthWrite: mat.depthWrite, lo: Infinity, hi: -Infinity, tris: 0 }));
   l.tris += pos.count / 3;
   for (let v = 0; v < pos.count; v++) {
     if (nrm && nrm.getY(v) <= 0.5) continue; // skirt walls are meant to be vertical
-    l.offsets.add((pos.getY(v) - heightAt(hf, pos.getX(v), -pos.getZ(v))).toFixed(3));
+    v3.set(pos.getX(v), pos.getY(v), pos.getZ(v)).applyMatrix4(o.matrixWorld);
+    const mm = (v3.y - heightAt(hf, v3.x, -v3.z)) * 1000;
+    l.lo = Math.min(l.lo, mm);
+    l.hi = Math.max(l.hi, mm);
   }
 });
 
@@ -87,15 +102,15 @@ check("the rest are flat paint", flat.length >= 4, `${flat.length} flat layers`)
 // LEVEL disc, so it deliberately cuts across sloped ground and has no single
 // offset. (That is also why it showed the worst drape error of any layer in
 // diagnose-clipping.) Everything that claims to be draped must be coplanar.
-const draped = flat.filter((l) => l.offsets.size === 1);
-const level = flat.filter((l) => l.offsets.size > 1);
+const draped = flat.filter((l) => l.hi - l.lo <= PACK_MM);
+const level = flat.filter((l) => l.hi - l.lo > PACK_MM);
 check("at most one non-draped decal layer (level platforms)", level.length <= 1, `${level.length} found`);
-const heights = new Set<string>();
-for (const l of draped) for (const h of l.offsets) heights.add(h);
+const lo = Math.min(...draped.map((l) => l.lo));
+const hi = Math.max(...draped.map((l) => l.hi));
 check(
   "all draped decals are coplanar",
-  heights.size === 1 && draped.length >= 4,
-  `${draped.length} draped layers at heights: ${[...heights].sort().join(", ")}`,
+  hi - lo <= PACK_MM && draped.length >= 4,
+  `${draped.length} draped layers spanning ${lo.toFixed(2)}..${hi.toFixed(2)} mm above ground`,
 );
 
 // A coplanar layer that wrote depth would depth-fight its neighbours instead
