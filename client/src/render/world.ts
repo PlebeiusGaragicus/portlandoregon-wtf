@@ -1062,7 +1062,7 @@ function buildTrails(
   if (trails.length === 0) return null;
   const soup: Soup = { pos: [], nrm: [] };
   for (const t of trails) {
-    pushRibbon(soup.pos, t.polyline, 2.5, DECAL_Y, ground, cell, overWater(t.polyline));
+    pushRibbon(soup.pos, t.polyline, 2.5, DECAL_Y, ground, cell, overWater(t.polyline), Infinity);
   }
   if (soup.pos.length === 0) return null;
   return soupMesh(soup, decalMat({ color: TRAIL_COLOR }));
@@ -1328,7 +1328,7 @@ function buildRails(
   for (const r of rails) {
     let soup = soups.get(r.kind);
     if (!soup) soups.set(r.kind, (soup = { pos: [], nrm: [] }));
-    pushRibbon(soup.pos, r.polyline, RAIL_STYLE[r.kind].width, DECAL_Y, ground, cell, overWater(r.polyline));
+    pushRibbon(soup.pos, r.polyline, RAIL_STYLE[r.kind].width, DECAL_Y, ground, cell, overWater(r.polyline), Infinity);
   }
   return [...soups.entries()].map(([kind, soup]) =>
     soupMesh(soup, decalMat({ color: RAIL_STYLE[kind].color })),
