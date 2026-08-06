@@ -817,7 +817,7 @@ function buildTerrainTiles(map: GameMap, layers: LayerStores, hf: Heightfield): 
       geo.setAttribute("normal", new THREE.BufferAttribute(nrm, 3));
       geo.setAttribute("color", new THREE.BufferAttribute(col, 3));
       geo.setIndex(index);
-      meshes.push(new THREE.Mesh(geo, mat));
+      meshes.push(seal(new THREE.Mesh(geo, mat)));
     }
   }
   return meshes;
@@ -1066,7 +1066,42 @@ function buildTrails(
 }
 
 /** Turn a soup into a mesh (normals constant-up when nrm is empty). */
-function soupMesh(soup: Soup, material: THREE.Material): THREE.Mesh {
+/**
+ * Hand a static mesh's vertex data to the GPU and stop paying for it twice.
+ *
+ * three.js keeps every attribute's typed array on the JS side after uploading
+ * it, so a resident mesh costs its vertices once in WebGL and again in the
+ * heap. For geometry nobody ever reads back — terrain, asphalt, sidewalks,
+ * paint, rails — the second copy is pure waste, and it is a big one: this is
+ * most of the difference between what a headless profile reports and what the
+ * browser tab does.
+ *
+ * `onUpload` fires once, after the buffer reaches the GPU, so dropping the
+ * array there is safe. Two things must NOT be sealed: building tile meshes,
+ * whose position and colour arrays are the fire sim's canvas, and anything
+ * whose attributes are ever marked needsUpdate — a re-upload would send an
+ * empty array.
+ *
+ * The bounding sphere is computed here rather than lazily at first render,
+ * because computing it later would need the vertices this just threw away.
+ * (FPV distance culling asks for it on mode entry, which is exactly late
+ * enough to have been a nasty one to find.)
+ */
+function seal(mesh: THREE.Mesh): THREE.Mesh {
+  const geo = mesh.geometry;
+  if (!geo.boundingSphere) geo.computeBoundingSphere();
+  // Keep each array's own type — an index buffer replaced by a Float32Array
+  // would be a lie about the geometry even if nothing reads it again.
+  const drop = function (this: THREE.BufferAttribute): void {
+    const Same = this.array.constructor as new (n: number) => THREE.TypedArray;
+    this.array = new Same(0);
+  };
+  for (const attr of Object.values(geo.attributes)) (attr as THREE.BufferAttribute).onUpload(drop);
+  geo.index?.onUpload(drop);
+  return mesh;
+}
+
+function soupMesh(soup: Soup, material: THREE.Material, sealed = true): THREE.Mesh {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.Float32BufferAttribute(soup.pos, 3));
   if (soup.nrm.length) {
@@ -1077,7 +1112,8 @@ function soupMesh(soup: Soup, material: THREE.Material): THREE.Mesh {
     geo.setAttribute("normal", new THREE.BufferAttribute(up, 3));
   }
   if (soup.col) geo.setAttribute("color", new THREE.Float32BufferAttribute(soup.col, 3));
-  return new THREE.Mesh(geo, material);
+  const mesh = new THREE.Mesh(geo, material);
+  return sealed ? seal(mesh) : mesh;
 }
 
 /** Street ribbons, written straight into per-tile buffers (all normals up). */
@@ -1485,11 +1521,11 @@ export function createBuildingTiles(
     const meshes: THREE.Mesh[] = [];
     const slotOf = new Map<number | Landmark["kind"], number>();
     if (base.pos.length) {
-      slotOf.set(0, shells.addMesh(soupMesh(base, material)));
+      slotOf.set(0, shells.addMesh(soupMesh(base, material, false)));
       meshes.push(shells.meshAt(slotOf.get(0)!)!);
     }
     for (const [kind, soup] of lmSoups) {
-      slotOf.set(kind, shells.addMesh(soupMesh(soup, lmMaterial(kind))));
+      slotOf.set(kind, shells.addMesh(soupMesh(soup, lmMaterial(kind), false)));
       meshes.push(shells.meshAt(slotOf.get(kind)!)!);
     }
     for (const p of pending) shells.record(p.bi, slotOf.get(p.slot)!, p.start, p.count, p.rgb);

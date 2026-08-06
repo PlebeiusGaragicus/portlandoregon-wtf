@@ -379,7 +379,10 @@ export class Renderer {
       register(this.fpvProps.near, 2200); // street furniture: unreadable past 2 km
       register(this.fpvProps.group, 3200); // trees/street lights
       register(this.fpvProps.glow, 3800);
-      register(this.world.detail, 2400); // sidewalks/paint
+      // world.detail is deliberately NOT registered any more. It streams now,
+      // so this list — built once on entry — went stale the moment a tile was
+      // evicted, and kept the evicted mesh alive by holding a reference to it.
+      // The 5x5 tile window is a tighter bound than the 2400 m cull was.
     }
     // Enter skydiving from roughly the map camera's altitude — dramatic from
     // street zoom, capped so strategic view doesn't mean a minute of freefall.
@@ -733,7 +736,8 @@ export class Renderer {
     }
     if (this.scene.fog) this.scene.fog = null;
     if (this.fpvCullDirty) {
-      // world.detail children are shared with the map view — restore them.
+      // FPV prop sets are hidden in the map view anyway, but restoring them
+      // keeps the two modes from disagreeing about what is visible.
       for (const e of this.fpvCull) e.obj.visible = true;
       this.fpvCullDirty = false;
     }
