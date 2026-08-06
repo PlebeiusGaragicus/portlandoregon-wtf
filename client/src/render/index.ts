@@ -1,7 +1,9 @@
 import * as THREE from "three";
 import {
+  findTile,
   heightAt,
   raycastHeightfield,
+  tileKeyAt,
   worldToLatLon,
   type BuildingStore,
   type GameMap,
@@ -29,6 +31,22 @@ const NEAR_PROPS_VIEW = 1000; // above: hide small street furniture (signs, hydr
 
 const SKY_R = 20000; // FPV sky dome radius, inside the FPV far plane
 const SHADOW_MAX_VIEW = 8000; // above: shadows are subpixel, skip the pass
+/**
+ * Resident building tiles.
+ *
+ * Building geometry is streamed: only tiles near the camera exist as meshes,
+ * and the rest of the city exists only in the model. The whole city at once is
+ * 30.6M vertices and ~1.1 GB of buffers, which is what killed the tab; a 5x5
+ * window is ~1M vertices and ~50 MB.
+ *
+ * The budget is a tile COUNT, not a distance, so footprint is bounded no
+ * matter how far out the camera zooms. Beyond it, buildings simply are not
+ * drawn — which is the honest current limitation: there is no LOD yet, so a
+ * full zoom-out shows buildings near the focus and bare terrain further out.
+ * Baked LOD is what fixes that.
+ */
+const TILE_BUDGET = 121; // 11x11 km of buildings, ~200 MB
+const TILE_RADIUS_MIN = 2; // always keep a 5x5 window, however close the zoom
 
 export interface PrebuiltLayers {
   world: WorldLayers;
@@ -87,6 +105,10 @@ export class Renderer {
   private lastScaleText = "";
   private hf: Heightfield | null;
   private city: CityModel;
+  /** Last synced tile window, so the sync early-outs when nothing moved. */
+  private tileCx = NaN;
+  private tileCy = NaN;
+  private tileRadius = -1;
   private ground: (x: number, y: number) => number;
 
   private map: GameMap;
@@ -582,6 +604,45 @@ export class Renderer {
     this.webgl.setSize(w, h, false);
   }
 
+  /**
+   * Keep the building tiles around the camera resident and drop the rest.
+   *
+   * Cheap to call every frame: it early-outs unless the camera has actually
+   * crossed into a different tile or changed zoom band, so the work happens
+   * only when the visible set really changes.
+   */
+  private syncBuildingTiles(focus: { x: number; y: number }, viewHeight: number): void {
+    const store = this.store;
+    if (!store.tileKey.length || !Number.isFinite(store.tileSize)) return;
+    const { x, y } = focus;
+    // Radius from zoom: what the camera can actually see, capped by the
+    // budget so footprint never depends on how far out you zoom.
+    const seen = Math.ceil(viewHeight / store.tileSize);
+    const capped = Math.floor((Math.sqrt(TILE_BUDGET) - 1) / 2);
+    const radius = Math.max(TILE_RADIUS_MIN, Math.min(capped, seen));
+    const cx = Math.floor(x / store.tileSize);
+    const cy = Math.floor(y / store.tileSize);
+    if (cx === this.tileCx && cy === this.tileCy && radius === this.tileRadius) return;
+    this.tileCx = cx;
+    this.tileCy = cy;
+    this.tileRadius = radius;
+
+    const want: number[] = [];
+    for (let dy = -radius; dy <= radius; dy++) {
+      for (let dx = -radius; dx <= radius; dx++) {
+        const t = findTile(store, tileKeyAt((cx + dx) * store.tileSize, (cy + dy) * store.tileSize, store.tileSize));
+        if (t >= 0) want.push(t);
+      }
+    }
+    const { built } = this.world.buildings.sync(want);
+    // A rebuilt tile comes back pristine — the fire sim owns what happened to
+    // it, so it repaints the damage. This is why scars had to move out of the
+    // colour buffer before tiling could exist.
+    for (const [from, to] of built) {
+      for (let bi = from; bi < to; bi++) this.fire.restoreAppearance(bi);
+    }
+  }
+
   private applyCamera(): void {
     const aspect = (this.canvas.clientWidth || 1) / (this.canvas.clientHeight || 1);
     this.rig.apply(this.camera, aspect, this.ground(this.rig.target.x, this.rig.target.y));
@@ -594,6 +655,13 @@ export class Renderer {
     this.lastFrame = now;
 
     this.daynight.update(Date.now());
+
+    // Both camera modes stream buildings, and FPV especially: walking is the
+    // one case where the focus moves continuously across tile lines.
+    this.syncBuildingTiles(
+      this.fpvOn && this.fpv ? { x: this.fpv.x, y: this.fpv.y } : this.rig.target,
+      this.fpvOn ? 0 : this.rig.viewHeight,
+    );
 
     // Remember where the camera is, at most once a second. The saver itself
     // no-ops when nothing moved, so a parked camera costs one comparison.

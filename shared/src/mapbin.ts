@@ -34,6 +34,10 @@ const MAGIC = 0x424a4231; // "BJB1"
  * (~2 mm, dominated by Float32 rounding at city scale) is far below anything
  * visible. */
 const GRID = 0.01;
+/** Bumped on ANY layout change. A stale artefact must fail loudly here rather
+ * than decode as garbage — reading a v1 file with a v2 reader misaligned the
+ * stream and tried to allocate 9 GB before anything noticed. */
+const FORMAT_VERSION = 2;
 
 /** Normalised building categories, indexed by the store's `use` array. */
 export const BUILDING_USES = ["sfr", "mfr", "com", "off", "ind", "inst", "other"] as const;
@@ -52,6 +56,47 @@ export interface BuildingStore {
   use: Uint8Array;
   /** Source id, which landmarks reference. Not the array index. */
   id: Uint32Array;
+  /** Tile edge in metres, matching the order buildings were written in. */
+  tileSize: number;
+  /** Occupied tile keys, ascending. Key is `ty * 4096 + tx`. */
+  tileKey: Uint32Array;
+  /**
+   * Building index range per tile: tile `t` holds buildings
+   * `tileStart[t] .. tileStart[t+1]`. Because the store is written in tile
+   * order a tile is a CONTIGUOUS SLICE, which is what lets the renderer build
+   * one tile without touching the rest of the city.
+   */
+  tileStart: Uint32Array;
+}
+
+/**
+ * Tile key from world metres.
+ *
+ * Biased, because the extract contains coordinates slightly outside
+ * [0, width] x [0, height] — a footprint at y = -22.7 lands in tile row -1,
+ * and an unbiased key would go negative and wrap in the Uint32Array that
+ * stores it. 12 biased bits per axis covers tile indices -2048..2047, which
+ * is 2048 km either side of the origin at 1 km tiles.
+ */
+const TILE_BIAS = 2048;
+export function tileKeyAt(x: number, y: number, tileSize: number): number {
+  const tx = Math.floor(x / tileSize) + TILE_BIAS;
+  const ty = Math.floor(y / tileSize) + TILE_BIAS;
+  return ty * 4096 + tx;
+}
+
+/** Index into `tileKey` / `tileStart`, or -1 when the tile holds nothing. */
+export function findTile(s: BuildingStore, key: number): number {
+  let lo = 0;
+  let hi = s.tileKey.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const v = s.tileKey[mid]!;
+    if (v === key) return mid;
+    if (v < key) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
 }
 
 // ---------------------------------------------------------------- varint io
@@ -148,16 +193,20 @@ class Reader {
  * the change is wrong. Ids are preserved, and landmarks reference ids.
  */
 export function encodeBuildings(map: GameMap, tile = 1000): Uint8Array {
+  // Key off the value the decoder will SEE, not the raw input: a footprint
+  // whose first vertex sits within a centimetre of a tile line would
+  // otherwise be filed under one tile here and read back as another.
+  const q = (v: number): number => Math.fround(Math.round(v / GRID) * GRID);
   const order = map.buildings
     .map((b, i) => {
       const [x, y] = b.footprint[0] ?? [0, 0];
-      return { i, key: Math.floor(y / tile) * 4096 + Math.floor(x / tile) };
+      return { i, key: tileKeyAt(q(x), q(y), tile) };
     })
     .sort((a, b) => a.key - b.key || a.i - b.i);
 
   const w = new Writer();
   w.u32(MAGIC);
-  w.u32(1); // format version
+  w.u32(FORMAT_VERSION);
   w.u32(map.buildings.length);
 
   // Structure first: ring counts and vertex counts, so the decoder can size
@@ -176,6 +225,26 @@ export function encodeBuildings(map: GameMap, tile = 1000): Uint8Array {
   }
   w.u32(totalRings);
   w.u32(totalVerts);
+
+  // Tile table. The sort above already grouped buildings by tile, so this is a
+  // run-length pass over the sorted keys.
+  const keys: number[] = [];
+  const starts: number[] = [];
+  for (let i = 0; i < order.length; i++) {
+    const k = order[i]!.key;
+    if (i === 0 || k !== order[i - 1]!.key) {
+      keys.push(k);
+      starts.push(i);
+    }
+  }
+  w.u32(tile);
+  w.u32(keys.length);
+  let prevKey = 0;
+  for (const k of keys) {
+    w.varint(k - prevKey);
+    prevKey = k;
+  }
+  for (const st of starts) w.varint(st);
 
   // Attributes.
   for (const { i } of order) {
@@ -219,7 +288,9 @@ export function decodeBuildings(bytes: Uint8Array): BuildingStore {
   const r = new Reader(bytes);
   if (r.u32() !== MAGIC) throw new Error("not a building store");
   const version = r.u32();
-  if (version !== 1) throw new Error(`unsupported building store version ${version}`);
+  if (version !== FORMAT_VERSION) {
+    throw new Error(`building store is version ${version}, this build reads ${FORMAT_VERSION} — re-run scripts/stage-map.sh`);
+  }
   const count = r.u32();
 
   const ringStart = new Uint32Array(count + 1);
@@ -233,6 +304,18 @@ export function decodeBuildings(bytes: Uint8Array): BuildingStore {
   }
   const totalRings = r.u32();
   const totalVerts = r.u32();
+  const tileSize = r.u32();
+  const nTiles = r.u32();
+  if (nTiles > count + 1 || totalVerts < totalRings) throw new Error("building store: header looks corrupt");
+  const tileKey = new Uint32Array(nTiles);
+  let prevTileKey = 0;
+  for (let t = 0; t < nTiles; t++) {
+    prevTileKey += r.varint();
+    tileKey[t] = prevTileKey;
+  }
+  const tileStart = new Uint32Array(nTiles + 1);
+  for (let t = 0; t < nTiles; t++) tileStart[t] = r.varint();
+  tileStart[nTiles] = count;
   if (ringLen.length !== totalRings) throw new Error("building store: ring count mismatch");
 
   const ringOffset = new Uint32Array(totalRings + 1);
@@ -259,7 +342,7 @@ export function decodeBuildings(bytes: Uint8Array): BuildingStore {
     coords[i * 2] = px * GRID;
     coords[i * 2 + 1] = py * GRID;
   }
-  return { count, ringStart, ringOffset, coords, heightDm, use, id };
+  return { count, ringStart, ringOffset, coords, heightDm, use, id, tileSize, tileKey, tileStart };
 }
 
 /**
@@ -300,7 +383,22 @@ export function storeFromBuildings(buildings: Building[]): BuildingStore {
     use[b] = k < 0 ? BUILDING_USES.indexOf("other") : k;
     id[b] = src.id;
   }
-  return { count, ringStart, ringOffset, coords, heightDm, use, id };
+  // Input order is preserved, so there is no tile grouping to describe: one
+  // tile holding everything keeps the shape valid for callers that walk it.
+  return {
+    count,
+    ringStart,
+    ringOffset,
+    coords,
+    heightDm,
+    use,
+    id,
+    tileSize: Infinity,
+    // Every finite coordinate divided by Infinity floors to 0, so one key
+    // covers the lot.
+    tileKey: Uint32Array.from(count ? [tileKeyAt(0, 0, Infinity)] : []),
+    tileStart: Uint32Array.from(count ? [0, count] : [0]),
+  };
 }
 
 // ------------------------------------------------------------- read helpers
@@ -374,6 +472,8 @@ export function storeBytes(s: BuildingStore): number {
     s.coords.byteLength +
     s.heightDm.byteLength +
     s.use.byteLength +
-    s.id.byteLength
+    s.id.byteLength +
+    s.tileKey.byteLength +
+    s.tileStart.byteLength
   );
 }

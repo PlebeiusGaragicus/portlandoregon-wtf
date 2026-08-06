@@ -103,15 +103,10 @@ async function boot(): Promise<void> {
       `${(map.markingLines ?? []).length} lane lines`,
   );
   const est = estimatePeakBytes(buildings);
-  const heavy = est.bytes > 1.5e9;
   log.line(
-    `geometry budget: ~${(est.verts / 1e6).toFixed(1)}M vertices, ` +
-      `~${fmtBytes(est.bytes)} peak heap`,
-    heavy ? "warn" : "info",
+    `city geometry if built whole: ~${(est.verts / 1e6).toFixed(1)}M vertices, ~${fmtBytes(est.bytes)} — ` +
+      `streaming ${buildings.tileKey.length} tiles instead`,
   );
-  if (heavy) {
-    log.line("→ this exceeds what a phone browser will allow; a crash here is expected", "warn");
-  }
 
   done = log.step("city model");
   const city = buildCityModel(buildings, hf);
@@ -120,7 +115,10 @@ async function boot(): Promise<void> {
 
   await announce("building the city");
   const t0 = performance.now();
-  const steps = buildWorldSteps(map, buildings, hf, city);
+  // false: do NOT build every building up front. The renderer streams tiles
+  // around the camera — the whole city at once is 30.6M vertices and ~1.1 GB,
+  // which is what made a cold load take 12 s and a phone give up entirely.
+  const steps = buildWorldSteps(map, buildings, hf, city, false);
   let next = steps.next();
   while (!next.done) {
     // The generator yields the label of the step it is about to run, so the

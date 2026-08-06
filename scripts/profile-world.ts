@@ -22,7 +22,9 @@ import { gunzipSync } from "node:zlib";
 import {
   decodeBuildings,
   decodeHeightfield,
+  findTile,
   storeBytes,
+  tileKeyAt,
   type BuildingStore,
   type GameMap,
   type Heightfield,
@@ -85,9 +87,31 @@ t = performance.now();
 const city = buildCityModel(buildings, hf);
 step("city model", t);
 
+// What the client now does at boot: everything EXCEPT building geometry,
+// which the renderer streams around the camera.
 t = performance.now();
-buildWorld(map, buildings, hf, city);
-step("buildWorld", t);
+const world = buildWorld(map, buildings, hf, city, false);
+step("buildWorld (streamed)", t);
+
+// One 5x5 window, the state the first frame actually renders.
+t = performance.now();
+const centre = { x: map.meta.width / 2, y: map.meta.height / 2 };
+const want: number[] = [];
+for (let dy = -2; dy <= 2; dy++) {
+  for (let dx = -2; dx <= 2; dx++) {
+    const tt = findTile(buildings, tileKeyAt(centre.x + dx * buildings.tileSize, centre.y + dy * buildings.tileSize, buildings.tileSize));
+    if (tt >= 0) want.push(tt);
+  }
+}
+world.buildings.sync(want);
+step("5x5 building tiles", t);
+console.log(`  ${" ".repeat(24)}         ${world.buildings.stats().tiles} tiles, ` +
+  `${(world.buildings.stats().verts / 1e6).toFixed(2)}M vertices resident`);
+
+// For comparison, the old behaviour.
+t = performance.now();
+world.buildings.buildAll();
+step("...if built whole (old)", t);
 
 console.log(
   `\n  ${buildings.count} buildings, ${map.edges?.length ?? 0} street edges, ` +

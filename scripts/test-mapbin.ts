@@ -20,7 +20,10 @@ import {
   buildingUse,
   decodeBuildings,
   encodeBuildings,
+  findTile,
   forEachRingVertex,
+  ringBase,
+  tileKeyAt,
   ringCount,
   ringLength,
   storeBytes,
@@ -123,6 +126,35 @@ check("coordinates within 1 cm", worstXY <= 0.011, `worst ${(worstXY * 1000).toF
 // Heights are stored in decimetres, so half a decimetre is the bound.
 check("heights within 5 cm", worstH <= 0.051, `worst ${(worstH * 100).toFixed(1)} cm`);
 
+// The tile table is what lets the renderer build one tile without touching
+// the rest of the city, so it has to partition the store exactly.
+let tileCovered = 0;
+let tileOrderOk = true;
+let tileContentOk = true;
+for (let t = 0; t < store.tileKey.length; t++) {
+  const from = store.tileStart[t]!;
+  const to = store.tileStart[t + 1]!;
+  tileCovered += to - from;
+  if (t > 0 && store.tileKey[t]! <= store.tileKey[t - 1]!) tileOrderOk = false;
+  // Every building in the slice must actually belong to the slice's tile.
+  for (let b = from; b < to; b++) {
+    const v = ringBase(store, b, 0);
+    const n = ringLength(store, b, 0);
+    if (n === 0) continue;
+    const key = tileKeyAt(store.coords[v * 2]!, store.coords[v * 2 + 1]!, store.tileSize);
+    if (key !== store.tileKey[t]!) tileContentOk = false;
+  }
+}
+check("tiles partition every building", tileCovered === store.count, `${tileCovered} of ${store.count}`);
+check("tile keys are sorted and unique", tileOrderOk);
+check("each tile slice holds only its own buildings", tileContentOk);
+check(
+  "tile lookup finds every tile",
+  store.tileKey.every((k, t) => findTile(store, k) === t),
+  `${store.tileKey.length} tiles`,
+);
+check("a missing tile reports -1", findTile(store, 0) === -1); // biased keys never reach 0
+
 // Re-encoding a decoded store must reproduce the same bytes, or the format
 // is not a fixed point and a re-bake would churn the asset.
 const store2 = decodeBuildings(encodeBuildings({ buildings: [] } as unknown as GameMap));
@@ -141,6 +173,14 @@ if (real) {
 console.log(`  measured    ${mb(jsonHeap)} to parse the whole map -> ${mb(storeHeap)} to decode the store`);
 console.log(
   `  vertices    ${(store.coords.length / 2 / 1e6).toFixed(2)}M in ${store.ringOffset.length - 1} rings`,
+);
+let biggest = 0;
+for (let t = 0; t < store.tileKey.length; t++) {
+  biggest = Math.max(biggest, store.tileStart[t + 1]! - store.tileStart[t]!);
+}
+console.log(
+  `  tiles       ${store.tileKey.length} occupied at ${store.tileSize} m, ` +
+    `${Math.round(store.count / Math.max(1, store.tileKey.length))} buildings median, ${biggest} in the busiest`,
 );
 
 check("store is under 60 MB resident", storeBytes(store) < 60e6, mb(storeBytes(store)));

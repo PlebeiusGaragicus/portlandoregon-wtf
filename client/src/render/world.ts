@@ -178,6 +178,9 @@ export interface WorldLayers {
   setBlend(f: number): void;
   /** In-place surgery on the merged building soups (fire/destruction). */
   shells: BuildingShells;
+  /** Streamable building geometry. Empty until synced, unless the caller
+   * asked for the whole city up front. */
+  buildings: BuildingTiles;
 }
 
 /**
@@ -192,7 +195,10 @@ export class BuildingShells {
   private start: Uint32Array; // first vertex of the prism
   private vcount: Uint32Array;
   private rgb: Float32Array; // build-time tint (palette or landmark theme)
-  private meshes: THREE.Mesh[] = [];
+  /** Live meshes by slot. Slots come and go as tiles stream in and out, so
+   * this is a Map rather than a dense array. */
+  private meshes = new Map<number, THREE.Mesh>();
+  private nextSlot = 0;
   private charRGB = [0.09, 0.082, 0.078];
 
   /** `baseZ` is borrowed from the city model, not copied: rebuilding a prism
@@ -214,15 +220,37 @@ export class BuildingShells {
     this.rgb[bi * 3 + 2] = rgb[2]!;
   }
 
-  finalize(meshes: THREE.Mesh[]): void {
-    this.meshes = meshes;
+  /** Register a freshly built tile mesh; returns its slot. */
+  addMesh(mesh: THREE.Mesh): number {
+    const slot = this.nextSlot++;
+    this.meshes.set(slot, mesh);
+    return slot;
+  }
+
+  meshAt(slot: number): THREE.Mesh | undefined {
+    return this.meshes.get(slot);
+  }
+
+  dropMesh(mesh: THREE.Mesh): void {
+    for (const [slot, m] of this.meshes) {
+      if (m === mesh) {
+        this.meshes.delete(slot);
+        return;
+      }
+    }
+  }
+
+  /** A tile went away: its buildings still exist, they just have no geometry
+   * until it is rebuilt. Every surgery method already no-ops on -1. */
+  forget(from: number, to: number): void {
+    for (let bi = from; bi < to; bi++) this.meshIdx[bi] = -1;
   }
 
   /** Blend a building's vertex colors toward char black (t: 0..1). */
   char(bi: number, t: number): void {
     const mi = this.meshIdx[bi]!;
     if (mi < 0) return;
-    const mesh = this.meshes[mi];
+    const mesh = this.meshes.get(mi);
     if (!mesh) return;
     const col = mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
     // Rebuild the original per-vertex color pattern and lerp toward char —
@@ -254,7 +282,7 @@ export class BuildingShells {
   charLocal(bi: number, srcs: { x: number; y: number; f: number; r: number }[]): void {
     const mi = this.meshIdx[bi]!;
     if (mi < 0 || srcs.length === 0) return;
-    const mesh = this.meshes[mi];
+    const mesh = this.meshes.get(mi);
     if (!mesh) return;
     const col = mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
     const tmp: Soup = { pos: [], nrm: [], col: [] };
@@ -295,7 +323,7 @@ export class BuildingShells {
   collapse(bi: number): void {
     const mi = this.meshIdx[bi]!;
     if (mi < 0) return;
-    const mesh = this.meshes[mi];
+    const mesh = this.meshes.get(mi);
     if (!mesh) return;
     const tmp: Soup = { pos: [], nrm: [], col: [] };
     const rubbleH = Math.max(1.4, Math.min(5, buildingHeight(this.store, bi) * 0.16));
@@ -360,8 +388,9 @@ export function buildWorld(
   buildings: BuildingStore,
   hf?: Heightfield | null,
   city?: CityModel,
+  buildEveryBuilding = true,
 ): WorldLayers {
-  const it = buildWorldSteps(map, buildings, hf, city);
+  const it = buildWorldSteps(map, buildings, hf, city, buildEveryBuilding);
   let r = it.next();
   while (!r.done) r = it.next();
   return r.value;
@@ -379,6 +408,7 @@ export function* buildWorldSteps(
   buildings: BuildingStore,
   hf?: Heightfield | null,
   city: CityModel = buildCityModel(buildings, hf),
+  buildEveryBuilding = true,
 ): Generator<string, WorldLayers, void> {
   const ground: GroundFn = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
   const group = new THREE.Group();
@@ -425,11 +455,16 @@ export function* buildWorldSteps(
   const stops = buildRailStops(map.railStops ?? [], ground);
   if (stops) group.add(...order([stops], DECAL_ORDER.railStop));
 
-  yield `${buildings.count} building prisms`;
   const landmarkBuildings = new Map<number, Landmark["kind"]>();
   for (const m of map.landmarks ?? []) for (const id of m.buildingIds ?? []) landmarkBuildings.set(id, m.kind);
-  const { meshes: buildingMeshes, shells } = buildBuildingTiles(buildings, landmarkBuildings, city);
-  for (const mesh of buildingMeshes) group.add(mesh);
+  const tiles = createBuildingTiles(buildings, landmarkBuildings, city);
+  group.add(tiles.group);
+  if (buildEveryBuilding) {
+    // Headless tools and tests still want the whole city in one call. The
+    // renderer does NOT take this path — it syncs tiles from the camera.
+    yield `${buildings.count} building prisms`;
+    tiles.buildAll();
+  }
 
   // Street-level dressing, in its own zoom-gated group.
   const detail = new THREE.Group();
@@ -471,7 +506,8 @@ export function* buildWorldSteps(
   return {
     group,
     detail,
-    shells,
+    shells: tiles.shells,
+    buildings: tiles,
     setBlend(f: number): void {
       const t = Math.min(1, Math.max(0, f));
       streetMat.color.lerpColors(streetNear, streetFar, t);
@@ -1010,13 +1046,41 @@ function buildRailStops(stops: RailStop[], ground: GroundFn): THREE.Mesh | null 
   return soupMesh(soup, decalMat({ vertexColors: true }));
 }
 
-/** Buildings written straight into per-tile buffers (keyed by first vertex). */
-function buildBuildingTiles(
+/**
+ * Buildings as streamable tiles.
+ *
+ * The store is written in tile order, so a tile's buildings are a contiguous
+ * index range — building one tile touches nothing else. That is the whole
+ * point: resident geometry becomes a function of how much the camera can see,
+ * not of how big the city is. Portland costs the same as a map ten times
+ * larger.
+ *
+ * Nothing here holds sim state. A tile can be thrown away and rebuilt at any
+ * time; damage comes back because it lives in ScarField, and the fire sim
+ * repaints a rebuilt tile through FireSim.restoreAppearance.
+ */
+export interface BuildingTiles {
+  group: THREE.Group;
+  shells: BuildingShells;
+  /**
+   * Make exactly `want` resident. Returns the building index ranges that were
+   * newly built, so the caller can repaint their damage.
+   */
+  sync(want: Iterable<number>): { built: [number, number][]; evicted: number };
+  /** Build the whole city at once — the old behaviour, for headless tools. */
+  buildAll(): void;
+  stats(): { tiles: number; verts: number };
+}
+
+export function createBuildingTiles(
   store: BuildingStore,
   landmarks: Map<number, Landmark["kind"]>,
   city: CityModel,
-): { meshes: THREE.Mesh[]; shells: BuildingShells } {
-  // Palette colors as flat rgb triples, resolved once.
+): BuildingTiles {
+  const group = new THREE.Group();
+  const shells = new BuildingShells(store, city.baseZ);
+
+  // Palette colors as flat rgb triples, resolved once for the whole city.
   const palettes = new Map<string, number[][]>();
   for (const [use, hexes] of Object.entries(USE_TINTS)) {
     palettes.set(use, hexes.map((h) => {
@@ -1024,71 +1088,121 @@ function buildBuildingTiles(
       return [c.r, c.g, c.b];
     }));
   }
-  const tiles = new Map<number, Soup>();
-  // Landmark prisms get their own soup per kind: an emissive material makes
-  // the building itself glow in its civic color, day and night.
-  const lmSoups = new Map<Landmark["kind"], Soup>();
-  const shells = new BuildingShells(store, city.baseZ);
-  // Per-building vertex ranges, resolved to mesh indices after the loop
-  // (tile and landmark soups interleave while building).
-  const pending: { bi: number; key: number | string; start: number; count: number; rgb: number[] }[] = [];
-  for (let bi = 0; bi < store.count; bi++) {
-    if (!city.valid[bi]) continue;
-    const v0 = ringBase(store, bi, 0);
-    const key = tileKey(store.coords[v0 * 2]!, store.coords[v0 * 2 + 1]!);
-    let soup = tiles.get(key);
-    if (!soup) tiles.set(key, (soup = { pos: [], nrm: [], col: [] }));
-    const base = city.baseZ[bi]!;
-    const cx = city.cx[bi]!;
-    const cy = city.cy[bi]!;
-    const landmarkKind = landmarks.get(store.id[bi]!);
-    if (landmarkKind) {
-      let ls = lmSoups.get(landmarkKind);
-      if (!ls) lmSoups.set(landmarkKind, (ls = { pos: [], nrm: [], col: [] }));
-      const lmRgb = LANDMARK_RGB.get(landmarkKind)!;
-      const s0 = ls.pos.length / 3;
-      pushPrism(ls, store, bi, lmRgb, base);
-      pending.push({ bi, key: `lm:${landmarkKind}`, start: s0, count: ls.pos.length / 3 - s0, rgb: lmRgb });
-      continue;
-    }
-    // Tint keyed on a coarse spatial hash, not the part id: the footprint DB
-    // splits one building into stacked parts (podium/tower/penthouse), and
-    // per-part colors painted those as random patches. Nearby parts of the
-    // same use now share a tint, so the massing reads as ONE structure.
-    const palette = palettes.get(buildingUse(store, bi)) ?? palettes.get("other")!;
-    const qx = Math.round(cx / 45);
-    const qy = Math.round(cy / 45);
-    const hash = ((qx * 73856093) ^ (qy * 19349663)) >>> 0;
-    const rgb = palette[hash % palette.length]!;
-    const s0 = soup.pos.length / 3;
-    pushPrism(soup, store, bi, rgb, base);
-    pending.push({ bi, key, start: s0, count: soup.pos.length / 3 - s0, rgb });
-  }
   const material = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
-  const meshes = [...tiles.values()].map((soup) => soupMesh(soup, material));
-  const keyIndex = new Map<number | string, number>();
-  [...tiles.keys()].forEach((k, i) => keyIndex.set(k, i));
-  for (const [kind, soup] of lmSoups) {
-    // Lighter-tier kinds keep the tint but not the glow.
-    const emissive = kind === "school" ? 0 : 0.42;
-    keyIndex.set(`lm:${kind}`, meshes.length);
-    meshes.push(
-      soupMesh(
-        soup,
-        new THREE.MeshLambertMaterial({
-          vertexColors: true,
-          flatShading: true,
-          emissive: new THREE.Color(LANDMARK_THEMES[kind].building),
-          emissiveIntensity: emissive,
-        }),
-      ),
-    );
+  const lmMaterials = new Map<Landmark["kind"], THREE.MeshLambertMaterial>();
+  const lmMaterial = (kind: Landmark["kind"]): THREE.MeshLambertMaterial => {
+    let m = lmMaterials.get(kind);
+    if (!m) {
+      // Lighter-tier kinds keep the tint but not the glow.
+      lmMaterials.set(kind, (m = new THREE.MeshLambertMaterial({
+        vertexColors: true,
+        flatShading: true,
+        emissive: new THREE.Color(LANDMARK_THEMES[kind].building),
+        emissiveIntensity: kind === "school" ? 0 : 0.42,
+      })));
+    }
+    return m;
+  };
+
+  /** Resident tiles by index into store.tileKey. */
+  const live = new Map<number, THREE.Mesh[]>();
+  let residentVerts = 0;
+
+  function build(t: number): void {
+    if (live.has(t)) return;
+    const from = store.tileStart[t]!;
+    const to = store.tileStart[t + 1]!;
+    const base: Soup = { pos: [], nrm: [], col: [] };
+    // Landmark prisms need their own emissive material, so they go in a
+    // sibling soup per kind rather than the tile's main one.
+    const lmSoups = new Map<Landmark["kind"], Soup>();
+    const pending: { bi: number; slot: number | Landmark["kind"]; start: number; count: number; rgb: number[] }[] = [];
+
+    for (let bi = from; bi < to; bi++) {
+      if (!city.valid[bi]) continue;
+      const z = city.baseZ[bi]!;
+      const kind = landmarks.get(store.id[bi]!);
+      if (kind) {
+        let ls = lmSoups.get(kind);
+        if (!ls) lmSoups.set(kind, (ls = { pos: [], nrm: [], col: [] }));
+        const rgb = LANDMARK_RGB.get(kind)!;
+        const s0 = ls.pos.length / 3;
+        pushPrism(ls, store, bi, rgb, z);
+        pending.push({ bi, slot: kind, start: s0, count: ls.pos.length / 3 - s0, rgb });
+        continue;
+      }
+      // Tint keyed on a coarse spatial hash, not the part id: the footprint DB
+      // splits one building into stacked parts (podium/tower/penthouse), and
+      // per-part colors painted those as random patches. Nearby parts of the
+      // same use now share a tint, so the massing reads as ONE structure.
+      const palette = palettes.get(buildingUse(store, bi)) ?? palettes.get("other")!;
+      const qx = Math.round(city.cx[bi]! / 45);
+      const qy = Math.round(city.cy[bi]! / 45);
+      const hash = ((qx * 73856093) ^ (qy * 19349663)) >>> 0;
+      const rgb = palette[hash % palette.length]!;
+      const s0 = base.pos.length / 3;
+      pushPrism(base, store, bi, rgb, z);
+      pending.push({ bi, slot: 0, start: s0, count: base.pos.length / 3 - s0, rgb });
+    }
+
+    const meshes: THREE.Mesh[] = [];
+    const slotOf = new Map<number | Landmark["kind"], number>();
+    if (base.pos.length) {
+      slotOf.set(0, shells.addMesh(soupMesh(base, material)));
+      meshes.push(shells.meshAt(slotOf.get(0)!)!);
+    }
+    for (const [kind, soup] of lmSoups) {
+      slotOf.set(kind, shells.addMesh(soupMesh(soup, lmMaterial(kind))));
+      meshes.push(shells.meshAt(slotOf.get(kind)!)!);
+    }
+    for (const p of pending) shells.record(p.bi, slotOf.get(p.slot)!, p.start, p.count, p.rgb);
+    for (const m of meshes) {
+      m.receiveShadow = true;
+      m.castShadow = true;
+      group.add(m);
+      residentVerts += (m.geometry.getAttribute("position") as THREE.BufferAttribute).count;
+    }
+    live.set(t, meshes);
   }
-  for (const p of pending) {
-    shells.record(p.bi, keyIndex.get(p.key)!, p.start, p.count, p.rgb);
+
+  function evict(t: number): void {
+    const meshes = live.get(t);
+    if (!meshes) return;
+    for (const m of meshes) {
+      residentVerts -= (m.geometry.getAttribute("position") as THREE.BufferAttribute).count;
+      group.remove(m);
+      shells.dropMesh(m);
+      m.geometry.dispose();
+    }
+    // The buildings themselves keep existing — only their geometry is gone.
+    shells.forget(store.tileStart[t]!, store.tileStart[t + 1]!);
+    live.delete(t);
   }
-  shells.finalize(meshes);
-  return { meshes, shells };
+
+  return {
+    group,
+    shells,
+    sync(want: Iterable<number>): { built: [number, number][]; evicted: number } {
+      const keep = want instanceof Set ? (want as Set<number>) : new Set(want);
+      const built: [number, number][] = [];
+      let evicted = 0;
+      for (const t of [...live.keys()]) {
+        if (keep.has(t)) continue;
+        evict(t);
+        evicted++;
+      }
+      for (const t of keep) {
+        if (t < 0 || t >= store.tileKey.length || live.has(t)) continue;
+        build(t);
+        built.push([store.tileStart[t]!, store.tileStart[t + 1]!]);
+      }
+      return { built, evicted };
+    },
+    buildAll(): void {
+      for (let t = 0; t < store.tileKey.length; t++) build(t);
+    },
+    stats: () => ({ tiles: live.size, verts: residentVerts }),
+  };
 }
 
 /**
