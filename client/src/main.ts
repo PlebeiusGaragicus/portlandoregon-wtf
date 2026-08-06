@@ -3,10 +3,10 @@
 // standalone on GitHub Pages. (Units and the multiplayer join flow return in a
 // later phase; net.ts and the server's join path are kept for that.)
 import * as THREE from "three";
-import type { BuildingStore, Heightfield, LayerStores, PropStore } from "@battle-juice/shared";
+import type { BuildingStore, CityLod, Heightfield, LayerStores, PropStore, StreetStore } from "@battle-juice/shared";
 import { BootLog, CRASH_LIMIT, fmtBytes, probeDevice, webglAvailable } from "./bootlog.js";
 import { buildCityModel } from "./city.js";
-import { loadBuildings, loadHeightfield, loadLayers, loadMap, loadProps, MapUnavailableError } from "./mapdata.js";
+import { loadBuildings, loadCityLod, loadHeightfield, loadLayers, loadMap, loadProps, loadStreets, MapUnavailableError } from "./mapdata.js";
 import { Renderer } from "./render/index.js";
 import { buildLandmarks } from "./render/landmarks.js";
 import { buildProps } from "./render/props.js";
@@ -56,20 +56,27 @@ async function announce(text: string): Promise<void> {
 }
 
 /**
- * Peak memory the build is about to demand, derived from the map itself.
+ * Largest single tile job the worker may stage, derived from the map itself.
  *
  * Every building ring edge becomes 6 wall vertices and the roof earcuts to
  * roughly (ringVerts - 2) triangles. Each vertex is buffered first as 9
- * JS array numbers (position/normal/color, 8 bytes each) and then copied into
- * Float32Arrays (36 bytes) before the JS arrays are dropped — so ~108 bytes
- * per vertex is live at the peak. This is the number that decides whether a
- * phone survives, so it is worth printing before we find out the hard way.
+ * JS array numbers and then copied into transferable Float32Arrays. This work
+ * now happens one tile at a time in the module worker; reporting the old
+ * whole-city hypothetical as a boot estimate was misleading.
  */
-function estimatePeakBytes(store: BuildingStore): { verts: number; bytes: number } {
-  const ringVerts = store.ringOffset[store.ringOffset.length - 1]!;
-  const wall = ringVerts * 6;
-  const roof = Math.max(0, ringVerts - 2 * store.count) * 3;
-  return { verts: wall + roof, bytes: (wall + roof) * 108 };
+function estimatePeakTileBytes(store: BuildingStore): { verts: number; bytes: number } {
+  let verts = 0;
+  for (let tile = 0; tile < store.tileKey.length; tile++) {
+    const from = store.tileStart[tile]!;
+    const to = store.tileStart[tile + 1]!;
+    const ringFrom = store.ringStart[from]!;
+    const ringTo = store.ringStart[to]!;
+    const ringVerts = store.ringOffset[ringTo]! - store.ringOffset[ringFrom]!;
+    const buildings = to - from;
+    const tileVerts = ringVerts * 6 + Math.max(0, ringVerts - 2 * buildings) * 3;
+    if (tileVerts > verts) verts = tileVerts;
+  }
+  return { verts, bytes: verts * 108 };
 }
 
 async function boot(): Promise<void> {
@@ -92,6 +99,8 @@ async function boot(): Promise<void> {
   const heightPromise: Promise<Heightfield | null> = loadHeightfield();
   const buildingPromise: Promise<BuildingStore> = loadBuildings();
   const propPromise: Promise<PropStore> = loadProps();
+  const streetPromise: Promise<StreetStore> = loadStreets();
+  const cityLodPromise: Promise<CityLod> = loadCityLod();
   const layerPromise: Promise<LayerStores> = loadLayers();
   const map = await loadMap((received, total) => {
     // One line per ~4 MB: enough to see the transfer move, not so much that
@@ -101,7 +110,7 @@ async function boot(): Promise<void> {
     const pct = total ? ` (${((received / total) * 100).toFixed(0)}%)` : "";
     log.line(`  ${fmtBytes(received)}${total ? ` / ${fmtBytes(total)}` : ""}${pct}`);
   });
-  done(`${map.edges.length} street edges, ${map.nodes.length} nodes`);
+  done("metadata");
 
   done = log.step("decode buildings.bin.gz");
   const buildings = await buildingPromise;
@@ -111,6 +120,10 @@ async function boot(): Promise<void> {
   const props = await propPromise;
   done(`${props.count} props`);
 
+  done = log.step("decode streets.bin.gz");
+  const streets = await streetPromise;
+  done(`${streets.edgeCount} street edges, ${streets.nodeCount} nodes`);
+
   done = log.step("decode layers.bin.gz");
   const layers = await layerPromise;
   done(`${layers.sidewalks.count} sidewalks, ${layers.markingLines.count} lane lines`);
@@ -119,17 +132,21 @@ async function boot(): Promise<void> {
   const hf = await heightPromise;
   done(hf ? `${hf.cols}x${hf.rows} cells` : "absent — flat ground");
 
+  done = log.step("decode far city texture");
+  const cityLod = await cityLodPromise;
+  done(`${cityLod.cols}x${cityLod.rows} urban mass`);
+
   // What we actually got, and what it is going to cost.
   log.line(
-    `map: ${buildings.count} buildings · ${map.edges.length} edges · ` +
+    `map: ${buildings.count} buildings · ${streets.edgeCount} edges · ` +
       `${props.count} props · ${layers.sidewalks.count} sidewalks · ` +
       `${layers.markingLines.count} lane lines`,
   );
-  const est = estimatePeakBytes(buildings);
+  const est = estimatePeakTileBytes(buildings);
   log.line(
-    `buildings: whole city always drawn as boxes (1 draw call); ` +
-      `full prisms stream near the camera, ${buildings.tileKey.length} tiles ` +
-      `(~${(est.verts / 1e6).toFixed(1)}M vertices, ~${fmtBytes(est.bytes)} if built at once)`,
+    `buildings: ${buildings.tileKey.length} culled box chunks plus baked far texture; ` +
+      `full prisms stream near the camera (largest worker tile ` +
+      `~${(est.verts / 1e6).toFixed(2)}M vertices / ${fmtBytes(est.bytes)} staged)`,
   );
 
   done = log.step("city model");
@@ -143,7 +160,7 @@ async function boot(): Promise<void> {
   // renderer drains a few milliseconds at a time from its own frame loop: the
   // page is interactive from the first frame and the city arrives around the
   // camera over the next few seconds, instead of after twenty of them.
-  const { world, steps } = beginWorld(map, buildings, layers, hf, city);
+  const { world, steps } = beginWorld(map, buildings, layers, hf, city, true, streets, cityLod);
   done(`${buildings.tileKey.length} building tiles ready to stream`);
   await paint();
 
@@ -159,7 +176,7 @@ async function boot(): Promise<void> {
 
   done = log.step("starting renderer");
   const worldStart = performance.now();
-  const renderer = new Renderer(canvas, map, buildings, props, layers, {
+  const renderer = new Renderer(canvas, map, buildings, props, layers, streets, cityLod, {
     prebuilt: { world, props: propLayers, landmarks },
     boot: steps,
     onBootProgress: (phase) => {
@@ -187,6 +204,13 @@ async function boot(): Promise<void> {
   // Dev/debug handle (headless smoke tests steer the camera through this).
   (window as unknown as Record<string, unknown>)["__bj"] = { renderer, THREE };
   loadingEl.classList.add("done");
+  if (new URLSearchParams(window.location.search).has("benchmark")) {
+    log.line("browser benchmark scheduled");
+    void import("./benchmark.js")
+      .then(({ runBrowserBenchmark }) => runBrowserBenchmark(renderer, map))
+      .then(() => log.line("browser benchmark complete — see window.__bjBenchmark", "ok"))
+      .catch((err) => log.line(`browser benchmark failed: ${String(err)}`, "fail"));
+  }
 }
 
 const offlineDetailEl = document.getElementById("offline-detail") as HTMLParagraphElement;
@@ -290,7 +314,7 @@ if (log.crashes >= CRASH_LIMIT) {
   statusEl.textContent = "stopped after repeated crashes";
   crashDetailEl.textContent =
     `This device has failed to load the city ${log.crashes} times in a row, so the retry loop is ` +
-    "stopped. The full city needs several GB of memory to build — more than a phone browser allows. " +
+    "stopped. This device still exceeded its browser memory limit while streaming the compact city. " +
     "Last step reached:";
   retryBtn.disabled = false;
   loadingEl.classList.add("offline");

@@ -19,15 +19,20 @@ import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
 import {
   decodeBuildings,
+  decodeCityLod,
   decodeLayers,
   decodeProps,
+  decodeStreets,
   encodeBuildings,
+  encodeCityLod,
   encodeLayers,
   layerInputs,
   encodeProps,
+  encodeStreets,
   featureStoreBytes,
   LAYER_NAMES,
   propStoreBytes,
+  streetStoreBytes,
   storeBytes,
   type GameMap,
 } from "@battle-juice/shared";
@@ -48,6 +53,14 @@ const propBin = encodeProps(map.props);
 const propGz = gzipSync(propBin, { level: 9 });
 writeFileSync(join(MAP_DIR, "props.bin.gz"), propGz);
 
+const streetBin = encodeStreets(map);
+const streetGz = gzipSync(streetBin, { level: 9 });
+writeFileSync(join(MAP_DIR, "streets.bin.gz"), streetGz);
+
+const cityLodBin = encodeCityLod(map);
+const cityLodGz = gzipSync(cityLodBin, { level: 9 });
+writeFileSync(join(MAP_DIR, "city-lod.bin.gz"), cityLodGz);
+
 // Render-only vector layers. `attr` carries the one enum each needs.
 const layerBin = encodeLayers(layerInputs(map));
 const layerGz = gzipSync(layerBin, { level: 9 });
@@ -55,7 +68,13 @@ writeFileSync(join(MAP_DIR, "layers.bin.gz"), layerGz);
 
 // Everything except buildings, props and the vector layers.
 // `undefined` drops the key entirely in JSON.stringify.
-const lite: Record<string, unknown> = { ...map, buildings: undefined, props: undefined };
+const lite: Record<string, unknown> = {
+  ...map,
+  buildings: undefined,
+  props: undefined,
+  nodes: undefined,
+  edges: undefined,
+};
 for (const name of LAYER_NAMES) lite[name] = undefined;
 const liteJson = JSON.stringify(lite);
 const liteGz = gzipSync(Buffer.from(liteJson, "utf8"), { level: 9 });
@@ -75,12 +94,19 @@ const checkProps = decodeProps(gunzipSync(propGz));
 if (checkProps.count !== map.props.length) {
   throw new Error(`baked store has ${checkProps.count} props, expected ${map.props.length}`);
 }
+const checkStreets = decodeStreets(gunzipSync(streetGz));
+if (checkStreets.edgeCount !== map.edges.length || checkStreets.nodeCount !== map.nodes.length) {
+  throw new Error(`baked street store has ${checkStreets.edgeCount}/${checkStreets.nodeCount}, expected ${map.edges.length}/${map.nodes.length}`);
+}
+const checkCityLod = decodeCityLod(gunzipSync(cityLodGz));
 
 const before = statSync(SRC).size;
-const after = binGz.length + propGz.length + layerGz.length + liteGz.length;
+const after = binGz.length + propGz.length + streetGz.length + cityLodGz.length + layerGz.length + liteGz.length;
 console.log(`
   buildings.bin.gz   ${mb(binGz.length).padStart(8)}   ${check.count} buildings, ${mb(storeBytes(check))} resident
   props.bin.gz       ${mb(propGz.length).padStart(8)}   ${checkProps.count} props, ${mb(propStoreBytes(checkProps))} resident
+  streets.bin.gz     ${mb(streetGz.length).padStart(8)}   ${checkStreets.edgeCount} edges, ${checkStreets.nodeCount} nodes, ${mb(streetStoreBytes(checkStreets))} resident
+  city-lod.bin.gz    ${mb(cityLodGz.length).padStart(8)}   ${checkCityLod.cols}x${checkCityLod.rows} texels
   layers.bin.gz      ${mb(layerGz.length).padStart(8)}   ${LAYER_NAMES.map((n) => `${checkLayers[n].count} ${n}`).join(", ")}
                                   ${mb(LAYER_NAMES.reduce((a, n) => a + featureStoreBytes(checkLayers[n]), 0))} resident
   map-lite.json.gz   ${mb(liteGz.length).padStart(8)}   ${mb(liteJson.length)} of text

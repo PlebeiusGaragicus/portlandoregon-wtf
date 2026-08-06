@@ -6,8 +6,10 @@ import {
   tileKeyAt,
   worldToLatLon,
   type BuildingStore,
+  type CityLod,
   type LayerStores,
   type PropStore,
+  type StreetStore,
   type GameMap,
   type Heightfield,
 } from "@battle-juice/shared";
@@ -23,6 +25,33 @@ import { Minimap } from "./minimap.js";
 import { buildProps, radialGlowTexture, type PropLayers } from "./props.js";
 import { buildWorld, type WorldLayers } from "./world.js";
 import { createViewSaver, restoreView } from "../view.js";
+
+/** Release every currently attached Three.js resource exactly once. Detached
+ * streaming caches expose their own dispose methods. */
+function disposeTree(root: THREE.Object3D): void {
+  const geometries = new Set<THREE.BufferGeometry>();
+  const materials = new Set<THREE.Material>();
+  const textures = new Set<THREE.Texture>();
+  root.traverse((o) => {
+    if (o instanceof THREE.InstancedMesh) o.dispose();
+    if (!(o instanceof THREE.Mesh || o instanceof THREE.Line || o instanceof THREE.Points || o instanceof THREE.Sprite)) return;
+    if ("geometry" in o && o.geometry instanceof THREE.BufferGeometry) geometries.add(o.geometry);
+    const own = Array.isArray(o.material) ? o.material : [o.material];
+    for (const material of own) {
+      if (!(material instanceof THREE.Material)) continue;
+      materials.add(material);
+      for (const value of Object.values(material)) if (value instanceof THREE.Texture) textures.add(value);
+      if (material instanceof THREE.ShaderMaterial) {
+        for (const uniform of Object.values(material.uniforms)) {
+          if (uniform.value instanceof THREE.Texture) textures.add(uniform.value);
+        }
+      }
+    }
+  });
+  for (const texture of textures) texture.dispose();
+  for (const geometry of geometries) geometry.dispose();
+  for (const material of materials) material.dispose();
+}
 
 // Zoom thresholds (meters of vertical view).
 const BLEND_START = 2200; // street tint starts brightening
@@ -63,10 +92,17 @@ const PRISM_FAR_VIEW = 3000; // below: 3x3. above: boxes alone read fine
  * blocks for seconds on a phone, so it arrives over a second or two instead,
  * nearest first.
  */
+const navCaps =
+  (typeof navigator === "undefined" ? { maxTouchPoints: 0, hardwareConcurrency: 8 } : navigator) as
+    Navigator & { deviceMemory?: number };
 const HANDHELD =
-  typeof matchMedia === "function" &&
-  matchMedia("(pointer: coarse)").matches &&
-  Math.min(screen.width, screen.height) < 900;
+  (typeof screen === "undefined" ? Infinity : Math.min(screen.width, screen.height)) < 900 &&
+  navCaps.maxTouchPoints > 0 &&
+  (
+    (typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches) ||
+    (navCaps.deviceMemory !== undefined && navCaps.deviceMemory <= 6) ||
+    navCaps.hardwareConcurrency <= 6
+  );
 
 const DETAIL = HANDHELD
   ? {
@@ -89,7 +125,9 @@ const DETAIL = HANDHELD
       // 30 fps. The scene is a strategy map, not a shooter, and halving the
       // frame rate roughly halves the GPU energy per second — the thing the
       // phone was reporting as heat and stutter.
-      frameGapMs: 1000 / 30,
+      // Ask slightly below two 60 Hz ticks so timer jitter cannot turn the
+      // cap into an accidental 20 fps cadence.
+      frameGapMs: 1000 / 35,
     }
   : {
       prism: 2,
@@ -151,6 +189,18 @@ export interface RendererOpts {
   city?: CityModel;
 }
 
+export interface RendererDebugStats {
+  booting: boolean;
+  paused: boolean;
+  fpv: boolean;
+  view: { x: number; y: number; height: number };
+  render: { frame: number; calls: number; triangles: number; points: number; lines: number };
+  memory: { geometries: number; textures: number };
+  buildings: { tiles: number; verts: number };
+  dressing: { tiles: number; verts: number };
+  props: { tiles: number; instances: number; matrixBytes: number };
+}
+
 /**
  * Three.js renderer: perspective tilted camera over the baked map. Currently
  * spectator-only — navigation, no unit command (units return in a later
@@ -165,6 +215,10 @@ export class Renderer {
   /** Wall-clock of the last camera-position write; throttled, see frame(). */
   private lastViewSave = 0;
   private onPageHide: () => void;
+  private onPageShow: () => void;
+  private onVisibilityChange: () => void;
+  private onContextLost: (event: Event) => void;
+  private onContextRestored: () => void;
   private controls: Controls;
   private world: WorldLayers;
   private props: PropLayers;
@@ -221,8 +275,16 @@ export class Renderer {
   private lastFrame = 0;
   /** When the last frame was actually rendered, for the frame-rate cap. */
   private lastRender = 0;
+  private qualityScale = 1;
+  private adaptiveFrameGap = DETAIL.frameGapMs;
+  private slowFrames = 0;
+  private fastFrames = 0;
+  private lastQualityChange = 0;
   /** True while the tab is hidden and the loop has stopped scheduling. */
   private paused = false;
+  /** The one scheduled main-loop callback. Tracking it prevents duplicate
+   * loops across visibility and bfcache transitions. */
+  private rafId: number | null = null;
   private disposed = false;
   /** Remaining world build; null once drained. See pourWorld. */
   private boot: Generator<string, void, void> | null = null;
@@ -235,12 +297,14 @@ export class Renderer {
     private store: BuildingStore,
     private propStore: PropStore,
     private layers: LayerStores,
+    private streetStore: StreetStore,
+    private cityLod: CityLod,
     opts: RendererOpts = {},
   ) {
     // Log depth: a perspective frustum spanning tens of km would otherwise
     // z-fight the street ribbons floating just over the ground.
     this.webgl = new THREE.WebGLRenderer({ canvas, antialias: true, logarithmicDepthBuffer: true });
-    this.webgl.setPixelRatio(pixelRatio());
+    this.webgl.setPixelRatio(pixelRatio() * this.qualityScale);
     this.scene.background = new THREE.Color(0x14171c);
 
     this.hemi = new THREE.HemisphereLight(0xbfd0e8, 0x33302a, 0.9);
@@ -263,7 +327,7 @@ export class Renderer {
     const hf = this.hf;
     this.ground = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
     this.city = opts.city ?? buildCityModel(store, hf);
-    this.world = opts.prebuilt?.world ?? buildWorld(map, store, layers, hf, this.city);
+    this.world = opts.prebuilt?.world ?? buildWorld(map, store, layers, hf, this.city, true, streetStore, cityLod);
     this.world.group.traverse((o) => {
       if (!(o instanceof THREE.Mesh)) return;
       o.receiveShadow = true;
@@ -278,7 +342,7 @@ export class Renderer {
     this.scene.add(this.props.group, this.props.glow);
     this.landmarks = opts.prebuilt?.landmarks ?? buildLandmarks(map, store, hf);
     this.scene.add(this.landmarks.group);
-    this.actors = new Actors(map, hf);
+    this.actors = new Actors(map, hf, streetStore);
     this.scene.add(this.actors.group);
 
     // Disaster sim: fires, spread, destruction — wired into dispatch both
@@ -336,7 +400,7 @@ export class Renderer {
     const parent = canvas.parentElement ?? document.body;
     this.minimap = new Minimap(map, parent, (x, y) => {
       this.rig.target = { x, y };
-    });
+    }, streetStore);
     this.compass = document.createElement("div");
     this.compass.id = "compass";
     this.compass.innerHTML = "<span>N</span>";
@@ -381,21 +445,35 @@ export class Renderer {
     // where unload does not.
     this.onPageHide = () => {
       this.saveView();
-      // A hidden tab that keeps simulating is pure battery drain. Most
-      // browsers stop rAF on their own, but not reliably when the tab is
-      // merely occluded, and the day/night sim and actor update would keep
-      // running regardless of whether anything was drawn.
-      if (!document.hidden && this.paused) {
-        this.paused = false;
-        this.lastFrame = performance.now();
-        requestAnimationFrame(() => this.frame());
-      }
+      this.pauseFrames();
+    };
+    this.onPageShow = () => {
+      if (!document.hidden) this.resumeFrames();
+    };
+    this.onVisibilityChange = () => {
+      this.saveView();
+      if (document.hidden) this.pauseFrames();
+      else this.resumeFrames();
+    };
+    // Sealed static attributes intentionally drop their CPU arrays after the
+    // first upload. A restored WebGL context therefore cannot reconstruct the
+    // scene from Three.js alone; reload from the compact source stores.
+    this.onContextLost = (event: Event) => {
+      event.preventDefault();
+      this.pauseFrames();
+    };
+    this.onContextRestored = () => {
+      if (!this.disposed) window.location.reload();
     };
     window.addEventListener("pagehide", this.onPageHide);
-    document.addEventListener("visibilitychange", this.onPageHide);
+    window.addEventListener("pageshow", this.onPageShow);
+    document.addEventListener("visibilitychange", this.onVisibilityChange);
+    canvas.addEventListener("webglcontextlost", this.onContextLost);
+    canvas.addEventListener("webglcontextrestored", this.onContextRestored);
 
     this.lastFrame = performance.now();
-    requestAnimationFrame(() => this.frame());
+    this.paused = document.hidden;
+    this.scheduleFrame();
   }
 
   /** Client (CSS-pixel) position -> world meters: terrain raymarch when a
@@ -452,6 +530,11 @@ export class Renderer {
       this.controls.active = true;
       this.minimap.el.style.display = "";
       this.hudScale.style.display = "";
+      if (this.fpvProps) {
+        this.fire.removePropSet(this.fpvProps);
+        this.fpvProps.dispose();
+        this.fpvProps = null;
+      }
       this.hint("", 0);
       return;
     }
@@ -479,6 +562,9 @@ export class Renderer {
       this.fpv.yaw = this.rig.theta;
     }
     this.fpvOn = true;
+    // Only one prop cache may be resident. FPV has a much smaller life-size
+    // window; keeping the hidden strategic cache doubled instance buffers.
+    this.props.sync([]);
     this.controls.active = false;
     this.minimap.el.style.display = "none";
     this.hudScale.style.display = "none";
@@ -706,9 +792,13 @@ export class Renderer {
 
   dispose(): void {
     this.disposed = true;
+    this.pauseFrames();
     this.saveView();
     window.removeEventListener("pagehide", this.onPageHide);
-    document.removeEventListener("visibilitychange", this.onPageHide);
+    window.removeEventListener("pageshow", this.onPageShow);
+    document.removeEventListener("visibilitychange", this.onVisibilityChange);
+    this.canvas.removeEventListener("webglcontextlost", this.onContextLost);
+    this.canvas.removeEventListener("webglcontextrestored", this.onContextRestored);
     for (const d of this.fpvDisposers) d();
     this.fpvDisposers = [];
     this.actors.dispose();
@@ -720,14 +810,45 @@ export class Renderer {
     this.minimap.dispose();
     this.compass.remove();
     this.resizeObserver.disconnect();
+    this.world.dispose();
+    this.props.dispose();
+    this.fpvProps?.dispose();
+    disposeTree(this.scene);
+    this.scene.clear();
+    this.boot?.return();
+    this.boot = null;
+    void this.boomCtx?.close();
+    this.boomCtx = null;
     this.webgl.dispose();
+  }
+
+  private scheduleFrame(): void {
+    if (this.disposed || this.paused || this.rafId !== null) return;
+    this.rafId = requestAnimationFrame(() => {
+      this.rafId = null;
+      this.frame();
+    });
+  }
+
+  private pauseFrames(): void {
+    this.paused = true;
+    if (this.rafId !== null) cancelAnimationFrame(this.rafId);
+    this.rafId = null;
+  }
+
+  private resumeFrames(): void {
+    if (this.disposed || document.hidden) return;
+    this.paused = false;
+    this.lastFrame = performance.now();
+    this.lastRender = 0;
+    this.scheduleFrame();
   }
 
   private resize(): void {
     const w = this.canvas.clientWidth || 1;
     const h = this.canvas.clientHeight || 1;
     // Re-apply the cap: dragging a window between displays changes DPR.
-    this.webgl.setPixelRatio(pixelRatio());
+    this.webgl.setPixelRatio(pixelRatio() * this.qualityScale);
     this.webgl.setSize(w, h, false);
   }
 
@@ -799,7 +920,7 @@ export class Renderer {
     this.world.detailTiles.sync(this.wantDressing, DETAIL.perFrame.dressing);
     let propsChanged = this.props.sync(this.wantProps, DETAIL.perFrame.props);
     // The life-size FPV set streams on the same window.
-    if (this.fpvProps && this.fpvProps.sync(this.wantProps, DETAIL.perFrame.props)) propsChanged = true;
+    if (this.fpvOn && this.fpvProps && this.fpvProps.sync(this.wantProps, DETAIL.perFrame.props)) propsChanged = true;
     if (propsChanged) this.fire.repaintTrees();
     // A rebuilt tile comes back pristine — the fire sim owns what happened to
     // it, so it repaints the damage. This is why scars had to move out of the
@@ -855,8 +976,10 @@ export class Renderer {
     // Frame-rate cap, skipped while the world is still filling in — the pour
     // is budgeted per executed frame, so capping during boot would just make
     // the city take twice as long to arrive.
-    if (DETAIL.frameGapMs && !this.boot && now - this.lastRender < DETAIL.frameGapMs) {
-      requestAnimationFrame(() => this.frame());
+    // Half-millisecond tolerance prevents a nominal 33.3 ms pair of rAF
+    // ticks from missing by floating-point jitter and falling to 20 fps.
+    if (this.adaptiveFrameGap && !this.boot && now - this.lastRender + 0.5 < this.adaptiveFrameGap) {
+      this.scheduleFrame();
       return;
     }
     this.lastRender = now;
@@ -886,6 +1009,8 @@ export class Renderer {
       // haze in the sky's horizon color. Landmark plates are billboards sized
       // for the map view — at eye height they wallpaper the horizon, so off.
       this.world.setBlend(0);
+      this.world.setViewHeight(0);
+      this.world.syncGround(this.fpv.x, this.fpv.y, 0, 1);
       this.props.group.visible = false;
       this.props.glow.visible = false;
       if (this.fpvProps) {
@@ -918,9 +1043,10 @@ export class Renderer {
       this.compass.style.setProperty("--rot", `${this.fpv.yaw}rad`);
       this.sky!.position.copy(this.camera.position);
       this.updateSkyBody();
-      this.applyDayNight(this.fpv.x, this.fpv.y, this.fpv.z, true);
+      this.applyDayNight(this.fpv.x, this.fpv.y, this.fpv.z, !HANDHELD);
       this.webgl.render(this.scene, this.camera);
-      requestAnimationFrame(() => this.frame());
+      this.observeRenderCost(performance.now() - now);
+      this.scheduleFrame();
       return;
     }
     if (this.scene.fog) this.scene.fog = null;
@@ -936,6 +1062,8 @@ export class Renderer {
 
     const vh = this.rig.viewHeight;
     this.world.setBlend((vh - BLEND_START) / (BLEND_END - BLEND_START));
+    this.world.setViewHeight(vh);
+    this.world.syncGround(this.rig.target.x, this.rig.target.y, vh, 1);
     this.props.group.visible = vh < DETAIL.propsView;
     this.props.near.visible = vh < DETAIL.nearPropsView;
     this.world.detail.visible = vh < DETAIL.propsView;
@@ -961,7 +1089,36 @@ export class Renderer {
     this.updateScaleBar(vh);
 
     this.webgl.render(this.scene, this.camera);
-    requestAnimationFrame(() => this.frame());
+    this.observeRenderCost(performance.now() - now);
+    this.scheduleFrame();
+  }
+
+  /** Runtime thermal/load response. It moves slowly, with hysteresis, so a
+   * single boot spike cannot make quality pump between tiers. */
+  private observeRenderCost(renderMs: number): void {
+    if (this.boot || performance.now() - this.lastQualityChange < 3000) return;
+    if (renderMs > 25) {
+      this.slowFrames++;
+      this.fastFrames = 0;
+    } else if (renderMs < 12) {
+      this.fastFrames++;
+      this.slowFrames = 0;
+    } else {
+      this.slowFrames = 0;
+      this.fastFrames = 0;
+    }
+    if (this.slowFrames >= 20 && this.qualityScale > 0.6) {
+      this.qualityScale = Math.max(0.6, this.qualityScale - 0.2);
+      this.adaptiveFrameGap = Math.max(this.adaptiveFrameGap, 1000 / 30);
+      this.lastQualityChange = performance.now();
+      this.slowFrames = 0;
+      this.resize();
+    } else if (this.fastFrames >= 300 && this.qualityScale < 1) {
+      this.qualityScale = Math.min(1, this.qualityScale + 0.1);
+      this.lastQualityChange = performance.now();
+      this.fastFrames = 0;
+      this.resize();
+    }
   }
 
   /** Apply the current sun/moon to lights, sky, fog and lamp glow, and re-fit
@@ -1007,6 +1164,44 @@ export class Renderer {
     const pos = ` · ${Math.round(fx)}E ${Math.round(fy)}N · ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
     const label = `${dn.day ? "☀" : "☾"} ${dn.clock}${alt}${pos}`;
     if (this.hudClock.textContent !== label) this.hudClock.textContent = label;
+  }
+
+  /** Stable, side-effect-free counters for the local browser benchmark. */
+  debugStats(): RendererDebugStats {
+    const r = this.webgl.info.render;
+    const m = this.webgl.info.memory;
+    return {
+      booting: this.boot !== null,
+      paused: this.paused,
+      fpv: this.fpvOn,
+      view: { x: this.rig.target.x, y: this.rig.target.y, height: this.rig.viewHeight },
+      render: { frame: r.frame, calls: r.calls, triangles: r.triangles, points: r.points, lines: r.lines },
+      memory: { geometries: m.geometries, textures: m.textures },
+      buildings: this.world.buildings.stats(),
+      dressing: this.world.detailTiles.stats(),
+      props: this.props.stats(),
+    };
+  }
+
+  /** Deterministic camera/time controls used only by the local benchmark. */
+  debugSetView(x: number, y: number, height: number): void {
+    this.rig.target = { x, y };
+    this.rig.viewHeight = Math.max(70, Math.min(12000, height));
+    this.rig.clampToMap(this.map);
+  }
+
+  debugSetNight(night: boolean): void {
+    this.daynight.overrideT = night ? 0 : 0.5;
+  }
+
+  debugSetFpv(on: boolean): void {
+    if (on !== this.fpvOn) this.toggleFpv();
+  }
+
+  /** Exercise the same single-loop pause/resume path as lifecycle handlers. */
+  debugPauseResume(): void {
+    this.pauseFrames();
+    this.resumeFrames();
   }
 
   /** Distance scale bar (map view only): a nice round length near 150 px. */

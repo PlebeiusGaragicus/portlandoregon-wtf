@@ -1,4 +1,5 @@
-import type { GameMap } from "@battle-juice/shared";
+import type { GameMap, StreetStore } from "@battle-juice/shared";
+import { streetsFrom, type StreetAccess } from "../streets.js";
 
 // Translucent minimap overlay: prerendered streets + water base, live view
 // quad and unit dots. Click or drag jumps the camera.
@@ -15,12 +16,15 @@ export class Minimap {
   private scale: number; // px per meter
   private dragging = false;
   private disposers: (() => void)[] = [];
+  private streets: StreetAccess;
 
   constructor(
     private map: GameMap,
     parent: HTMLElement,
     private onJump: (x: number, y: number) => void,
+    streetStore?: StreetStore,
   ) {
+    this.streets = streetsFrom(map, streetStore);
     this.scale = WIDTH_PX / map.meta.width;
     this.heightPx = Math.round(map.meta.height * this.scale);
 
@@ -94,7 +98,8 @@ export class Minimap {
     fillBodies(this.map.water ?? [], "#1d3752");
 
     ctx.strokeStyle = "#3d4453";
-    for (const edge of this.map.edges) {
+    for (let i = 0; i < this.streets.edgeCount; i++) {
+      const edge = this.streets.edge(i);
       if (edge.class === "alley" || edge.class === "path") continue;
       ctx.lineWidth = edge.class === "arterial" ? 1.2 : 0.4;
       ctx.globalAlpha = edge.class === "arterial" ? 0.9 : 0.45;

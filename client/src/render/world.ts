@@ -12,6 +12,7 @@ import {
   ringLength,
   tileKeyAt,
   type BuildingStore,
+  type CityLod,
   type FeatureStore,
   type GameMap,
   type LayerStores,
@@ -20,10 +21,12 @@ import {
   type RailLine,
   type RailStop,
   type RoadClass,
-  type StreetEdge,
+  type StreetStore,
   type WaterBody,
 } from "@battle-juice/shared";
 import { buildCityModel, type CityModel } from "../city.js";
+import { streetsFrom, type StreetAccess } from "../streets.js";
+import type { PrismTileRequest, PrismTileResult } from "./tile-worker-protocol.js";
 
 /** Rail kinds, in the order the layer store encodes them. */
 const RAIL_KINDS = ["rail", "max", "streetcar", "wes"] as const;
@@ -211,6 +214,12 @@ export interface WorldLayers {
   detail: THREE.Group;
   /** Zoom-driven cosmetics (street tint brightens from altitude). */
   setBlend(f: number): void;
+  /** Switch between box chunks and the baked urban-mass far tier. */
+  setViewHeight(height: number): void;
+  /** Keep a bounded high-resolution terrain window around the camera. */
+  syncGround(x: number, y: number, viewHeight: number, budget?: number): void;
+  /** Stop workers and release detached streaming caches. */
+  dispose(): void;
   /** In-place surgery on the merged building soups (fire/destruction). */
   shells: BuildingShells;
   /** Streamable building geometry. Empty until synced, unless the caller
@@ -238,11 +247,12 @@ export interface DecalTiles {
   sync(want: Iterable<number>, budget?: number): void;
   buildAll(): void;
   stats(): { tiles: number; verts: number };
+  dispose(): void;
 }
 
 function createDetailTiles(
   layers: LayerStores,
-  edges: StreetEdge[],
+  edges: StreetAccess,
   streetMat: THREE.MeshLambertMaterial,
   overWater: (p: [number, number][]) => boolean,
   ground: GroundFn,
@@ -257,6 +267,8 @@ function createDetailTiles(
   const sidewalks = new Map<number, number[]>();
   const areas = new Map<number, number[]>();
   const lines = new Map<number, number[]>();
+  const trails = new Map<number, number[]>();
+  const rails = new Map<number, number[]>();
   const file = (index: Map<number, number[]>, key: number, i: number): void => {
     const at = index.get(key);
     if (at) at.push(i);
@@ -267,6 +279,8 @@ function createDetailTiles(
   const swStore = layers.sidewalks;
   const areaStore = layers.markingAreas;
   const lineStore = layers.markingLines;
+  const trailStore = layers.trails;
+  const railStore = layers.rails;
   const fileAll = (store: FeatureStore, index: Map<number, number[]>): void => {
     for (let i = 0; i < store.count; i++) {
       const [x, y] = featureAnchor(store, i);
@@ -276,14 +290,27 @@ function createDetailTiles(
   fileAll(swStore, sidewalks);
   fileAll(areaStore, areas);
   fileAll(lineStore, lines);
+  fileAll(trailStore, trails);
+  fileAll(railStore, rails);
   const streets = new Map<number, number[]>();
-  edges.forEach((e, i) => {
-    if (e.struct === "tunnel") return; // roads vanish into the hillside
+  for (let i = 0; i < edges.edgeCount; i++) {
+    const e = edges.edge(i);
+    if (e.struct === "tunnel") continue; // roads vanish into the hillside
     const [mx, my] = e.polyline[Math.floor(e.polyline.length / 2)]!;
     file(streets, tileKeyAt(mx, my, TS), i);
-  });
+  }
 
   const laneMat = decalMat({ color: MARK_YELLOW });
+  const trailMat = decalMat({ color: TRAIL_COLOR });
+  const railMats = new Map<RailLine["kind"], THREE.Material>();
+  const railMat = (kind: RailLine["kind"]): THREE.Material => {
+    let material = railMats.get(kind);
+    if (!material) {
+      material = decalMat({ color: RAIL_STYLE[kind].color });
+      railMats.set(kind, material);
+    }
+    return material;
+  };
   const live = new Map<number, THREE.Mesh[]>();
   let verts = 0;
 
@@ -317,7 +344,7 @@ function createDetailTiles(
     if (streetIdx.length) {
       const soup: Soup = { pos: [], nrm: [] };
       for (const i of streetIdx) {
-        const e = edges[i]!;
+        const e = edges.edge(i);
         pushRibbon(
           soup.pos, e.polyline, RENDER_WIDTH[e.class] ?? e.width, DECAL_Y, ground, cell,
           e.struct === "bridge" || overWater(e.polyline),
@@ -331,6 +358,32 @@ function createDetailTiles(
       const soup: Soup = { pos: [], nrm: [] };
       for (const i of laneIdx) pushRibbon(soup.pos, featureRings(lineStore, i)[0]!, 0.35, DECAL_Y, ground, cell);
       if (soup.pos.length) meshes.push(...order([soupMesh(soup, laneMat)], DECAL_ORDER.laneLine));
+    }
+    const trailIdx = trails.get(key) ?? [];
+    if (trailIdx.length) {
+      const soup: Soup = { pos: [], nrm: [] };
+      for (const i of trailIdx) {
+        const line = featureRings(trailStore, i)[0]!;
+        pushRibbon(soup.pos, line, 2.5, DECAL_Y, ground, cell, overWater(line), Infinity);
+      }
+      if (soup.pos.length) meshes.push(...order([soupMesh(soup, trailMat)], DECAL_ORDER.trail));
+    }
+    const railIdx = rails.get(key) ?? [];
+    if (railIdx.length) {
+      const soups = new Map<RailLine["kind"], Soup>();
+      for (const i of railIdx) {
+        const kind = RAIL_KINDS[railStore.attr[i]!] ?? "rail";
+        let soup = soups.get(kind);
+        if (!soup) {
+          soup = { pos: [], nrm: [] };
+          soups.set(kind, soup);
+        }
+        const line = featureRings(railStore, i)[0]!;
+        pushRibbon(soup.pos, line, RAIL_STYLE[kind].width, DECAL_Y, ground, cell, overWater(line), Infinity);
+      }
+      for (const [kind, soup] of soups) {
+        if (soup.pos.length) meshes.push(...order([soupMesh(soup, railMat(kind))], DECAL_ORDER.rail));
+      }
     }
     for (const m of meshes) {
       m.receiveShadow = true;
@@ -347,11 +400,23 @@ function createDetailTiles(
       verts -= (m.geometry.getAttribute("position") as THREE.BufferAttribute).count;
       group.remove(m);
       m.geometry.dispose();
+      const materials = Array.isArray(m.material) ? m.material : [m.material];
+      for (const material of materials) {
+        if (
+          material !== streetMat &&
+          material !== laneMat &&
+          material !== trailMat &&
+          ![...railMats.values()].includes(material)
+        ) material.dispose();
+      }
     }
     live.delete(key);
   }
 
-  const occupied = new Set<number>([...sidewalks.keys(), ...areas.keys(), ...lines.keys(), ...streets.keys()]);
+  const occupied = new Set<number>([
+    ...sidewalks.keys(), ...areas.keys(), ...lines.keys(), ...streets.keys(),
+    ...trails.keys(), ...rails.keys(),
+  ]);
   return {
     group,
     sync(want: Iterable<number>, budget = Infinity): void {
@@ -370,6 +435,13 @@ function createDetailTiles(
       for (const key of occupied) build(key);
     },
     stats: () => ({ tiles: live.size, verts }),
+    dispose(): void {
+      for (const key of [...live.keys()]) evict(key);
+      laneMat.dispose();
+      trailMat.dispose();
+      for (const material of railMats.values()) material.dispose();
+      group.removeFromParent();
+    },
   };
 }
 
@@ -380,6 +452,8 @@ function createDetailTiles(
  * are addressed by their index in the building store.
  */
 export class BuildingShells {
+  onChar: ((building: number, amount: number) => void) | null = null;
+  onCollapse: ((building: number) => void) | null = null;
   /** mesh slot per building (-1 = no geometry, e.g. degenerate footprint). */
   private meshIdx: Int32Array;
   private start: Uint32Array; // first vertex of the prism
@@ -436,27 +510,40 @@ export class BuildingShells {
     for (let bi = from; bi < to; bi++) this.meshIdx[bi] = -1;
   }
 
+  private wallVertexCount(bi: number): number {
+    let edges = 0;
+    for (let ring = 0; ring < ringCount(this.store, bi); ring++) edges += ringLength(this.store, bi, ring);
+    return edges * 6;
+  }
+
+  private baseColorAt(bi: number, vertex: number, wallVertices: number): [number, number, number] {
+    const r = this.rgb[bi * 3]!;
+    const g = this.rgb[bi * 3 + 1]!;
+    const b = this.rgb[bi * 3 + 2]!;
+    if (vertex >= wallVertices) return [r * ROOF_SHADE, g * ROOF_SHADE, b * ROOF_SHADE];
+    const shaded = vertex % 6 === 0 || vertex % 6 === 1 || vertex % 6 === 3;
+    return shaded ? [r * WALL_BASE_SHADE, g * WALL_BASE_SHADE, b * WALL_BASE_SHADE] : [r, g, b];
+  }
+
   /** Blend a building's vertex colors toward char black (t: 0..1). */
   char(bi: number, t: number): void {
+    this.onChar?.(bi, t);
     const mi = this.meshIdx[bi]!;
     if (mi < 0) return;
     const mesh = this.meshes.get(mi);
     if (!mesh) return;
     const col = mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
-    // Rebuild the original per-vertex color pattern and lerp toward char —
-    // no snapshots needed; the pattern is deterministic from the soup layout.
-    const tmp: Soup = { pos: [], nrm: [], col: [] };
-    pushPrism(tmp, this.store, bi, [this.rgb[bi * 3]!, this.rgb[bi * 3 + 1]!, this.rgb[bi * 3 + 2]!], this.baseZ[bi]!);
     const s = this.start[bi]!;
     const n = this.vcount[bi]!;
+    const wallVertices = this.wallVertexCount(bi);
     const [cr, cg, cb] = this.charRGB as [number, number, number];
-    const src = tmp.col!;
     for (let v = 0; v < n; v++) {
+      const [r, g, b] = this.baseColorAt(bi, v, wallVertices);
       col.setXYZ(
         s + v,
-        src[v * 3]! * (1 - t) + cr * t,
-        src[v * 3 + 1]! * (1 - t) + cg * t,
-        src[v * 3 + 2]! * (1 - t) + cb * t,
+        r * (1 - t) + cr * t,
+        g * (1 - t) + cg * t,
+        b * (1 - t) + cb * t,
       );
     }
     this.upload(col, s, n, 3);
@@ -470,23 +557,25 @@ export class BuildingShells {
    * persist in the color buffer after the fire is out.
    */
   charLocal(bi: number, srcs: { x: number; y: number; f: number; r: number }[]): void {
+    let farAmount = 0;
+    for (const source of srcs) if (source.f > farAmount) farAmount = source.f;
+    this.onChar?.(bi, farAmount);
     const mi = this.meshIdx[bi]!;
     if (mi < 0 || srcs.length === 0) return;
     const mesh = this.meshes.get(mi);
     if (!mesh) return;
     const col = mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
-    const tmp: Soup = { pos: [], nrm: [], col: [] };
-    pushPrism(tmp, this.store, bi, [this.rgb[bi * 3]!, this.rgb[bi * 3 + 1]!, this.rgb[bi * 3 + 2]!], this.baseZ[bi]!);
+    const pos = mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
     const s = this.start[bi]!;
-    const n = Math.min(this.vcount[bi]!, tmp.pos.length / 3);
+    const n = this.vcount[bi]!;
+    const wallVertices = this.wallVertexCount(bi);
     const [cr, cg, cb] = this.charRGB as [number, number, number];
     const base = this.baseZ[bi]!;
     const hInv = 1 / Math.max(1, buildingHeight(this.store, bi));
-    const src = tmp.col!;
     for (let v = 0; v < n; v++) {
-      const wx = tmp.pos[v * 3]!;
-      const wy = -tmp.pos[v * 3 + 2]!; // scene z back to world y
-      const relH = Math.min(1, Math.max(0, (tmp.pos[v * 3 + 1]! - base) * hInv));
+      const wx = pos.getX(s + v);
+      const wy = -pos.getZ(s + v); // scene z back to world y
+      const relH = Math.min(1, Math.max(0, (pos.getY(s + v) - base) * hInv));
       let c = 0;
       for (const sc of srcs) {
         const d = Math.hypot(wx - sc.x, wy - sc.y);
@@ -497,11 +586,12 @@ export class BuildingShells {
       }
       // Soot climbs: upper walls blacken slightly ahead of the base.
       const t = Math.min(1, c * (0.8 + 0.35 * relH));
+      const [r, g, b] = this.baseColorAt(bi, v, wallVertices);
       col.setXYZ(
         s + v,
-        src[v * 3]! * (1 - t) + cr * t,
-        src[v * 3 + 1]! * (1 - t) + cg * t,
-        src[v * 3 + 2]! * (1 - t) + cb * t,
+        r * (1 - t) + cr * t,
+        g * (1 - t) + cg * t,
+        b * (1 - t) + cb * t,
       );
     }
     this.upload(col, s, n, 3);
@@ -511,13 +601,12 @@ export class BuildingShells {
    * Anything above the base gets a hashed rubble height and is pulled toward
    * the centroid, with per-vertex ash-gray speckle — a heap, not a box. */
   collapse(bi: number): void {
+    this.onCollapse?.(bi);
     const mi = this.meshIdx[bi]!;
     if (mi < 0) return;
     const mesh = this.meshes.get(mi);
     if (!mesh) return;
-    const tmp: Soup = { pos: [], nrm: [], col: [] };
     const rubbleH = Math.max(1.4, Math.min(5, buildingHeight(this.store, bi) * 0.16));
-    pushPrism(tmp, this.store, bi, [0.16, 0.15, 0.14], this.baseZ[bi]!, rubbleH);
     let ccx = 0;
     let ccy = 0;
     forEachRingVertex(this.store, bi, 0, (px, py) => {
@@ -528,34 +617,31 @@ export class BuildingShells {
     ccx /= nOuter;
     ccy /= nOuter;
     const base = this.baseZ[bi]!;
-    const nv = tmp.pos.length / 3;
-    for (let v = 0; v < nv; v++) {
-      const wx = tmp.pos[v * 3]!;
-      const wz = tmp.pos[v * 3 + 1]!;
-      const wy = -tmp.pos[v * 3 + 2]!;
+    const pos = mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
+    const col = mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
+    const s = this.start[bi]!;
+    const n = this.vcount[bi]!;
+    for (let v = 0; v < n; v++) {
+      const at = s + v;
+      const wx = pos.getX(at);
+      const wz = pos.getY(at);
+      const wy = -pos.getZ(at);
       const h1 = hash2(wx * 0.73 + 11.3, wy * 0.61 - 4.7);
       const h2 = hash2(wx * 1.91 - 3.1, wy * 1.37 + 8.9);
       if (wz > base + 0.35) {
         // Top-of-heap vertex: jagged height, leaning inward — collapsed mass
         // slumps toward the middle of the footprint.
         const lean = 0.12 + h2 * 0.14;
-        tmp.pos[v * 3] = wx + (ccx - wx) * lean;
-        tmp.pos[v * 3 + 2] = -(wy + (ccy - wy) * lean);
-        tmp.pos[v * 3 + 1] = base + 0.4 + h1 * h1 * (rubbleH + 1.6);
+        pos.setXYZ(
+          at,
+          wx + (ccx - wx) * lean,
+          base + 0.4 + h1 * h1 * (rubbleH + 1.6),
+          -(wy + (ccy - wy) * lean),
+        );
       }
       // Ash speckle: charred black through pale gray ash.
       const g = 0.09 + h2 * 0.2;
-      tmp.col![v * 3] = g * 1.04;
-      tmp.col![v * 3 + 1] = g;
-      tmp.col![v * 3 + 2] = g * 0.94;
-    }
-    const pos = mesh.geometry.getAttribute("position") as THREE.BufferAttribute;
-    const col = mesh.geometry.getAttribute("color") as THREE.BufferAttribute;
-    const s = this.start[bi]!;
-    const n = Math.min(this.vcount[bi]!, nv);
-    for (let v = 0; v < n; v++) {
-      pos.setXYZ(s + v, tmp.pos[v * 3]!, tmp.pos[v * 3 + 1]!, tmp.pos[v * 3 + 2]!);
-      col.setXYZ(s + v, tmp.col![v * 3]!, tmp.col![v * 3 + 1]!, tmp.col![v * 3 + 2]!);
+      col.setXYZ(at, g * 1.04, g, g * 0.94);
     }
     this.upload(pos, s, n, 3);
     this.upload(col, s, n, 3);
@@ -580,8 +666,10 @@ export function buildWorld(
   hf?: Heightfield | null,
   city?: CityModel,
   buildEveryBuilding = true,
+  streetStore?: StreetStore,
+  cityLod?: CityLod,
 ): WorldLayers {
-  const it = buildWorldSteps(map, buildings, layers, hf, city, buildEveryBuilding);
+  const it = buildWorldSteps(map, buildings, layers, hf, city, buildEveryBuilding, streetStore, cityLod);
   let r = it.next();
   while (!r.done) r = it.next();
   return r.value;
@@ -599,8 +687,10 @@ export function* buildWorldSteps(
   hf?: Heightfield | null,
   city: CityModel = buildCityModel(buildings, hf),
   buildEveryBuilding = true,
+  streetStore?: StreetStore,
+  cityLod?: CityLod,
 ): Generator<string, WorldLayers, void> {
-  const { world, steps } = beginWorld(map, buildings, layers, hf, city, false);
+  const { world, steps } = beginWorld(map, buildings, layers, hf, city, false, streetStore, cityLod);
   let seen = "";
   for (const label of steps) {
     // Slices are frame-sized, so many share a label. A caller pumping this
@@ -613,6 +703,7 @@ export function* buildWorldSteps(
     yield `${(map.sidewalks ?? []).length} sidewalk slabs + ${(map.markingLines ?? []).length} lane lines`;
     world.detailTiles.buildAll();
   }
+  world.syncGround(map.meta.width / 2, map.meta.height / 2, 0, Infinity);
   return world;
 }
 
@@ -627,6 +718,42 @@ export interface WorldBoot {
    * of the phase it just advanced. Drain it from the frame loop.
    */
   steps: Generator<string, void, void>;
+}
+
+function buildCityLodMesh(map: GameMap, lod: CityLod, hf?: Heightfield | null): THREE.Mesh {
+  const geo = new THREE.PlaneGeometry(
+    map.meta.width,
+    map.meta.height,
+    Math.max(1, lod.cols - 1),
+    Math.max(1, lod.rows - 1),
+  );
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(map.meta.width / 2, 0, -map.meta.height / 2);
+  const position = geo.getAttribute("position") as THREE.BufferAttribute;
+  if (hf) {
+    for (let i = 0; i < position.count; i++) {
+      position.setY(i, heightAt(hf, position.getX(i), -position.getZ(i)) + 0.45);
+    }
+    position.needsUpdate = true;
+    geo.computeVertexNormals();
+  }
+  const texture = new THREE.DataTexture(lod.data, lod.cols, lod.rows, THREE.RGBAFormat);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.magFilter = THREE.LinearFilter;
+  texture.minFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+  texture.needsUpdate = true;
+  const material = new THREE.MeshBasicMaterial({
+    map: texture,
+    transparent: true,
+    depthWrite: false,
+    polygonOffset: true,
+    polygonOffsetFactor: -3,
+  });
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.renderOrder = DECAL_ORDER.street + 0.25;
+  mesh.frustumCulled = true;
+  return mesh;
 }
 
 /**
@@ -654,6 +781,8 @@ export function beginWorld(
   hf?: Heightfield | null,
   city: CityModel = buildCityModel(buildings, hf),
   deferFar = true,
+  streetStore?: StreetStore,
+  cityLod?: CityLod,
 ): WorldBoot {
   const ground: GroundFn = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
   const group = new THREE.Group();
@@ -663,17 +792,25 @@ export function beginWorld(
   // surface kinks, so draped decals conform instead of clipping.
   const cell = hf ? hf.cellSize : Infinity;
   const streetMat = decalMat({ color: STREET_COLOR });
+  const streets = streetsFrom(map, streetStore);
+  const terrain = hf ? createTerrainCache(map, layers, hf) : null;
+  if (terrain) group.add(terrain.group);
 
   const landmarkBuildings = new Map<number, Landmark["kind"]>();
   for (const m of map.landmarks ?? []) for (const id of m.buildingIds ?? []) landmarkBuildings.set(id, m.kind);
   const tiles = createBuildingTiles(buildings, landmarkBuildings, city, deferFar);
   group.add(tiles.group);
+  const lod2 = cityLod ? buildCityLodMesh(map, cityLod, hf) : null;
+  if (lod2) {
+    lod2.visible = false;
+    group.add(lod2);
+  }
 
   // Street-level dressing, in its own zoom-gated group — streamed, because
   // sidewalks alone outweigh every building in the city.
   const detail = new THREE.Group();
   group.add(detail);
-  const detailTiles = createDetailTiles(layers, map.edges, streetMat, overWaterLater, ground, cell);
+  const detailTiles = createDetailTiles(layers, streets, streetMat, overWaterLater, ground, cell);
   detail.add(detailTiles.group);
 
   // The water test needs the rasterized mask, which is cheap but not free, and
@@ -696,6 +833,27 @@ export function beginWorld(
     setBlend(f: number): void {
       const t = Math.min(1, Math.max(0, f));
       streetMat.color.lerpColors(streetNear, streetFar, t);
+    },
+    setViewHeight(height: number): void {
+      const textureTier = Boolean(lod2) && height >= 3000;
+      tiles.far.visible = !textureTier;
+      if (lod2) lod2.visible = textureTier;
+    },
+    syncGround(x: number, y: number, viewHeight: number, budget = 1): void {
+      terrain?.sync(x, y, viewHeight, budget);
+    },
+    dispose(): void {
+      tiles.dispose();
+      detailTiles.dispose();
+      terrain?.dispose();
+      if (lod2) {
+        lod2.removeFromParent();
+        lod2.geometry.dispose();
+        const mat = lod2.material as THREE.MeshBasicMaterial;
+        mat.map?.dispose();
+        mat.dispose();
+      }
+      group.removeFromParent();
     },
   };
 
@@ -726,12 +884,7 @@ export function beginWorld(
 
   function* fill(): Generator<string, void, void> {
     if (hf) {
-      // Water/parks/yards are painted INTO the terrain's vertex colors instead
-      // of draped as separate polygons: no z-fighting, no sliver triangles
-      // from earcutting the huge clipped river rings — and since 3DEP is
-      // hydro-flattened, water-tinted terrain IS the river surface (including
-      // the drop at Willamette Falls).
-      yield* pour("terrain", terrainTiles(map, layers, hf), 0);
+      for (const _ of terrain!.prepare()) yield "terrain";
     } else {
       place(buildGround(map), 0);
       const parks = flatPolys(featurePolys(layers.parks), PARK_COLOR, DECAL_Y);
@@ -754,24 +907,12 @@ export function beginWorld(
     const water = overWater;
     yield "water mask";
 
-    // Coarse asphalt for the WHOLE city, always resident: vertices only where
-    // the source polyline bends, with no resampling onto the terrain grid.
-    // 16.98M vertices become 1.6M, which is what makes the street grid
-    // affordable to keep everywhere — and the grid is most of what you read
-    // when you look at the city from altitude. Accurate ribbons stream on top
-    // near the camera; see createDetailTiles.
-    yield* pour(
-      "streets",
-      streetTiles(map.edges, streetMat, ground, Infinity, water, FAR_RIBBON_STEP),
-      DECAL_ORDER.street,
-    );
-
-    yield* pour("rails", railTiles(featureLines(layers.rails, RAIL_KINDS), ground, cell, water), DECAL_ORDER.rail);
+    // Streets, trails and rail ribbons now share the camera-window cache in
+    // createDetailTiles. Keeping a second city-wide coarse copy consumed GPU
+    // memory and still submitted off-screen tiles; wide zoom uses LOD2.
     const stops = buildRailStops(map.railStops ?? [], ground);
     if (stops) place(stops, DECAL_ORDER.railStop);
     yield "rails";
-
-    yield* pour("trails", trailTiles(featureLines(layers.trails), ground, cell, water), DECAL_ORDER.trail);
   }
 
   return { world, steps: fill() };
@@ -947,6 +1088,143 @@ function* terrainTiles(map: GameMap, layers: LayerStores, hf: Heightfield): Gene
       yield seal(new THREE.Mesh(geo, mat));
     }
   }
+}
+
+interface TerrainCache {
+  group: THREE.Group;
+  prepare(): Generator<void, void, void>;
+  sync(x: number, y: number, viewHeight: number, budget?: number): void;
+  dispose(): void;
+}
+
+/** High-resolution terrain is rebuilt from the retained 3DEP heightfield in a
+ * bounded camera cache. A cheap flat backing and the LOD2 drape cover wide
+ * views; crossing the whole map no longer leaves every uploaded chunk alive. */
+function createTerrainCache(map: GameMap, layers: LayerStores, hf: Heightfield): TerrainCache {
+  const group = new THREE.Group();
+  const backing = buildGround(map);
+  (backing.material as THREE.Material).dispose();
+  backing.material = new THREE.MeshBasicMaterial({ color: GROUND_COLOR });
+  backing.geometry.deleteAttribute("normal");
+  seal(backing);
+  backing.position.y = -2;
+  group.add(backing);
+  const material = new THREE.MeshLambertMaterial({ vertexColors: true });
+  const mask = new Uint8Array(hf.cols * hf.rows);
+  const live = new Map<number, THREE.Mesh>();
+  const chunksX = Math.ceil((hf.cols - 1) / TERRAIN_CHUNK);
+  const chunksY = Math.ceil((hf.rows - 1) / TERRAIN_CHUNK);
+  let ready = false;
+
+  function* prepare(): Generator<void, void, void> {
+    for (const _ of paintMask(featurePolys(layers.parks), hf, mask, CAT_PARK)) yield;
+    for (const _ of paintMask(featurePolys(layers.railYards), hf, mask, CAT_YARD)) yield;
+    for (const _ of paintMask(featurePolys(layers.water), hf, mask, CAT_WATER)) yield;
+    ready = true;
+  }
+
+  function build(cx: number, cy: number): void {
+    const key = cy * chunksX + cx;
+    if (live.has(key)) return;
+    const lastC = hf.cols - 1;
+    const lastR = hf.rows - 1;
+    const c0 = cx * TERRAIN_CHUNK;
+    const r0 = cy * TERRAIN_CHUNK;
+    const c1 = Math.min(lastC, c0 + TERRAIN_CHUNK);
+    const r1 = Math.min(lastR, r0 + TERRAIN_CHUNK);
+    const width = c1 - c0 + 1;
+    const height = r1 - r0 + 1;
+    const position = new Float32Array(width * height * 3);
+    const normal = new Int8Array(width * height * 3);
+    const color = new Uint8Array(width * height * 3);
+    let at = 0;
+    for (let row = r0; row <= r1; row++) {
+      for (let col = c0; col <= c1; col++) {
+        const wx = col === lastC ? map.meta.width : col * hf.cellSize;
+        const wy = row === lastR ? map.meta.height : row * hf.cellSize;
+        position[at] = wx;
+        position[at + 1] = hf.data[row * hf.cols + col]! * hf.scale;
+        position[at + 2] = -wy;
+        const rgb = CAT_RGB[mask[row * hf.cols + col]!]!;
+        color[at] = Math.round(rgb[0]! * 255);
+        color[at + 1] = Math.round(rgb[1]! * 255);
+        color[at + 2] = Math.round(rgb[2]! * 255);
+        const cm = Math.max(0, col - 1);
+        const cp = Math.min(lastC, col + 1);
+        const rm = Math.max(0, row - 1);
+        const rp = Math.min(lastR, row + 1);
+        const gx = ((hf.data[row * hf.cols + cp]! - hf.data[row * hf.cols + cm]!) * hf.scale) / ((cp - cm) * hf.cellSize);
+        const gy = ((hf.data[rp * hf.cols + col]! - hf.data[rm * hf.cols + col]!) * hf.scale) / ((rp - rm) * hf.cellSize);
+        const inv = 127 / Math.hypot(gx, 1, gy);
+        normal[at] = Math.round(-gx * inv);
+        normal[at + 1] = Math.round(inv);
+        normal[at + 2] = Math.round(gy * inv);
+        at += 3;
+      }
+    }
+    const index: number[] = [];
+    for (let row = 0; row < height - 1; row++) {
+      for (let col = 0; col < width - 1; col++) {
+        const a = row * width + col;
+        const b = a + 1;
+        const d = a + width;
+        index.push(a, b, d, b, d + 1, d);
+      }
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(position, 3));
+    geometry.setAttribute("normal", new THREE.BufferAttribute(normal, 3, true));
+    geometry.setAttribute("color", new THREE.BufferAttribute(color, 3, true));
+    geometry.setIndex(index);
+    const mesh = seal(new THREE.Mesh(geometry, material));
+    mesh.receiveShadow = true;
+    group.add(mesh);
+    live.set(key, mesh);
+  }
+
+  return {
+    group,
+    prepare,
+    sync(x: number, y: number, viewHeight: number, budget = 1): void {
+      if (!ready) return;
+      const span = TERRAIN_CHUNK * hf.cellSize;
+      const centerX = Math.max(0, Math.min(chunksX - 1, Math.floor(x / span)));
+      const centerY = Math.max(0, Math.min(chunksY - 1, Math.floor(y / span)));
+      const radius = viewHeight < 3000 ? 2 : 1;
+      const wanted: { key: number; x: number; y: number; d: number }[] = [];
+      for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          const tx = centerX + dx;
+          const ty = centerY + dy;
+          if (tx < 0 || ty < 0 || tx >= chunksX || ty >= chunksY) continue;
+          wanted.push({ key: ty * chunksX + tx, x: tx, y: ty, d: dx * dx + dy * dy });
+        }
+      }
+      wanted.sort((a, b) => a.d - b.d);
+      const keep = new Set(wanted.map((tile) => tile.key));
+      for (const [key, mesh] of live) {
+        if (keep.has(key)) continue;
+        mesh.removeFromParent();
+        mesh.geometry.dispose();
+        live.delete(key);
+      }
+      let made = 0;
+      for (const tile of wanted) {
+        if (made >= budget) break;
+        if (live.has(tile.key)) continue;
+        build(tile.x, tile.y);
+        made++;
+      }
+    },
+    dispose(): void {
+      for (const mesh of live.values()) mesh.geometry.dispose();
+      live.clear();
+      backing.geometry.dispose();
+      (backing.material as THREE.Material).dispose();
+      material.dispose();
+      group.removeFromParent();
+    },
+  };
 }
 
 const DRAPE_EDGE = 10; // m — subdivide draped triangles down to this
@@ -1390,7 +1668,7 @@ function soupMesh(soup: Soup, material: THREE.Material, sealed = true, packed = 
 
 /** Street ribbons, written straight into per-tile buffers (all normals up). */
 function* streetTiles(
-  edges: StreetEdge[],
+  edges: StreetAccess,
   mat: THREE.MeshLambertMaterial,
   ground: GroundFn,
   cell: number,
@@ -1399,19 +1677,21 @@ function* streetTiles(
 ): Generator<THREE.Mesh | null, void, void> {
   // Bucket first (cheap, no geometry), then build one tile per slice — so the
   // street grid appears tile by tile instead of all at once at the end.
-  const buckets = new Map<number, StreetEdge[]>();
-  for (const edge of edges) {
+  const buckets = new Map<number, number[]>();
+  for (let i = 0; i < edges.edgeCount; i++) {
+    const edge = edges.edge(i);
     if (edge.struct === "tunnel") continue; // roads vanish into the hillside
     const [mx, my] = edge.polyline[Math.floor(edge.polyline.length / 2)]!;
     const key = tileKey(mx, my);
     let list = buckets.get(key);
     if (!list) buckets.set(key, (list = []));
-    list.push(edge);
+    list.push(i);
   }
   yield null;
   for (const list of buckets.values()) {
     const soup: Soup = { pos: [], nrm: [] };
-    for (const edge of list) {
+    for (const index of list) {
+      const edge = edges.edge(index);
       const span = edge.struct === "bridge" || overWater(edge.polyline);
       pushRibbon(soup.pos, edge.polyline, RENDER_WIDTH[edge.class] ?? edge.width, DECAL_Y, ground, cell, span, step);
     }
@@ -1646,8 +1926,8 @@ function buildRailStops(stops: RailStop[], ground: GroundFn): THREE.Mesh | null 
 export interface BuildingTiles {
   group: THREE.Group;
   shells: BuildingShells;
-  /** Whole-city massing, one draw call, always resident. */
-  far: THREE.InstancedMesh;
+  /** Whole-city massing in bounded tile chunks for GPU frustum culling. */
+  far: THREE.Group;
   /**
    * Make `want` resident, building at most `budget` tiles this call.
    *
@@ -1672,6 +1952,7 @@ export interface BuildingTiles {
    */
   fillFar(): Generator<void, void, void>;
   stats(): { tiles: number; verts: number };
+  dispose(): void;
 }
 
 /** Far-tier tiles placed per fill step. */
@@ -1710,42 +1991,28 @@ export function createBuildingTiles(
     return m;
   };
 
-  /**
-   * Far tier: every building in the city as one instanced box.
-   *
-   * Full prisms are ~57 vertices each and 1.1 GB for the city, which is why
-   * they have to stream. A box is a shared geometry plus a per-instance
-   * transform and colour — about 76 bytes each, 48 MB for all 538k, in a
-   * SINGLE draw call. So the whole city can just... stay. Flying at altitude
-   * shows the real skyline again, and nothing pops at the horizon.
-   *
-   * The trade is per-building detail: an instance has one colour, so it
-   * cannot carry charLocal's soot gradient or collapse's rubble mound. That
-   * is exactly why it is the FAR tier — anything near the camera is a real
-   * prism with all of that intact, and its box is hidden.
-   */
+  /** Far tier: immutable tile-local instance buffers. The old single mesh
+   * submitted all 538k boxes every frame and dirtied a ~35 MB matrix buffer
+   * whenever one near tile changed. Tile chunks retain the same compact boxes
+   * while allowing frustum culling and visibility changes with no uploads. */
   const boxGeo = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
-  const far = new THREE.InstancedMesh(
-    boxGeo,
-    new THREE.MeshLambertMaterial({ flatShading: true }),
-    Math.max(1, store.count),
-  );
-  far.frustumCulled = false; // one mesh spanning the whole map
-  far.castShadow = false; // the near prisms cast; boxes at range would not read
-  far.receiveShadow = true;
-  far.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  const boxMaterial = new THREE.MeshLambertMaterial({ flatShading: true });
+  const far = new THREE.Group();
+  const farTiles: (THREE.InstancedMesh | null)[] = new Array(store.tileKey.length).fill(null);
   group.add(far);
 
   const m4 = new THREE.Matrix4();
   const col = new THREE.Color();
+  const farChar = new Uint8Array(store.count);
+  const farCollapsed = new Uint8Array(store.count);
 
   /** Oriented box for one building, from the longest footprint edge. An
    * axis-aligned box would fatten every diagonal building; using the longest
    * edge as the axis keeps blocks looking like blocks. */
-  function setBox(bi: number, hidden: boolean): void {
-    if (!city.valid[bi] || hidden) {
+  function setBox(mesh: THREE.InstancedMesh, slot: number, bi: number): void {
+    if (!city.valid[bi]) {
       m4.makeScale(0, 0, 0);
-      far.setMatrixAt(bi, m4);
+      mesh.setMatrixAt(slot, m4);
       return;
     }
     const from = ringBase(store, bi, 0);
@@ -1786,11 +2053,11 @@ export function createBuildingTiles(
     const wx = cu * ux - cv * uy;
     const wy = cu * uy + cv * ux;
     // Match pushPrism's roof height so the tiers agree where they meet.
-    const h = 1 + buildingHeight(store, bi);
+    const h = farCollapsed[bi] ? Math.max(1.4, Math.min(5, buildingHeight(store, bi) * 0.16)) : 1 + buildingHeight(store, bi);
     m4.makeRotationY(-Math.atan2(uy, ux));
     m4.scale(new THREE.Vector3(Math.max(0.5, uMax - uMin), h, Math.max(0.5, vMax - vMin)));
     m4.setPosition(wx, city.baseZ[bi]!, -wy);
-    far.setMatrixAt(bi, m4);
+    mesh.setMatrixAt(slot, m4);
   }
 
   /** Resident tiles by index into store.tileKey. Declared before the far fill
@@ -1807,39 +2074,86 @@ export function createBuildingTiles(
     return palette[hash % palette.length]!;
   }
 
-  /** Boxes placed so far, as a count of tiles. `far.count` tracks it, so the
-   * unfilled tail is simply not drawn rather than drawn wrong. */
-  let farFilled = 0;
-  function growFar(upto: number): void {
-    for (; farFilled < upto; farFilled++) {
-      const from = store.tileStart[farFilled]!;
-      const to = store.tileStart[farFilled + 1]!;
-      // A tile whose prisms are already up must stay hidden — `sync` can run
-      // ahead of this fill, and un-hiding here would double-draw it.
-      const hidden = live.has(farFilled);
-      for (let bi = from; bi < to; bi++) {
-        setBox(bi, hidden);
-        const rgb = tintOf(bi);
-        far.setColorAt(bi, col.setRGB(rgb[0]!, rgb[1]!, rgb[2]!));
-      }
-    }
-    far.count = store.tileStart[farFilled]!;
-    far.instanceMatrix.needsUpdate = true;
-    if (far.instanceColor) far.instanceColor.needsUpdate = true;
+  function farTintOf(bi: number): [number, number, number] {
+    const rgb = tintOf(bi);
+    const amount = farCollapsed[bi] ? 0.92 : farChar[bi]! / 255;
+    return [
+      rgb[0]! * (1 - amount) + 0.09 * amount,
+      rgb[1]! * (1 - amount) + 0.082 * amount,
+      rgb[2]! * (1 - amount) + 0.078 * amount,
+    ];
   }
-  far.count = 0;
+
+  /** Boxes placed so far, one self-culling mesh per tile. */
+  let farFilled = 0;
+  function buildFarTile(tile: number): void {
+    if (farTiles[tile]) return;
+    const from = store.tileStart[tile]!;
+    const to = store.tileStart[tile + 1]!;
+    const mesh = new THREE.InstancedMesh(boxGeo, boxMaterial, Math.max(1, to - from));
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    for (let bi = from; bi < to; bi++) {
+      const slot = bi - from;
+      setBox(mesh, slot, bi);
+      const rgb = farTintOf(bi);
+      mesh.setColorAt(slot, col.setRGB(rgb[0]!, rgb[1]!, rgb[2]!));
+    }
+    mesh.count = to - from;
+    mesh.userData["tile"] = tile;
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    mesh.visible = !live.has(tile);
+    farTiles[tile] = mesh;
+    far.add(mesh);
+  }
+
+  function growFar(upto: number): void {
+    for (; farFilled < upto; farFilled++) buildFarTile(farFilled);
+  }
   if (!deferFar) growFar(store.tileKey.length);
 
-  /** Show or hide a tile's boxes — hidden exactly when its prisms are up, so
-   * the two tiers never overlap and never z-fight. */
+  /** Visibility changes are now metadata-only: no city-wide matrix upload. */
   function setFarTile(t: number, hidden: boolean): void {
-    const from = store.tileStart[t]!;
-    const to = store.tileStart[t + 1]!;
-    for (let bi = from; bi < to; bi++) setBox(bi, hidden);
-    far.instanceMatrix.needsUpdate = true;
+    const mesh = farTiles[t];
+    if (mesh) mesh.visible = !hidden;
   }
 
-  function build(t: number): void {
+  function tileForBuilding(building: number): number {
+    let lo = 0;
+    let hi = store.tileStart.length - 2;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (building < store.tileStart[mid]!) hi = mid - 1;
+      else if (building >= store.tileStart[mid + 1]!) lo = mid + 1;
+      else return mid;
+    }
+    return -1;
+  }
+
+  function refreshFarBuilding(building: number): void {
+    const tile = tileForBuilding(building);
+    const mesh = tile >= 0 ? farTiles[tile] : null;
+    if (!mesh) return;
+    const slot = building - store.tileStart[tile]!;
+    setBox(mesh, slot, building);
+    const rgb = farTintOf(building);
+    mesh.setColorAt(slot, col.setRGB(rgb[0], rgb[1], rgb[2]));
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  }
+  shells.onChar = (building, amount) => {
+    farChar[building] = Math.max(farChar[building]!, Math.round(Math.min(1, Math.max(0, amount)) * 255));
+    refreshFarBuilding(building);
+  };
+  shells.onCollapse = (building) => {
+    farCollapsed[building] = 1;
+    farChar[building] = 255;
+    refreshFarBuilding(building);
+  };
+
+  function buildSync(t: number): void {
     if (live.has(t)) return;
     const from = store.tileStart[t]!;
     const to = store.tileStart[t + 1]!;
@@ -1908,6 +2222,124 @@ export function createBuildingTiles(
     setFarTile(t, false);
   }
 
+  // Browser-only prism worker. Node/headless tools keep the synchronous path,
+  // which makes their deterministic geometry tests independent of Worker.
+  const landmarkKinds = Object.keys(LANDMARK_THEMES) as Landmark["kind"][];
+  const generation = new Uint32Array(store.tileKey.length);
+  const pending = new Map<number, number>();
+  const completed: PrismTileResult[] = [];
+  let inFlight = 0;
+  const worker =
+    typeof window !== "undefined" && typeof Worker !== "undefined"
+      ? new Worker(new URL("./tile-worker.ts", import.meta.url), { type: "module" })
+      : null;
+  worker?.addEventListener("message", (event: MessageEvent<PrismTileResult>) => {
+    inFlight = Math.max(0, inFlight - 1);
+    completed.push(event.data);
+  });
+
+  function prismRequest(tile: number, requestGeneration: number): PrismTileRequest {
+    const from = store.tileStart[tile]!;
+    const to = store.tileStart[tile + 1]!;
+    const buildingCount = to - from;
+    const sourceRing = store.ringStart[from]!;
+    const sourceRingEnd = store.ringStart[to]!;
+    const sourcePoint = store.ringOffset[sourceRing]!;
+    const sourcePointEnd = store.ringOffset[sourceRingEnd]!;
+    const buildingIndex = new Uint32Array(buildingCount);
+    const sourceId = new Uint32Array(buildingCount);
+    const buildingRingStart = new Uint32Array(buildingCount + 1);
+    const ringOffset = new Uint32Array(sourceRingEnd - sourceRing + 1);
+    const coords = store.coords.slice(sourcePoint * 2, sourcePointEnd * 2);
+    const height = new Float32Array(buildingCount);
+    const baseZ = new Float32Array(buildingCount);
+    const color = new Float32Array(buildingCount * 3);
+    const materialSlot = new Uint8Array(buildingCount);
+    for (let local = 0; local < buildingCount; local++) {
+      const bi = from + local;
+      buildingIndex[local] = bi;
+      sourceId[local] = store.id[bi]!;
+      buildingRingStart[local] = store.ringStart[bi]! - sourceRing;
+      height[local] = buildingHeight(store, bi);
+      baseZ[local] = city.baseZ[bi]!;
+      const kind = landmarks.get(store.id[bi]!);
+      const rgb = kind ? LANDMARK_RGB.get(kind)! : tintOf(bi);
+      color.set(rgb, local * 3);
+      materialSlot[local] = kind ? landmarkKinds.indexOf(kind) + 1 : 0;
+    }
+    buildingRingStart[buildingCount] = sourceRingEnd - sourceRing;
+    for (let ring = sourceRing; ring <= sourceRingEnd; ring++) {
+      ringOffset[ring - sourceRing] = store.ringOffset[ring]! - sourcePoint;
+    }
+    return {
+      type: "prisms",
+      tile,
+      generation: requestGeneration,
+      buildingIndex,
+      sourceId,
+      buildingRingStart,
+      ringOffset,
+      coords,
+      height,
+      baseZ,
+      color,
+      materialSlot,
+    };
+  }
+
+  function schedule(tile: number): void {
+    if (!worker || pending.has(tile) || live.has(tile)) return;
+    const requestGeneration = generation[tile]! + 1;
+    generation[tile] = requestGeneration;
+    const request = prismRequest(tile, requestGeneration);
+    pending.set(tile, requestGeneration);
+    inFlight++;
+    worker.postMessage(request, [
+      request.buildingIndex.buffer,
+      request.sourceId.buffer,
+      request.buildingRingStart.buffer,
+      request.ringOffset.buffer,
+      request.coords.buffer,
+      request.height.buffer,
+      request.baseZ.buffer,
+      request.color.buffer,
+      request.materialSlot.buffer,
+    ]);
+  }
+
+  function accept(result: PrismTileResult): [number, number] | null {
+    if (generation[result.tile] !== result.generation || live.has(result.tile)) return null;
+    pending.delete(result.tile);
+    const meshes: THREE.Mesh[] = [];
+    for (const built of result.groups) {
+      if (!built.position.length) continue;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(built.position, 3));
+      geometry.setAttribute("normal", new THREE.BufferAttribute(built.normal, 3));
+      geometry.setAttribute("color", new THREE.BufferAttribute(built.color, 3));
+      const kind = built.materialSlot ? landmarkKinds[built.materialSlot - 1] : undefined;
+      const mesh = new THREE.Mesh(geometry, kind ? lmMaterial(kind) : material);
+      const slot = shells.addMesh(mesh);
+      for (let i = 0; i < built.recordBuilding.length; i++) {
+        shells.record(
+          built.recordBuilding[i]!,
+          slot,
+          built.recordStart[i]!,
+          built.recordCount[i]!,
+          [built.recordColor[i * 3]!, built.recordColor[i * 3 + 1]!, built.recordColor[i * 3 + 2]!],
+        );
+      }
+      mesh.receiveShadow = true;
+      mesh.castShadow = true;
+      group.add(mesh);
+      residentVerts += built.position.length / 3;
+      meshes.push(mesh);
+    }
+    live.set(result.tile, meshes);
+    setFarTile(result.tile, true);
+    return [store.tileStart[result.tile]!, store.tileStart[result.tile + 1]!];
+  }
+
   return {
     group,
     shells,
@@ -1922,19 +2354,45 @@ export function createBuildingTiles(
         evict(t);
         evicted++;
       }
+      for (const [t] of pending) {
+        if (keep.has(t)) continue;
+        generation[t] = generation[t]! + 1;
+        pending.delete(t);
+      }
+      // Wrap/upload completed buffers under both byte and time limits. One
+      // result is always accepted so low-end devices cannot starve.
+      const uploadStarted = performance.now();
+      let uploadedBytes = 0;
+      for (let i = 0; i < completed.length; ) {
+        const result = completed[i]!;
+        if (generation[result.tile] !== result.generation || !keep.has(result.tile)) {
+          completed.splice(i, 1);
+          continue;
+        }
+        if (built.length && (uploadedBytes + result.bytes > 8 * 1024 * 1024 || performance.now() - uploadStarted > 4)) break;
+        completed.splice(i, 1);
+        uploadedBytes += result.bytes;
+        const range = accept(result);
+        if (range) built.push(range);
+      }
       let made = 0;
       for (const t of order) {
         if (made >= budget) break;
         if (t < 0 || t >= store.tileKey.length || live.has(t)) continue;
-        build(t);
+        if (worker) {
+          if (inFlight >= 2) break;
+          schedule(t);
+        } else {
+          buildSync(t);
+          built.push([store.tileStart[t]!, store.tileStart[t + 1]!]);
+        }
         made++;
-        built.push([store.tileStart[t]!, store.tileStart[t + 1]!]);
       }
       return { built, evicted };
     },
     buildAll(): void {
       growFar(store.tileKey.length);
-      for (let t = 0; t < store.tileKey.length; t++) build(t);
+      for (let t = 0; t < store.tileKey.length; t++) buildSync(t);
     },
     *fillFar(): Generator<void, void, void> {
       while (farFilled < store.tileKey.length) {
@@ -1943,6 +2401,22 @@ export function createBuildingTiles(
       }
     },
     stats: () => ({ tiles: live.size, verts: residentVerts }),
+    dispose(): void {
+      worker?.terminate();
+      completed.length = 0;
+      pending.clear();
+      for (const tile of [...live.keys()]) evict(tile);
+      for (const mesh of farTiles) {
+        if (!mesh) continue;
+        mesh.removeFromParent();
+        mesh.dispose();
+      }
+      boxGeo.dispose();
+      boxMaterial.dispose();
+      material.dispose();
+      for (const lm of lmMaterials.values()) lm.dispose();
+      group.removeFromParent();
+    },
   };
 }
 

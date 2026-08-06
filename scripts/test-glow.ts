@@ -94,7 +94,11 @@ const far = drawn(props.glow);
 const farProps = drawn(props.group);
 check("zoomed out: lamp posts are gone", farProps.instances === 0, `${farProps.instances} prop instances left`);
 check("zoomed out: the city is STILL lit", far.instances === lights, `${far.instances} of ${lights}`);
-check("the glow is one draw call", far.meshes === 1, `${far.meshes} meshes`);
+check("the glow is bounded hierarchical chunks", far.meshes > 1 && far.meshes < 64, `${far.meshes} meshes`);
+check(
+  "every glow chunk can be frustum culled",
+  props.glow.children.every((child) => child.frustumCulled),
+);
 
 // Daylight still turns it off.
 props.setNight(0);

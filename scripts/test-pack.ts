@@ -46,6 +46,9 @@ try {
 const city = buildCityModel(buildings, hf);
 const { world, steps } = beginWorld(map, buildings, layers, hf, city);
 for (const _ of steps) void _;
+// Production streams these layers; this test intentionally materializes all
+// of them so every packed tile is checked.
+world.detailTiles.buildAll();
 world.group.updateMatrixWorld(true);
 
 // Meshes whose normals are not all up must NOT have been packed: an

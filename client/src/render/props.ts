@@ -25,8 +25,6 @@ const SIGN_FACE: Record<Extract<Prop, { kind: "sign" }>["sign"], number> = {
 // tall) so the canopy reads lush without any extra polygons.
 const CANOPY_RADIUS: Record<1 | 2 | 3, number> = { 1: 2.0, 2: 3.1, 3: 4.3 };
 
-const TILE = 1000; // meters — instanced meshes chunked for frustum culling
-
 /** Map-view prop magnification: street furniture reads from the sky at a bit
  * over life size. FPV rebuilds with scale 1 so everything is life-sized. */
 export const ICON_SCALE = 2.5;
@@ -79,6 +77,10 @@ export interface PropLayers {
   /** Recolor one tree canopy by its global tree index (fire tints: green ->
    * ember -> charred black). Cheap: one instanced color write. */
   paintTree(gi: number, color: THREE.Color): void;
+  /** Release tile-owned instance buffers and the shared prop resources. */
+  dispose(): void;
+  /** Debug/benchmark counters that do not force a renderer readback. */
+  stats(): { tiles: number; instances: number; matrixBytes: number };
 }
 
 type Tree = Extract<Prop, { kind: "tree" }>;
@@ -86,6 +88,19 @@ type Sign = Extract<Prop, { kind: "sign" }>;
 type Signal = Extract<Prop, { kind: "signal" }>;
 type Light = Extract<Prop, { kind: "light" }>;
 type Simple = Extract<Prop, { kind: "meter" | "furniture" | "bikerack" | "bump" | "hydrant" }>;
+
+function findPropTile(store: PropStore, key: number): number {
+  let lo = 0;
+  let hi = store.tileKey.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const value = store.tileKey[mid]!;
+    if (value === key) return mid;
+    if (value < key) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
+}
 
 /**
  * All decorative props, tiled into InstancedMeshes per prop family.
@@ -98,8 +113,9 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
   const near = new THREE.Group();
   const glow = new THREE.Group();
   group.add(near);
-  // Buckets hold prop INDICES into the store, not prop objects — the point of
-  // the store is that 405,582 of those objects no longer exist.
+  // A bucket is transient and holds only one tile while it is being built.
+  // The binary store is already tile-sorted, so retaining a second city-wide
+  // Map<number, number[]> would rebuild the boxed object graph we removed.
   interface Bucket {
     trees: number[];
     signs: number[];
@@ -111,38 +127,34 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
     bumps: number[];
     hydrants: number[];
   }
-  const byTile = new Map<number, Bucket>();
   // Global tree index (order of tree props in the store) -> instanced slot,
   // so the fire sim can tint canopies across every built prop set. FireSim
   // walks the store in the same order, so the two agree.
   const treeSlots = new Map<number, { mesh: THREE.InstancedMesh; i: number }>();
-  const treeGi = new Map<number, number>();
-  let giCounter = 0;
   const px = store.x;
   const py = store.y;
-  for (let i = 0; i < store.count; i++) {
-    // tileKeyAt, NOT a hand-rolled row*4096+col: the renderer asks for tiles
-    // by that key, and it carries a bias so that the footprints sitting a few
-    // metres outside the map (row -1) get a key that is still unique. Keying
-    // props any other way means sync() never matches anything and no prop is
-    // ever built — which is exactly what happened.
-    const key = tileKeyAt(px[i]!, py[i]!, TILE);
-    let bucket = byTile.get(key);
-    if (!bucket) {
-      bucket = { trees: [], signs: [], signals: [], lights: [], meters: [], furniture: [], racks: [], bumps: [], hydrants: [] };
-      byTile.set(key, bucket);
+
+  function bucketForTile(tile: number): Bucket {
+    const bucket: Bucket = {
+      trees: [], signs: [], signals: [], lights: [], meters: [],
+      furniture: [], racks: [], bumps: [], hydrants: [],
+    };
+    const from = store.tileStart[tile]!;
+    const to = store.tileStart[tile + 1]!;
+    for (let i = from; i < to; i++) {
+      switch (PROP_KINDS[store.kind[i]!]) {
+        case "tree": bucket.trees.push(i); break;
+        case "sign": bucket.signs.push(i); break;
+        case "signal": bucket.signals.push(i); break;
+        case "light": bucket.lights.push(i); break;
+        case "meter": bucket.meters.push(i); break;
+        case "furniture": bucket.furniture.push(i); break;
+        case "bikerack": bucket.racks.push(i); break;
+        case "bump": bucket.bumps.push(i); break;
+        default: bucket.hydrants.push(i); break;
+      }
     }
-    switch (PROP_KINDS[store.kind[i]!]) {
-      case "tree": treeGi.set(i, giCounter++); bucket.trees.push(i); break;
-      case "sign": bucket.signs.push(i); break;
-      case "signal": bucket.signals.push(i); break;
-      case "light": bucket.lights.push(i); break;
-      case "meter": bucket.meters.push(i); break;
-      case "furniture": bucket.furniture.push(i); break;
-      case "bikerack": bucket.racks.push(i); break;
-      case "bump": bucket.bumps.push(i); break;
-      default: bucket.hydrants.push(i); break;
-    }
+    return bucket;
   }
 
   // Shared geometries/materials across all tiles. Life-size meters x s.
@@ -171,8 +183,9 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
   const POOL_R = s > 1 ? 9 * s : 7;
   const poolGeo = new THREE.PlaneGeometry(POOL_R * 2, POOL_R * 2);
   poolGeo.rotateX(-Math.PI / 2);
+  const poolTexture = radialGlowTexture();
   const poolMat = new THREE.MeshBasicMaterial({
-    map: radialGlowTexture(),
+    map: poolTexture,
     color: 0xffc078,
     transparent: true,
     opacity: 0,
@@ -219,34 +232,39 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
    * simply stays.
    */
   {
-    let lights = 0;
-    for (let i = 0; i < store.count; i++) if (PROP_KINDS[store.kind[i]!] === "light") lights++;
-    const all = new THREE.InstancedMesh(poolGeo, poolMat, Math.max(1, lights));
-    all.frustumCulled = false; // one mesh spanning the whole map
-    let i = 0;
+    // Four-kilometre chunks keep the light city resident while allowing the
+    // GPU to reject off-screen regions. The old one-mesh tier transformed all
+    // 65k quads every frame because its city-wide bounds could not be culled.
+    const chunks = new Map<number, number[]>();
     for (let pi = 0; pi < store.count; pi++) {
       if (PROP_KINDS[store.kind[pi]!] !== "light") continue;
-      const lx = px[pi]!;
-      const ly = py[pi]!;
-      m.makeTranslation(toScene(lx, ly, g(lx, ly) + 0.4));
-      all.setMatrixAt(i++, m);
+      const key = tileKeyAt(px[pi]!, py[pi]!, 4000);
+      const list = chunks.get(key);
+      if (list) list.push(pi);
+      else chunks.set(key, [pi]);
     }
-    all.count = lights;
-    all.visible = false; // setNight turns it on
-    pools.push(all);
-    glow.add(all);
+    for (const list of chunks.values()) {
+      const mesh = new THREE.InstancedMesh(poolGeo, poolMat, list.length);
+      for (let i = 0; i < list.length; i++) {
+        const pi = list[i]!;
+        const lx = px[pi]!;
+        const ly = py[pi]!;
+        m.makeTranslation(toScene(lx, ly, g(lx, ly) + 0.4));
+        mesh.setMatrixAt(i, m);
+      }
+      mesh.computeBoundingSphere();
+      mesh.visible = false; // setNight turns it on
+      pools.push(mesh);
+      glow.add(mesh);
+    }
   }
 
   /** Tiles currently built, and the meshes each contributed. */
   const live = new Map<number, THREE.Object3D[]>();
-  /** Tree slots each tile registered, so eviction can drop exactly those.
-   * Scanning treeSlots for the meshes being evicted would be a 252k-entry
-   * sweep per mesh, several times per tile crossing. */
-  const liveTrees = new Map<number, number[]>();
-
   function buildTile(key: number): void {
-    const bucket = byTile.get(key);
-    if (!bucket || live.has(key)) return;
+    const tile = findPropTile(store, key);
+    if (tile < 0 || live.has(key)) return;
+    const bucket = bucketForTile(tile);
     const made: THREE.Object3D[] = [];
     const add = (parent: THREE.Group, ...ms: THREE.Object3D[]): void => {
       parent.add(...ms);
@@ -269,8 +287,8 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
         canopies.setMatrixAt(i, m);
         color.copy(CANOPY_BASE).offsetHSL(jitter(i) * 0.04, jitter(i + 1) * 0.08, jitter(i + 2) * 0.05);
         canopies.setColorAt(i, color);
-        const gi = treeGi.get(pi);
-        if (gi !== undefined) treeSlots.set(gi, { mesh: canopies, i });
+        const gi = store.treeOrdinal[pi]!;
+        if (gi >= 0) treeSlots.set(gi, { mesh: canopies, i });
       });
       add(group, trunks, canopies);
     }
@@ -379,7 +397,6 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
     }
   }
     live.set(key, made);
-    liveTrees.set(key, bucket.trees.map((pi) => treeGi.get(pi)!).filter((gi) => gi !== undefined));
   }
 
   function evictTile(key: number): void {
@@ -387,14 +404,23 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
     if (!made) return;
     for (const o of made) {
       o.removeFromParent();
-      if (o instanceof THREE.Mesh) o.geometry.dispose();
       if (o instanceof THREE.InstancedMesh) {
-        const at = pools.indexOf(o);
-        if (at >= 0) pools.splice(at, 1);
+        // Instance matrices and colours belong to the tile mesh. Three.js
+        // releases those GPU buffers only when the InstancedMesh itself is
+        // disposed. Its geometry is shared by every tile, so disposing
+        // o.geometry here invalidates still-live tiles and forces re-uploads.
+        o.dispose();
+      } else if (o instanceof THREE.Mesh) {
+        o.geometry.dispose();
       }
     }
-    for (const gi of liveTrees.get(key) ?? []) treeSlots.delete(gi);
-    liveTrees.delete(key);
+    const tile = findPropTile(store, key);
+    if (tile >= 0) {
+      for (let pi = store.tileStart[tile]!; pi < store.tileStart[tile + 1]!; pi++) {
+        const gi = store.treeOrdinal[pi]!;
+        if (gi >= 0) treeSlots.delete(gi);
+      }
+    }
     live.delete(key);
   }
 
@@ -416,7 +442,7 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
       let made = 0;
       for (const key of order) {
         if (made >= budget) break;
-        if (live.has(key) || !byTile.has(key)) continue;
+        if (live.has(key) || findPropTile(store, key) < 0) continue;
         buildTile(key);
         made++;
         changed = true;
@@ -424,7 +450,7 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
       return changed;
     },
     buildAll(): void {
-      for (const key of byTile.keys()) buildTile(key);
+      for (const key of store.tileKey) buildTile(key);
     },
     setNight(n: number): void {
       lightHeadMat.color.copy(dayOff).lerp(nightOn, n);
@@ -437,6 +463,45 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
       if (!slot) return;
       slot.mesh.setColorAt(slot.i, c);
       if (slot.mesh.instanceColor) slot.mesh.instanceColor.needsUpdate = true;
+    },
+    dispose(): void {
+      for (const key of [...live.keys()]) evictTile(key);
+      for (const o of pools) {
+        o.removeFromParent();
+        if (o instanceof THREE.InstancedMesh) o.dispose();
+      }
+      pools.length = 0;
+      group.removeFromParent();
+      glow.removeFromParent();
+      for (const geo of [
+        trunkGeo, canopyGeo, poleGeo, faceGeo, sigPoleGeo, sigHeadGeo,
+        lightPoleGeo, lightHeadGeo, poolGeo, meterGeo, meterHeadGeo,
+        benchGeo, rackGeo, bumpGeo, hydrantGeo, hydrantCapGeo,
+      ]) geo.dispose();
+      for (const mat of [
+        trunkMat, canopyMat, poleMat, faceMat, sigPoleMat, sigHeadMat,
+        lightPoleMat, lightHeadMat, poolMat, meterMat, meterHeadMat,
+        benchMat, rackMat, bumpMat, hydrantMat,
+      ]) mat.dispose();
+      poolTexture.dispose();
+      treeSlots.clear();
+    },
+    stats(): { tiles: number; instances: number; matrixBytes: number } {
+      let instances = 0;
+      let matrixBytes = 0;
+      for (const made of live.values()) {
+        for (const o of made) {
+          if (!(o instanceof THREE.InstancedMesh)) continue;
+          instances += o.count;
+          matrixBytes += o.instanceMatrix.array.byteLength + (o.instanceColor?.array.byteLength ?? 0);
+        }
+      }
+      for (const o of pools) {
+        if (!(o instanceof THREE.InstancedMesh)) continue;
+        instances += o.count;
+        matrixBytes += o.instanceMatrix.array.byteLength + (o.instanceColor?.array.byteLength ?? 0);
+      }
+      return { tiles: live.size, instances, matrixBytes };
     },
   };
 }

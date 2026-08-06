@@ -1,6 +1,7 @@
 import * as THREE from "three";
-import { heightAt, type GameMap, type Heightfield, type StreetEdge } from "@battle-juice/shared";
+import { heightAt, type GameMap, type Heightfield, type StreetStore } from "@battle-juice/shared";
 import { toScene } from "./camera.js";
+import { streetsFrom, type StreetAccess } from "../streets.js";
 import { Dispatch } from "./dispatch.js";
 import { radialGlowTexture } from "./props.js";
 
@@ -129,8 +130,9 @@ export class Actors {
   onFireIncident: ((x: number, y: number) => void) | null = null;
   onTankFire: ((x: number, y: number) => void) | null = null;
 
-  private adj = new Map<number, StreetEdge[]>();
+  private adj = new Map<number, number[]>();
   private nodePos = new Map<number, { x: number; y: number }>();
+  private streets: StreetAccess;
   private fireHomes: Facility[] = [];
   private ambHomes: Facility[] = [];
   private policeHomes: Facility[] = [];
@@ -157,20 +159,25 @@ export class Actors {
   private up = new THREE.Vector3(0, 1, 0);
   private color = new THREE.Color();
 
-  constructor(private map: GameMap, hf: Heightfield | null) {
+  constructor(private map: GameMap, hf: Heightfield | null, streetStore?: StreetStore) {
     this.terrain = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
+    this.streets = streetsFrom(map, streetStore);
 
     // Drivable graph: real streets only, no paths/alleys/tunnels.
-    for (const e of map.edges) {
+    for (let i = 0; i < this.streets.edgeCount; i++) {
+      const e = this.streets.edge(i);
       if (e.class === "path" || e.class === "alley" || e.struct === "tunnel") continue;
       let la = this.adj.get(e.a);
       if (!la) this.adj.set(e.a, (la = []));
-      la.push(e);
+      la.push(i);
       let lb = this.adj.get(e.b);
       if (!lb) this.adj.set(e.b, (lb = []));
-      lb.push(e);
+      lb.push(i);
     }
-    for (const n of map.nodes) if (this.adj.has(n.id)) this.nodePos.set(n.id, { x: n.x, y: n.y });
+    for (let i = 0; i < this.streets.nodeCount; i++) {
+      const n = this.streets.node(i);
+      if (this.adj.has(n.id)) this.nodePos.set(n.id, { x: n.x, y: n.y });
+    }
 
     const snap = (x: number, y: number): Facility => {
       let best = -1;
@@ -487,7 +494,8 @@ export class Actors {
 
   // ---- driving -------------------------------------------------------------
 
-  private enterEdge(v: Vehicle, edge: StreetEdge, fromNode: number): void {
+  private enterEdge(v: Vehicle, edgeIndex: number, fromNode: number): void {
+    const edge = this.streets.edge(edgeIndex);
     const fwd = edge.a === fromNode;
     v.pts = fwd ? edge.polyline : [...edge.polyline].reverse();
     v.endNode = fwd ? edge.b : edge.a;
@@ -659,7 +667,7 @@ export class Actors {
     const pos = this.nodePos.get(node);
     const options = this.adj.get(node);
     if (!pos || !options?.length) return false;
-    const fresh = options.filter((e) => e.id !== v.edgeId);
+    const fresh = options.filter((edge) => this.streets.edge(edge).id !== v.edgeId);
     const cands = fresh.length ? fresh : options; // dead end: U-turn
 
     // Direction bias: returners steer home; fire apparatus that strayed past
@@ -671,7 +679,8 @@ export class Actors {
       else if (Math.hypot(pos.x - v.home.x, pos.y - v.home.y) > FMA_RADIUS) goal = v.home;
     }
     let total = 0;
-    const weights = cands.map((e) => {
+    const weights = cands.map((edgeIndex) => {
+      const e = this.streets.edge(edgeIndex);
       let w = 1;
       if (v.kind === "citybus") {
         w = e.class === "arterial" ? 2.4 : e.class === "collector" ? 1.5 : 0.55;

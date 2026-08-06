@@ -514,6 +514,11 @@ export class FireSim {
     this.repaintTrees();
   }
 
+  removePropSet(p: PropLayers): void {
+    const at = this.propSets.indexOf(p);
+    if (at >= 0) this.propSets.splice(at, 1);
+  }
+
   /**
    * Re-apply every burning and burnt tree's tint.
    *

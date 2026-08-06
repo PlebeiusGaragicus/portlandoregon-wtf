@@ -45,12 +45,17 @@ function check(name: string, ok: boolean, detail = ""): void {
 }
 
 const m4 = new THREE.Matrix4();
-/** A box is drawn when it is inside far.count AND not scaled to nothing. */
-function boxesDrawn(far: THREE.InstancedMesh): Set<number> {
+/** A box is drawn when its tile chunk is visible and its transform is valid. */
+function boxesDrawn(far: THREE.Group): Set<number> {
   const on = new Set<number>();
-  for (let bi = 0; bi < far.count; bi++) {
-    far.getMatrixAt(bi, m4);
-    if (m4.elements[0] !== 0 || m4.elements[5] !== 0 || m4.elements[10] !== 0) on.add(bi);
+  for (const child of far.children) {
+    if (!(child instanceof THREE.InstancedMesh) || !child.visible) continue;
+    const tile = child.userData["tile"] as number;
+    const from = store.tileStart[tile]!;
+    for (let slot = 0; slot < child.count; slot++) {
+      child.getMatrixAt(slot, m4);
+      if (m4.elements[0] !== 0 || m4.elements[5] !== 0 || m4.elements[10] !== 0) on.add(from + slot);
+    }
   }
   return on;
 }
@@ -148,7 +153,33 @@ run("fill outruns streaming", 64, 1);
   let valid = 0;
   for (let bi = 0; bi < store.count; bi++) if (city.valid[bi]) valid++;
   check("eager fill places every box up front", drawn.size === valid, `${drawn.size} of ${valid}`);
-  check("eager fill draws the whole store", tiles.far.count === store.count, `count=${tiles.far.count}`);
+  const count = tiles.far.children.reduce(
+    (sum, child) => sum + (child instanceof THREE.InstancedMesh ? child.count : 0),
+    0,
+  );
+  check("eager fill draws the whole store", count === store.count, `count=${count}`);
+
+  const building = city.valid.findIndex((value) => value !== 0);
+  const tile = tileOf(building);
+  const mesh = tiles.far.children.find(
+    (child) => child instanceof THREE.InstancedMesh && child.userData["tile"] === tile,
+  ) as THREE.InstancedMesh;
+  const slot = building - store.tileStart[tile]!;
+  const before = new THREE.Color();
+  const charred = new THREE.Color();
+  mesh.getColorAt(slot, before);
+  mesh.getMatrixAt(slot, m4);
+  const originalHeight = m4.elements[5]!;
+  tiles.shells.char(building, 1);
+  mesh.getColorAt(slot, charred);
+  check("far chunks receive char state", charred.getHex() !== before.getHex());
+  tiles.shells.collapse(building);
+  mesh.getMatrixAt(slot, m4);
+  check("far chunks receive collapse state", m4.elements[5]! < originalHeight);
+  tiles.sync([tile], 1);
+  tiles.sync([]);
+  mesh.getColorAt(slot, charred);
+  check("far damage survives prism revisit", mesh.visible && charred.r < before.r);
 }
 
 console.log(failures ? `\n${failures} failed` : "\nall checks passed");

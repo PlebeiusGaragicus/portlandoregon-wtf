@@ -26,7 +26,7 @@
  * Float32Array above at ~230 ms for the whole city, replacing `JSON.parse`'s
  * 940 ms rather than adding to it. See scripts/measure-binary.ts.
  */
-import type { Building, GameMap, Prop } from "./map.js";
+import type { Building, GameMap, Prop, RoadClass, StreetEdge } from "./map.js";
 
 const MAGIC = 0x424a4231; // "BJB1"
 /** Coordinate quantisation. 1 cm costs ~2 MB of download over 5 cm and buys
@@ -37,7 +37,7 @@ const GRID = 0.01;
 /** Bumped on ANY layout change. A stale artefact must fail loudly here rather
  * than decode as garbage — reading a v1 file with a v2 reader misaligned the
  * stream and tried to allocate 9 GB before anything noticed. */
-const FORMAT_VERSION = 2;
+const FORMAT_VERSION = 3;
 
 /** Normalised building categories, indexed by the store's `use` array. */
 export const BUILDING_USES = ["sfr", "mfr", "com", "off", "ind", "inst", "other"] as const;
@@ -127,6 +127,12 @@ class Writer {
     this.buf[this.len++] = v & 0xff;
   }
 
+  raw(bytes: Uint8Array): void {
+    this.room(bytes.length);
+    this.buf.set(bytes, this.len);
+    this.len += bytes.length;
+  }
+
   /** Unsigned LEB128. Values can exceed 2^31, so the shift is arithmetic. */
   varint(v: number): void {
     this.room(6);
@@ -161,6 +167,12 @@ class Reader {
 
   u8(): number {
     return this.buf[this.at++]!;
+  }
+
+  raw(length: number): Uint8Array {
+    const out = this.buf.subarray(this.at, this.at + length);
+    this.at += length;
+    return out;
   }
 
   varint(): number {
@@ -503,6 +515,13 @@ export interface PropStore {
   variant: Uint8Array;
   /** Signs: rotation quantised to 1/256 turn. Zero elsewhere. */
   rot: Uint8Array;
+  tileSize: number;
+  /** Occupied tile keys in ascending order. */
+  tileKey: Uint32Array;
+  /** Prop ranges for each tile; final entry is `count`. */
+  tileStart: Uint32Array;
+  /** Global tree ordinal by prop index, or -1 for non-trees. */
+  treeOrdinal: Int32Array;
 }
 
 export function propRotation(s: PropStore, i: number): number {
@@ -521,6 +540,23 @@ export function encodeProps(props: Prop[], tile = 1000): Uint8Array {
   w.u32(MAGIC);
   w.u32(FORMAT_VERSION);
   w.u32(props.length);
+  const keys: number[] = [];
+  const starts: number[] = [];
+  for (let i = 0; i < order.length; i++) {
+    const key = order[i]!.key;
+    if (i === 0 || key !== order[i - 1]!.key) {
+      keys.push(key);
+      starts.push(i);
+    }
+  }
+  w.u32(tile);
+  w.u32(keys.length);
+  let previousKey = 0;
+  for (const key of keys) {
+    w.varint(key - previousKey);
+    previousKey = key;
+  }
+  for (const start of starts) w.varint(start);
   for (const { i } of order) {
     const p = props[i]!;
     w.u8(Math.max(0, (PROP_KINDS as readonly string[]).indexOf(p.kind)));
@@ -557,8 +593,25 @@ export function decodeProps(bytes: Uint8Array): PropStore {
     throw new Error(`prop store is version ${version}, this build reads ${FORMAT_VERSION} — re-run scripts/stage-map.sh`);
   }
   const count = r.u32();
+  const tileSize = r.u32();
+  const tileCount = r.u32();
+  if (tileCount > count + 1) throw new Error("prop store: tile table looks corrupt");
+  const tileKey = new Uint32Array(tileCount);
+  let previousKey = 0;
+  for (let t = 0; t < tileCount; t++) {
+    previousKey += r.varint();
+    tileKey[t] = previousKey;
+  }
+  const tileStart = new Uint32Array(tileCount + 1);
+  for (let t = 0; t < tileCount; t++) tileStart[t] = r.varint();
+  tileStart[tileCount] = count;
   const kind = new Uint8Array(count);
   for (let i = 0; i < count; i++) kind[i] = r.u8();
+  const treeOrdinal = new Int32Array(count).fill(-1);
+  let tree = 0;
+  for (let i = 0; i < count; i++) {
+    if (PROP_KINDS[kind[i]!] === "tree") treeOrdinal[i] = tree++;
+  }
   const variant = new Uint8Array(count);
   for (let i = 0; i < count; i++) variant[i] = r.u8();
   const rot = new Uint8Array(count);
@@ -573,16 +626,300 @@ export function decodeProps(bytes: Uint8Array): PropStore {
     x[i] = px * GRID;
     y[i] = py * GRID;
   }
-  return { count, x, y, kind, variant, rot };
+  return { count, x, y, kind, variant, rot, tileSize, tileKey, tileStart, treeOrdinal };
 }
 
 /** Straight from the object graph, for the server's small synthetic maps. */
 export function storeFromProps(props: Prop[]): PropStore {
-  return decodeProps(encodeProps(props, Infinity));
+  return decodeProps(encodeProps(props, 1_000_000_000));
 }
 
 export function propStoreBytes(s: PropStore): number {
-  return s.x.byteLength + s.y.byteLength + s.kind.byteLength + s.variant.byteLength + s.rot.byteLength;
+  return (
+    s.x.byteLength +
+    s.y.byteLength +
+    s.kind.byteLength +
+    s.variant.byteLength +
+    s.rot.byteLength +
+    s.tileKey.byteLength +
+    s.tileStart.byteLength +
+    s.treeOrdinal.byteLength
+  );
+}
+
+// ----------------------------------------------------------- street store
+
+export const ROAD_CLASSES = ["arterial", "collector", "local", "alley", "path"] as const;
+const STREET_STRUCTS = ["", "bridge", "tunnel"] as const;
+
+/** Compact street graph. Edge polylines live in one coordinate array; callers
+ * retain edge indices rather than 84k objects and millions of `[x, y]` pairs. */
+export interface StreetStore {
+  nodeCount: number;
+  nodeId: Uint32Array;
+  nodeX: Float32Array;
+  nodeY: Float32Array;
+  edgeCount: number;
+  edgeId: Uint32Array;
+  a: Uint32Array;
+  b: Uint32Array;
+  pointStart: Uint32Array;
+  coords: Float32Array;
+  widthCm: Uint16Array;
+  roadClass: Uint8Array;
+  struct: Uint8Array;
+  nameIndex: Uint32Array;
+  names: string[];
+}
+
+export function encodeStreets(map: Pick<GameMap, "nodes" | "edges">): Uint8Array {
+  const w = new Writer();
+  w.u32(MAGIC);
+  w.u32(FORMAT_VERSION);
+  w.u32(map.nodes.length);
+  w.u32(map.edges.length);
+
+  let previousId = 0;
+  let px = 0;
+  let py = 0;
+  for (const node of map.nodes) {
+    w.zig(node.id - previousId);
+    previousId = node.id;
+    const qx = Math.round(node.x / GRID);
+    const qy = Math.round(node.y / GRID);
+    w.zig(qx - px);
+    w.zig(qy - py);
+    px = qx;
+    py = qy;
+  }
+
+  let totalPoints = 0;
+  for (const edge of map.edges) {
+    w.varint(edge.polyline.length);
+    totalPoints += edge.polyline.length;
+  }
+  w.u32(totalPoints);
+
+  previousId = 0;
+  let previousA = 0;
+  let previousB = 0;
+  for (const edge of map.edges) {
+    w.zig(edge.id - previousId);
+    w.zig(edge.a - previousA);
+    w.zig(edge.b - previousB);
+    previousId = edge.id;
+    previousA = edge.a;
+    previousB = edge.b;
+    w.varint(Math.max(0, Math.min(65535, Math.round(edge.width * 100))));
+    const roadClass = (ROAD_CLASSES as readonly string[]).indexOf(edge.class);
+    w.u8(roadClass < 0 ? ROAD_CLASSES.indexOf("local") : roadClass);
+    w.u8(Math.max(0, STREET_STRUCTS.indexOf(edge.struct ?? "")));
+  }
+
+  const names = [...new Set(map.edges.map((edge) => edge.name ?? ""))];
+  const nameAt = new Map(names.map((name, i) => [name, i]));
+  const encoder = new TextEncoder();
+  w.u32(names.length);
+  for (const name of names) {
+    const bytes = encoder.encode(name);
+    w.varint(bytes.length);
+    w.raw(bytes);
+  }
+  for (const edge of map.edges) w.varint(nameAt.get(edge.name ?? "") ?? 0);
+
+  px = 0;
+  py = 0;
+  for (const edge of map.edges) {
+    for (const [x, y] of edge.polyline) {
+      const qx = Math.round(x / GRID);
+      const qy = Math.round(y / GRID);
+      w.zig(qx - px);
+      w.zig(qy - py);
+      px = qx;
+      py = qy;
+    }
+  }
+  return w.take();
+}
+
+export function decodeStreets(bytes: Uint8Array): StreetStore {
+  const r = new Reader(bytes);
+  if (r.u32() !== MAGIC) throw new Error("not a street store");
+  const version = r.u32();
+  if (version !== FORMAT_VERSION) {
+    throw new Error(`street store is version ${version}, this build reads ${FORMAT_VERSION} — re-run scripts/stage-map.sh`);
+  }
+  const nodeCount = r.u32();
+  const edgeCount = r.u32();
+  const nodeId = new Uint32Array(nodeCount);
+  const nodeX = new Float32Array(nodeCount);
+  const nodeY = new Float32Array(nodeCount);
+  let previousId = 0;
+  let px = 0;
+  let py = 0;
+  for (let i = 0; i < nodeCount; i++) {
+    previousId += r.zig();
+    px += r.zig();
+    py += r.zig();
+    nodeId[i] = previousId;
+    nodeX[i] = px * GRID;
+    nodeY[i] = py * GRID;
+  }
+
+  const pointStart = new Uint32Array(edgeCount + 1);
+  for (let i = 0; i < edgeCount; i++) pointStart[i + 1] = pointStart[i]! + r.varint();
+  const totalPoints = r.u32();
+  if (pointStart[edgeCount] !== totalPoints) throw new Error("street store: point count mismatch");
+
+  const edgeId = new Uint32Array(edgeCount);
+  const a = new Uint32Array(edgeCount);
+  const b = new Uint32Array(edgeCount);
+  const widthCm = new Uint16Array(edgeCount);
+  const roadClass = new Uint8Array(edgeCount);
+  const struct = new Uint8Array(edgeCount);
+  previousId = 0;
+  let previousA = 0;
+  let previousB = 0;
+  for (let i = 0; i < edgeCount; i++) {
+    previousId += r.zig();
+    previousA += r.zig();
+    previousB += r.zig();
+    edgeId[i] = previousId;
+    a[i] = previousA;
+    b[i] = previousB;
+    widthCm[i] = r.varint();
+    roadClass[i] = r.u8();
+    struct[i] = r.u8();
+  }
+
+  const decoder = new TextDecoder();
+  const names = new Array<string>(r.u32());
+  for (let i = 0; i < names.length; i++) names[i] = decoder.decode(r.raw(r.varint()));
+  const nameIndex = new Uint32Array(edgeCount);
+  for (let i = 0; i < edgeCount; i++) nameIndex[i] = r.varint();
+
+  const coords = new Float32Array(totalPoints * 2);
+  px = 0;
+  py = 0;
+  for (let i = 0; i < totalPoints; i++) {
+    px += r.zig();
+    py += r.zig();
+    coords[i * 2] = px * GRID;
+    coords[i * 2 + 1] = py * GRID;
+  }
+  return {
+    nodeCount, nodeId, nodeX, nodeY, edgeCount, edgeId, a, b,
+    pointStart, coords, widthCm, roadClass, struct, nameIndex, names,
+  };
+}
+
+export function streetClass(store: StreetStore, edge: number): RoadClass {
+  return ROAD_CLASSES[store.roadClass[edge]!] ?? "local";
+}
+
+export function streetStruct(store: StreetStore, edge: number): StreetEdge["struct"] {
+  const value = STREET_STRUCTS[store.struct[edge]!] ?? "";
+  return value || undefined;
+}
+
+export function streetPolyline(store: StreetStore, edge: number): [number, number][] {
+  const points: [number, number][] = [];
+  const from = store.pointStart[edge]!;
+  const to = store.pointStart[edge + 1]!;
+  for (let i = from; i < to; i++) points.push([store.coords[i * 2]!, store.coords[i * 2 + 1]!]);
+  return points;
+}
+
+export function streetEdge(store: StreetStore, edge: number): StreetEdge {
+  return {
+    id: store.edgeId[edge]!,
+    a: store.a[edge]!,
+    b: store.b[edge]!,
+    polyline: streetPolyline(store, edge),
+    width: store.widthCm[edge]! / 100,
+    name: store.names[store.nameIndex[edge]!] ?? "",
+    class: streetClass(store, edge),
+    struct: streetStruct(store, edge),
+  };
+}
+
+export function streetStoreBytes(store: StreetStore): number {
+  return (
+    store.nodeId.byteLength + store.nodeX.byteLength + store.nodeY.byteLength +
+    store.edgeId.byteLength + store.a.byteLength + store.b.byteLength +
+    store.pointStart.byteLength + store.coords.byteLength + store.widthCm.byteLength +
+    store.roadClass.byteLength + store.struct.byteLength + store.nameIndex.byteLength +
+    store.names.reduce((sum, name) => sum + name.length * 2, 0)
+  );
+}
+
+// ------------------------------------------------------------- city LOD2
+
+export interface CityLod {
+  cols: number;
+  rows: number;
+  cellSize: number;
+  /** RGBA urban-mass texels, south-to-north row order. */
+  data: Uint8Array;
+}
+
+/** Bake a far-zoom urban mass texture. It deliberately captures density and
+ * height rather than individual footprints: at this zoom buildings are
+ * subpixel, while neighborhood massing and the street gaps still read. */
+export function encodeCityLod(map: Pick<GameMap, "meta" | "buildings">, cellSize = 160): Uint8Array {
+  const cols = Math.max(1, Math.ceil(map.meta.width / cellSize));
+  const rows = Math.max(1, Math.ceil(map.meta.height / cellSize));
+  const count = new Uint16Array(cols * rows);
+  const height = new Uint16Array(cols * rows);
+  for (const building of map.buildings) {
+    if (!building.footprint.length) continue;
+    let x = 0;
+    let y = 0;
+    for (const point of building.footprint) {
+      x += point[0];
+      y += point[1];
+    }
+    x /= building.footprint.length;
+    y /= building.footprint.length;
+    const col = Math.max(0, Math.min(cols - 1, Math.floor(x / cellSize)));
+    const row = Math.max(0, Math.min(rows - 1, Math.floor(y / cellSize)));
+    const at = row * cols + col;
+    count[at] = Math.min(65535, count[at]! + 1);
+    height[at] = Math.max(height[at]!, Math.min(65535, Math.round(building.height * 10)));
+  }
+  const data = new Uint8Array(cols * rows * 4);
+  for (let i = 0; i < count.length; i++) {
+    const density = Math.min(1, Math.log2(1 + count[i]!) / 6);
+    const tall = Math.min(1, height[i]! / 500);
+    data[i * 4] = Math.round(54 + tall * 44);
+    data[i * 4 + 1] = Math.round(61 + tall * 42);
+    data[i * 4 + 2] = Math.round(72 + tall * 50);
+    data[i * 4 + 3] = Math.round(density * 225);
+  }
+  const w = new Writer();
+  w.u32(MAGIC);
+  w.u32(FORMAT_VERSION);
+  w.u32(cols);
+  w.u32(rows);
+  w.u32(cellSize);
+  w.raw(data);
+  return w.take();
+}
+
+export function decodeCityLod(bytes: Uint8Array): CityLod {
+  const r = new Reader(bytes);
+  if (r.u32() !== MAGIC) throw new Error("not a city LOD store");
+  const version = r.u32();
+  if (version !== FORMAT_VERSION) {
+    throw new Error(`city LOD is version ${version}, this build reads ${FORMAT_VERSION} — re-run scripts/stage-map.sh`);
+  }
+  const cols = r.u32();
+  const rows = r.u32();
+  const cellSize = r.u32();
+  const expected = cols * rows * 4;
+  const data = new Uint8Array(expected);
+  data.set(r.raw(expected));
+  return { cols, rows, cellSize, data };
 }
 
 

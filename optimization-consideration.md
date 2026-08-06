@@ -1,7 +1,74 @@
-# Optimization proposal — getting Battle Juice under 1 GB
+# Battle Juice optimization record
 
-Status: proposal, nothing implemented. Written after profiling the current
-cold load on 2026-08-05.
+Status: implementation in progress. The original 2026-08-05 proposal is
+retained below as the design history; this section records what actually
+shipped and keeps browser measurements distinct from Node component profiles.
+
+## Current acceptance budgets
+
+- Settled browser memory: 300–500 MB target, hard ceiling below 1 GB.
+- Memory must plateau after a 100-tile pan/revisit loop.
+- Mobile quality tier: nominal 30 fps (p95 at or below 35 ms), with no progressive
+  thermal slowdown during a 10-minute active-fire run.
+- No resource-count growth after repeating the same tile window, no lost
+  render loop after background/bfcache restore, and no unrecoverable blank
+  scene after WebGL context loss.
+- Cold boot to an interactive rendered city below 3 seconds on the reference
+  desktop; phone results are recorded separately rather than inferred from it.
+
+## Reproducible browser baseline (2026-08-06)
+
+Run the client with `?benchmark=1`, or start Vite on port 5555 and execute
+`node --import tsx scripts/run-browser-benchmark.ts`. The harness covers cold
+fill, idle, a 100-boundary pan/revisit, night-wide view, FPV, and loop
+pause/resume. Results remain available at `window.__bjBenchmark`.
+
+Reference environment: headless Chrome 151 on Apple silicon, 756×469 at DPR 1.
+`performance.memory` is the Chrome JS-heap signal, not a claim about total tab
+or GPU memory.
+
+| Metric | Before this phase | After compact stores/chunked far tier/worker |
+| --- | ---: | ---: |
+| full-fill time | 2,323 ms | 719 ms |
+| idle p95 frame interval | 17.1 ms | 17.6 ms |
+| night-wide p95 | 17.5 ms | 17.5 ms |
+| FPV p99 | 17.7 ms | 17.7 ms |
+| long tasks | 28 / 3,402 ms total | 11 / 946 ms total |
+| largest long task | 1,087 ms | 283 ms |
+| initial JS heap signal | 786 MB | 542 MB |
+| first/second identical revisit | not measured | 294 / 310 MB |
+| final dense-center JS heap signal | 855 MB | 731 MB |
+| representative near-view triangles | 15.50 M | 2.49 M |
+
+Resource counts plateaued exactly across identical revisit loops (106
+geometries and 5 textures on both passes). The comparable JS-heap signal moved
+by 16 MB rather than growing with distance traveled. Dense-center heap remains
+above the 300–500 MB target but below the hard 1 GB ceiling; real Chrome task
+manager and device measurements remain the acceptance source.
+
+The browser lifecycle scenario also confirmed that `pagehide` pauses, one
+`pageshow` resumes, and a cancelable `webglcontextlost` event is prevented and
+pauses work. Restoration intentionally reloads the retained compact stores,
+because sealed GPU-only attributes cannot reconstruct themselves.
+
+Mobile emulation (390×844, DPR 3, touch/coarse-pointer tier) produced a 480 ms
+full fill, p95 render intervals of 34.2–34.3 ms, two long tasks totaling 426 ms,
+and 441 / 407 / 354 / 560 MB heap signals (initial / first revisit / second
+revisit / final dense center). Resource counts were identical across revisits.
+This verifies tier selection and workload bounds, not iPhone GPU or thermal
+behavior; no physical iPhone-class device was connected to this machine.
+
+## Compact staged assets
+
+The production client no longer parses buildings, props, streets/nodes, or
+render layers from the JSON object graph. Current staged download is 16.9 MB
+gzip (47% below the original 32.0 MB), with measured typed-array residency:
+38.2 MB buildings, 6.1 MB props including tile/tree indexes, 5.3 MB streets
+and nodes, and 7.5 MB vector layers. `map-lite.json.gz` is metadata-only.
+
+---
+
+# Original proposal — getting Battle Juice under 1 GB
 
 The goal is one code path that works on a phone and on a desktop, with a
 resident footprint around 300 MB and a hard ceiling of 1 GB. Today the desktop

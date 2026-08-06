@@ -6,13 +6,17 @@
 
 import {
   decodeBuildings,
+  decodeCityLod,
   decodeHeightfield,
   decodeLayers,
   decodeProps,
+  decodeStreets,
   type BuildingStore,
+  type CityLod,
   type GameMap,
   type LayerStores,
   type PropStore,
+  type StreetStore,
   type Heightfield,
 } from "@battle-juice/shared";
 
@@ -21,8 +25,10 @@ import {
 const MAP_URL = new URL("./map/map-lite.json.gz", document.baseURI).href;
 const BUILDINGS_URL = new URL("./map/buildings.bin.gz", document.baseURI).href;
 const PROPS_URL = new URL("./map/props.bin.gz", document.baseURI).href;
+const STREETS_URL = new URL("./map/streets.bin.gz", document.baseURI).href;
 const LAYERS_URL = new URL("./map/layers.bin.gz", document.baseURI).href;
 const HEIGHTMAP_URL = new URL("./map/heightmap.bin.gz", document.baseURI).href;
+const CITY_LOD_URL = new URL("./map/city-lod.bin.gz", document.baseURI).href;
 
 /** Thrown when the map asset itself is missing or unreadable — without it
  * there is no city to render, so this is fatal rather than retryable. */
@@ -95,6 +101,8 @@ export async function loadMap(onProgress?: Progress): Promise<GameMap> {
     // the field present but empty means nothing has to null-check it.
     if (!map.buildings) map.buildings = [];
     if (!map.props) map.props = [];
+    if (!map.nodes) map.nodes = [];
+    if (!map.edges) map.edges = [];
     return map;
   } catch (err) {
     if (err instanceof MapUnavailableError) throw err;
@@ -127,6 +135,27 @@ export async function loadProps(onProgress?: Progress): Promise<PropStore> {
   } catch (err) {
     if (err instanceof MapUnavailableError) throw err;
     throw new MapUnavailableError(`${PROPS_URL} unreachable`);
+  }
+}
+
+/** Street graph and polylines as compact typed arrays. */
+export async function loadStreets(onProgress?: Progress): Promise<StreetStore> {
+  try {
+    const buf = await (await openGzipped(STREETS_URL, onProgress)).arrayBuffer();
+    return decodeStreets(new Uint8Array(buf));
+  } catch (err) {
+    if (err instanceof MapUnavailableError) throw err;
+    throw new MapUnavailableError(`${STREETS_URL} unreachable`);
+  }
+}
+
+export async function loadCityLod(onProgress?: Progress): Promise<CityLod> {
+  try {
+    const buf = await (await openGzipped(CITY_LOD_URL, onProgress)).arrayBuffer();
+    return decodeCityLod(new Uint8Array(buf));
+  } catch (err) {
+    if (err instanceof MapUnavailableError) throw err;
+    throw new MapUnavailableError(`${CITY_LOD_URL} unreachable`);
   }
 }
 

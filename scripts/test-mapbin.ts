@@ -22,9 +22,13 @@ import {
   encodeBuildings,
   encodeProps,
   decodeProps,
+  encodeStreets,
+  decodeStreets,
   findTile,
   PROP_KINDS,
   propStoreBytes,
+  streetEdge,
+  streetStoreBytes,
   forEachRingVertex,
   ringBase,
   tileKeyAt,
@@ -172,6 +176,48 @@ if (real) {
     `  props       ${(propBytes.length / 1e6).toFixed(1)} MB raw, ` +
       `${(gzipSync(propBytes, { level: 9 }).length / 1e6).toFixed(1)} MB gzipped, ` +
       `${(propStoreBytes(ps) / 1e6).toFixed(1)} MB resident\n`,
+  );
+
+  let propCovered = 0;
+  let treeCount = 0;
+  let maxTree = -1;
+  for (let t = 0; t < ps.tileKey.length; t++) propCovered += ps.tileStart[t + 1]! - ps.tileStart[t]!;
+  for (const tree of ps.treeOrdinal) {
+    if (tree < 0) continue;
+    treeCount++;
+    if (tree > maxTree) maxTree = tree;
+  }
+  check("prop tiles partition the store", propCovered === ps.count, `${propCovered} of ${ps.count}`);
+  check("tree ordinals are contiguous", treeCount === maxTree + 1, `${treeCount} trees`);
+
+  const streetBytes = encodeStreets(map);
+  const streets = decodeStreets(streetBytes);
+  check("street node count survives", streets.nodeCount === map.nodes.length);
+  check("street edge count survives", streets.edgeCount === map.edges.length);
+  let streetMismatch = 0;
+  let worstStreetXY = 0;
+  for (let i = 0; i < map.edges.length; i += 997) {
+    const want = map.edges[i]!;
+    const got = streetEdge(streets, i);
+    if (
+      got.id !== want.id || got.a !== want.a || got.b !== want.b ||
+      got.class !== want.class || got.struct !== want.struct ||
+      got.polyline.length !== want.polyline.length
+    ) streetMismatch++;
+    for (let p = 0; p < Math.min(got.polyline.length, want.polyline.length); p++) {
+      worstStreetXY = Math.max(
+        worstStreetXY,
+        Math.abs(got.polyline[p]![0] - want.polyline[p]![0]),
+        Math.abs(got.polyline[p]![1] - want.polyline[p]![1]),
+      );
+    }
+  }
+  check("street attributes round-trip", streetMismatch === 0, `${streetMismatch} sampled mismatches`);
+  check("street coordinates within 1 cm", worstStreetXY <= 0.011, `worst ${(worstStreetXY * 1000).toFixed(2)} mm`);
+  console.log(
+    `  streets     ${(streetBytes.length / 1e6).toFixed(1)} MB raw, ` +
+      `${(gzipSync(streetBytes, { level: 9 }).length / 1e6).toFixed(1)} MB gzipped, ` +
+      `${(streetStoreBytes(streets) / 1e6).toFixed(1)} MB resident\n`,
   );
 }
 
