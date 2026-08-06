@@ -37,7 +37,7 @@ const GRID = 0.01;
 /** Bumped on ANY layout change. A stale artefact must fail loudly here rather
  * than decode as garbage — reading a v1 file with a v2 reader misaligned the
  * stream and tried to allocate 9 GB before anything noticed. */
-const FORMAT_VERSION = 3;
+const FORMAT_VERSION = 4;
 
 /** Normalised building categories, indexed by the store's `use` array. */
 export const BUILDING_USES = ["sfr", "mfr", "com", "off", "ind", "inst", "other"] as const;
@@ -670,6 +670,11 @@ export interface StreetStore {
   struct: Uint8Array;
   nameIndex: Uint32Array;
   names: string[];
+  /** Render-only midpoint index. Graph edge order remains unchanged. */
+  tileSize: number;
+  tileKey: Uint32Array;
+  tileStart: Uint32Array;
+  tileEdge: Uint32Array;
 }
 
 export function encodeStreets(map: Pick<GameMap, "nodes" | "edges">): Uint8Array {
@@ -715,6 +720,33 @@ export function encodeStreets(map: Pick<GameMap, "nodes" | "edges">): Uint8Array
     w.u8(roadClass < 0 ? ROAD_CLASSES.indexOf("local") : roadClass);
     w.u8(Math.max(0, STREET_STRUCTS.indexOf(edge.struct ?? "")));
   }
+
+  // Keep graph order stable for routing, and store a separate render index
+  // grouped by midpoint tile. This removes the client's boxed by-tile Map.
+  const tileSize = 1000;
+  const renderOrder = map.edges
+    .map((edge, index) => {
+      const point = edge.polyline[Math.floor(edge.polyline.length / 2)] ?? [0, 0];
+      return { index, key: tileKeyAt(point[0], point[1], tileSize) };
+    })
+    .sort((a, b) => a.key - b.key || a.index - b.index);
+  const tileKeys: number[] = [];
+  const tileStarts: number[] = [];
+  for (let i = 0; i < renderOrder.length; i++) {
+    if (i === 0 || renderOrder[i]!.key !== renderOrder[i - 1]!.key) {
+      tileKeys.push(renderOrder[i]!.key);
+      tileStarts.push(i);
+    }
+  }
+  w.u32(tileSize);
+  w.u32(tileKeys.length);
+  let previousTile = 0;
+  for (const key of tileKeys) {
+    w.varint(key - previousTile);
+    previousTile = key;
+  }
+  for (const start of tileStarts) w.varint(start);
+  for (const item of renderOrder) w.varint(item.index);
 
   const names = [...new Set(map.edges.map((edge) => edge.name ?? ""))];
   const nameAt = new Map(names.map((name, i) => [name, i]));
@@ -792,6 +824,21 @@ export function decodeStreets(bytes: Uint8Array): StreetStore {
     struct[i] = r.u8();
   }
 
+  const tileSize = r.u32();
+  const tileCount = r.u32();
+  if (tileCount > edgeCount + 1) throw new Error("street store: tile table looks corrupt");
+  const tileKey = new Uint32Array(tileCount);
+  let previousTile = 0;
+  for (let tile = 0; tile < tileCount; tile++) {
+    previousTile += r.varint();
+    tileKey[tile] = previousTile;
+  }
+  const tileStart = new Uint32Array(tileCount + 1);
+  for (let tile = 0; tile < tileCount; tile++) tileStart[tile] = r.varint();
+  tileStart[tileCount] = edgeCount;
+  const tileEdge = new Uint32Array(edgeCount);
+  for (let i = 0; i < edgeCount; i++) tileEdge[i] = r.varint();
+
   const decoder = new TextDecoder();
   const names = new Array<string>(r.u32());
   for (let i = 0; i < names.length; i++) names[i] = decoder.decode(r.raw(r.varint()));
@@ -810,7 +857,22 @@ export function decodeStreets(bytes: Uint8Array): StreetStore {
   return {
     nodeCount, nodeId, nodeX, nodeY, edgeCount, edgeId, a, b,
     pointStart, coords, widthCm, roadClass, struct, nameIndex, names,
+    tileSize, tileKey, tileStart, tileEdge,
   };
+}
+
+/** Render tile table index, or -1 when no street midpoint occupies the key. */
+export function findStreetTile(store: StreetStore, key: number): number {
+  let lo = 0;
+  let hi = store.tileKey.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const value = store.tileKey[mid]!;
+    if (value === key) return mid;
+    if (value < key) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
 }
 
 export function streetClass(store: StreetStore, edge: number): RoadClass {
@@ -849,6 +911,7 @@ export function streetStoreBytes(store: StreetStore): number {
     store.edgeId.byteLength + store.a.byteLength + store.b.byteLength +
     store.pointStart.byteLength + store.coords.byteLength + store.widthCm.byteLength +
     store.roadClass.byteLength + store.struct.byteLength + store.nameIndex.byteLength +
+    store.tileKey.byteLength + store.tileStart.byteLength + store.tileEdge.byteLength +
     store.names.reduce((sum, name) => sum + name.length * 2, 0)
   );
 }
@@ -939,6 +1002,9 @@ export interface FeatureStore {
   /** One byte per feature — a style or kind enum. Zero when the layer has no
    * such notion. */
   attr: Uint8Array;
+  tileSize: number;
+  tileKey: Uint32Array;
+  tileStart: Uint32Array;
 }
 
 export interface FeatureInput {
@@ -952,6 +1018,9 @@ const EMPTY_FEATURES: FeatureStore = {
   ringOffset: new Uint32Array(1),
   coords: new Float32Array(0),
   attr: new Uint8Array(0),
+  tileSize: 1000,
+  tileKey: new Uint32Array(0),
+  tileStart: new Uint32Array(1),
 };
 
 function writeFeatures(w: Writer, features: FeatureInput[], tile: number): void {
@@ -976,6 +1045,23 @@ function writeFeatures(w: Writer, features: FeatureInput[], tile: number): void 
     }
   }
   w.u32(totalVerts);
+  const keys: number[] = [];
+  const starts: number[] = [];
+  for (let i = 0; i < order.length; i++) {
+    const key = order[i]!.key;
+    if (i === 0 || key !== order[i - 1]!.key) {
+      keys.push(key);
+      starts.push(i);
+    }
+  }
+  w.u32(tile);
+  w.u32(keys.length);
+  let previousKey = 0;
+  for (const key of keys) {
+    w.varint(key - previousKey);
+    previousKey = key;
+  }
+  for (const start of starts) w.varint(start);
   for (const { i } of order) w.u8(features[i]!.attr ?? 0);
   let px = 0;
   let py = 0;
@@ -1006,6 +1092,18 @@ function readFeatures(r: Reader): FeatureStore {
   const ringOffset = new Uint32Array(lens.length + 1);
   for (let i = 0; i < lens.length; i++) ringOffset[i + 1] = ringOffset[i]! + lens[i]!;
   if (ringOffset[lens.length] !== totalVerts) throw new Error("feature store: vertex count mismatch");
+  const tileSize = r.u32();
+  const tileCount = r.u32();
+  if (tileCount > count + 1) throw new Error("feature store: tile table looks corrupt");
+  const tileKey = new Uint32Array(tileCount);
+  let previousKey = 0;
+  for (let tile = 0; tile < tileCount; tile++) {
+    previousKey += r.varint();
+    tileKey[tile] = previousKey;
+  }
+  const tileStart = new Uint32Array(tileCount + 1);
+  for (let tile = 0; tile < tileCount; tile++) tileStart[tile] = r.varint();
+  tileStart[tileCount] = count;
   const attr = new Uint8Array(count);
   for (let f = 0; f < count; f++) attr[f] = r.u8();
   const coords = new Float32Array(totalVerts * 2);
@@ -1017,7 +1115,21 @@ function readFeatures(r: Reader): FeatureStore {
     coords[i * 2] = px * GRID;
     coords[i * 2 + 1] = py * GRID;
   }
-  return { count, ringStart, ringOffset, coords, attr };
+  return { count, ringStart, ringOffset, coords, attr, tileSize, tileKey, tileStart };
+}
+
+/** Feature tile table index, or -1 when the tile is empty. */
+export function findFeatureTile(store: FeatureStore, key: number): number {
+  let lo = 0;
+  let hi = store.tileKey.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const value = store.tileKey[mid]!;
+    if (value === key) return mid;
+    if (value < key) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
 }
 
 /** Rings of one feature, as the object graph the mesh builders still want.
@@ -1042,7 +1154,10 @@ export function featureAnchor(s: FeatureStore, f: number): [number, number] {
 }
 
 export function featureStoreBytes(s: FeatureStore): number {
-  return s.ringStart.byteLength + s.ringOffset.byteLength + s.coords.byteLength + s.attr.byteLength;
+  return (
+    s.ringStart.byteLength + s.ringOffset.byteLength + s.coords.byteLength +
+    s.attr.byteLength + s.tileKey.byteLength + s.tileStart.byteLength
+  );
 }
 
 // --------------------------------------------------------- layer container

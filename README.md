@@ -26,6 +26,16 @@ cp .env.sample .env      # then set a real GAME_PASSWORD
 if you don't have the extracts locally. Without it the client loads and then
 reports that it couldn't download the map.
 
+Staging bakes and verifies the complete client payload: `buildings.bin.gz`,
+`props.bin.gz`, `streets.bin.gz`, `layers.bin.gz`, `city-lod.bin.gz`, and
+`map-lite.json.gz`, plus `heightmap.bin.gz` when terrain data is available.
+Every present file is gunzipped and decoded with the shared runtime decoder
+before staging succeeds. To rerun only that local release gate:
+
+```sh
+npm run verify:staged-map
+```
+
 ## Development
 
 ```sh

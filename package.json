@@ -13,7 +13,10 @@
     "play": "GAME_PORT=4555 concurrently -n server,client -c blue,green \"PORT=4555 npm run dev -w server\" \"npm run dev -w client -- --port 5555 --strictPort\"",
     "build": "npm run build -w shared && npm run build -w server && npm run build -w client",
     "start": "npm run start -w server",
-    "typecheck": "npm run typecheck --workspaces"
+    "typecheck": "npm run typecheck --workspaces",
+    "verify:staged-map": "node --import tsx scripts/verify-staged-map.ts",
+    "test:staged-map-gate": "node --import tsx scripts/test-verify-staged-map.ts",
+    "test:performance-closure": "node --import tsx scripts/test-tile-scheduler.ts && node --import tsx scripts/test-detail-worker.ts && node --import tsx scripts/test-lod-parity.ts && node --max-old-space-size=10240 --import tsx scripts/test-tilekeys.ts"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

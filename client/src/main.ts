@@ -209,7 +209,11 @@ async function boot(): Promise<void> {
     void import("./benchmark.js")
       .then(({ runBrowserBenchmark }) => runBrowserBenchmark(renderer, map))
       .then(() => log.line("browser benchmark complete — see window.__bjBenchmark", "ok"))
-      .catch((err) => log.line(`browser benchmark failed: ${String(err)}`, "fail"));
+      .catch((err) => {
+        const message = String(err);
+        window.__bjBenchmarkError = message;
+        log.line(`browser benchmark failed: ${message}`, "fail");
+      });
   }
 }
 

@@ -23,7 +23,13 @@ import { FpvMode } from "./fpv.js";
 import { buildLandmarks, type LandmarkLayer } from "./landmarks.js";
 import { Minimap } from "./minimap.js";
 import { buildProps, radialGlowTexture, type PropLayers } from "./props.js";
-import { buildWorld, type WorldLayers } from "./world.js";
+import { TileScheduler } from "./tile-scheduler.js";
+import {
+  buildWorld,
+  type BuildingTileStats,
+  type TileCacheStats,
+  type WorldLayers,
+} from "./world.js";
 import { createViewSaver, restoreView } from "../view.js";
 
 /** Release every currently attached Three.js resource exactly once. Detached
@@ -141,6 +147,24 @@ const DETAIL = HANDHELD
       frameGapMs: 0,
     };
 
+const BYTE_BUDGETS = HANDHELD
+  ? {
+      buildings: 128 * 1024 * 1024,
+      dressing: 48 * 1024 * 1024,
+      terrain: 32 * 1024 * 1024,
+      props: 48 * 1024 * 1024,
+      completed: 24 * 1024 * 1024,
+      uploadPerFrame: 4 * 1024 * 1024,
+    }
+  : {
+      buildings: 256 * 1024 * 1024,
+      dressing: 96 * 1024 * 1024,
+      terrain: 64 * 1024 * 1024,
+      props: 96 * 1024 * 1024,
+      completed: 64 * 1024 * 1024,
+      uploadPerFrame: 8 * 1024 * 1024,
+    };
+
 /**
  * Render scale, capped.
  *
@@ -196,9 +220,45 @@ export interface RendererDebugStats {
   view: { x: number; y: number; height: number };
   render: { frame: number; calls: number; triangles: number; points: number; lines: number };
   memory: { geometries: number; textures: number };
-  buildings: { tiles: number; verts: number };
-  dressing: { tiles: number; verts: number };
-  props: { tiles: number; instances: number; matrixBytes: number };
+  buildings: BuildingTileStats;
+  dressing: TileCacheStats;
+  terrain: TileCacheStats;
+  props: {
+    tiles: number;
+    instances: number;
+    matrixBytes: number;
+    residentBytes: number;
+    uploadBytes: number;
+    evicted: number;
+  };
+  fire: { active: number; collapsed: number };
+  /** Cumulative CPU wall times. Benchmark snapshots subtract these counters. */
+  timing: {
+    frames: number;
+    totalMs: number;
+    maxFrameMs: number;
+    bootMs: number;
+    tileSyncMs: number;
+    actorsMs: number;
+    fireMs: number;
+    drawMs: number;
+  };
+  /** Cumulative cache activity available from today's synchronous cache APIs. */
+  cache: {
+    syncs: number;
+    windowChanges: number;
+    buildingTilesBuilt: number;
+    buildingTilesEvicted: number;
+    propChanges: number;
+  };
+  scheduler: ReturnType<TileScheduler["stats"]>;
+}
+
+export interface DebugFireScenario {
+  ignited: number[];
+  damaged: number[];
+  activeBefore: number;
+  activeAfter: number;
 }
 
 /**
@@ -255,6 +315,7 @@ export class Renderer {
   private wantBuildings: number[] = [];
   private wantDressing: number[] = [];
   private wantProps: number[] = [];
+  private tileScheduler = new TileScheduler();
   private ground: (x: number, y: number) => number;
 
   private map: GameMap;
@@ -290,6 +351,23 @@ export class Renderer {
   private boot: Generator<string, void, void> | null = null;
   private bootPhase: string | null = null;
   private onBootProgress?: (phase: string | null) => void;
+  private debugTiming = {
+    frames: 0,
+    totalMs: 0,
+    maxFrameMs: 0,
+    bootMs: 0,
+    tileSyncMs: 0,
+    actorsMs: 0,
+    fireMs: 0,
+    drawMs: 0,
+  };
+  private debugCache = {
+    syncs: 0,
+    windowChanges: 0,
+    buildingTilesBuilt: 0,
+    buildingTilesEvicted: 0,
+    propChanges: 0,
+  };
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -862,6 +940,8 @@ export class Renderer {
   private syncBuildingTiles(focus: { x: number; y: number }, viewHeight: number): void {
     const store = this.store;
     if (!store.tileKey.length || !Number.isFinite(store.tileSize)) return;
+    const syncStarted = performance.now();
+    this.debugCache.syncs++;
     const { x, y } = focus;
     // At altitude a prism and a box are the same handful of pixels, so the
     // near tier shrinks to nothing rather than growing to cover the view.
@@ -888,6 +968,7 @@ export class Renderer {
       detailRadius !== this.tileDetailRadius ||
       propRadius !== this.tilePropRadius
     ) {
+      this.debugCache.windowChanges++;
       this.tileCx = cx;
       this.tileCy = cy;
       this.tileRadius = radius;
@@ -914,20 +995,65 @@ export class Renderer {
       }
     }
 
-    // Rationed: a whole window in one frame is a multi-second block on a
-    // phone, which is what "zoom out, pan, zoom in" felt like.
-    const { built } = this.world.buildings.sync(this.wantBuildings, DETAIL.perFrame.buildings);
-    this.world.detailTiles.sync(this.wantDressing, DETAIL.perFrame.dressing);
-    let propsChanged = this.props.sync(this.wantProps, DETAIL.perFrame.props);
+    // One fair nearest-first admission queue now rations every streamed
+    // layer. Individual caches still own geometry and eviction; the scheduler
+    // decides which kinds may consume this frame's construction/upload slice.
+    this.tileScheduler.updateWanted("buildings", this.wantBuildings);
+    this.tileScheduler.updateWanted("dressing", this.wantDressing);
+    this.tileScheduler.updateWanted("props", this.wantProps);
+    const terrainKey = tileKeyAt(x, y, store.tileSize);
+    this.tileScheduler.updateWanted("terrain", [terrainKey]);
+    const tickets = this.tileScheduler.claim(
+      DETAIL.perFrame.buildings + DETAIL.perFrame.dressing + DETAIL.perFrame.props + 1,
+    );
+    const budgets = { buildings: 0, dressing: 0, terrain: 0, props: 0 };
+    for (const ticket of tickets) budgets[ticket.kind]++;
+
+    const { built, evicted } = this.world.buildings.sync(this.wantBuildings, budgets.buildings, {
+      residentBytes: BYTE_BUDGETS.buildings,
+      completedBytes: BYTE_BUDGETS.completed,
+      uploadBytes: BYTE_BUDGETS.uploadPerFrame,
+    });
+    this.debugCache.buildingTilesBuilt += built.length;
+    this.debugCache.buildingTilesEvicted += evicted;
+    this.world.detailTiles.sync(
+      this.wantDressing,
+      budgets.dressing,
+      BYTE_BUDGETS.dressing,
+      BYTE_BUDGETS.uploadPerFrame,
+    );
+    this.world.syncGround(x, y, viewHeight, budgets.terrain, BYTE_BUDGETS.terrain);
+    let propsChanged = this.props.sync(this.wantProps, budgets.props, BYTE_BUDGETS.props);
     // The life-size FPV set streams on the same window.
-    if (this.fpvOn && this.fpvProps && this.fpvProps.sync(this.wantProps, DETAIL.perFrame.props)) propsChanged = true;
-    if (propsChanged) this.fire.repaintTrees();
+    if (
+      this.fpvOn &&
+      this.fpvProps &&
+      this.fpvProps.sync(this.wantProps, budgets.props, BYTE_BUDGETS.props)
+    ) propsChanged = true;
+    if (propsChanged) {
+      this.debugCache.propChanges++;
+      this.fire.repaintTrees();
+    }
     // A rebuilt tile comes back pristine — the fire sim owns what happened to
     // it, so it repaints the damage. This is why scars had to move out of the
     // colour buffer before tiling could exist.
     for (const [from, to] of built) {
       for (let bi = from; bi < to; bi++) this.fire.restoreAppearance(bi);
     }
+    for (const ticket of tickets) {
+      if (ticket.kind === "buildings") {
+        const accepted =
+          this.world.buildings.has(ticket.key) ||
+          built.some(([from]) => this.store.tileStart[ticket.key] === from);
+        if (!accepted) {
+          this.tileScheduler.retry(ticket);
+          continue;
+        }
+      }
+      this.tileScheduler.complete(ticket, 0);
+      this.tileScheduler.accept(ticket);
+    }
+    this.debugTiming.tileSyncMs += performance.now() - syncStarted;
   }
 
   /**
@@ -986,7 +1112,11 @@ export class Renderer {
     const dt = Math.min(0.1, (now - this.lastFrame) / 1000);
     this.lastFrame = now;
 
-    this.pourWorld();
+    if (this.boot) {
+      const bootStarted = performance.now();
+      this.pourWorld();
+      this.debugTiming.bootMs += performance.now() - bootStarted;
+    }
     this.daynight.update(Date.now());
 
     // Both camera modes stream buildings, and FPV especially: walking is the
@@ -1023,8 +1153,12 @@ export class Renderer {
       this.ensureSky().visible = true;
       const aspect = (this.canvas.clientWidth || 1) / (this.canvas.clientHeight || 1);
       this.actors.setListener({ x: this.fpv.x, y: this.fpv.y });
+      const actorsStarted = performance.now();
       this.actors.update(dt, now / 1000, { x: this.fpv.x, y: this.fpv.y }, this.daynight.night, this.daynight.t * 24);
+      this.debugTiming.actorsMs += performance.now() - actorsStarted;
+      const fireStarted = performance.now();
       this.fire.update(dt, { x: this.fpv.x, y: this.fpv.y }, this.actors.fireUnitsOnScene());
+      this.debugTiming.fireMs += performance.now() - fireStarted;
       this.punchCd -= dt;
       // Draw distance scales with altitude: short and hazy at street level
       // (nearby blocks occlude everything anyway), the whole city from the
@@ -1044,8 +1178,12 @@ export class Renderer {
       this.sky!.position.copy(this.camera.position);
       this.updateSkyBody();
       this.applyDayNight(this.fpv.x, this.fpv.y, this.fpv.z, !HANDHELD);
+      const drawStarted = performance.now();
       this.webgl.render(this.scene, this.camera);
-      this.observeRenderCost(performance.now() - now);
+      this.debugTiming.drawMs += performance.now() - drawStarted;
+      const frameMs = performance.now() - now;
+      this.recordDebugFrame(frameMs);
+      this.observeRenderCost(frameMs);
       this.scheduleFrame();
       return;
     }
@@ -1063,7 +1201,6 @@ export class Renderer {
     const vh = this.rig.viewHeight;
     this.world.setBlend((vh - BLEND_START) / (BLEND_END - BLEND_START));
     this.world.setViewHeight(vh);
-    this.world.syncGround(this.rig.target.x, this.rig.target.y, vh, 1);
     this.props.group.visible = vh < DETAIL.propsView;
     this.props.near.visible = vh < DETAIL.nearPropsView;
     this.world.detail.visible = vh < DETAIL.propsView;
@@ -1083,14 +1220,28 @@ export class Renderer {
     this.minimap.update(corners, []);
 
     this.actors.setListener(null);
+    const actorsStarted = performance.now();
     this.actors.update(dt, now / 1000, this.rig.target, this.daynight.night, this.daynight.t * 24);
+    this.debugTiming.actorsMs += performance.now() - actorsStarted;
+    const fireStarted = performance.now();
     this.fire.update(dt, this.rig.target, this.actors.fireUnitsOnScene());
+    this.debugTiming.fireMs += performance.now() - fireStarted;
     this.applyDayNight(this.rig.target.x, this.rig.target.y, this.ground(this.rig.target.x, this.rig.target.y), vh < DETAIL.shadowView);
     this.updateScaleBar(vh);
 
+    const drawStarted = performance.now();
     this.webgl.render(this.scene, this.camera);
-    this.observeRenderCost(performance.now() - now);
+    this.debugTiming.drawMs += performance.now() - drawStarted;
+    const frameMs = performance.now() - now;
+    this.recordDebugFrame(frameMs);
+    this.observeRenderCost(frameMs);
     this.scheduleFrame();
+  }
+
+  private recordDebugFrame(frameMs: number): void {
+    this.debugTiming.frames++;
+    this.debugTiming.totalMs += frameMs;
+    this.debugTiming.maxFrameMs = Math.max(this.debugTiming.maxFrameMs, frameMs);
   }
 
   /** Runtime thermal/load response. It moves slowly, with hysteresis, so a
@@ -1179,7 +1330,12 @@ export class Renderer {
       memory: { geometries: m.geometries, textures: m.textures },
       buildings: this.world.buildings.stats(),
       dressing: this.world.detailTiles.stats(),
+      terrain: this.world.terrainStats(),
       props: this.props.stats(),
+      fire: { active: this.fire.activeFires, collapsed: this.fire.collapsed.length },
+      timing: { ...this.debugTiming },
+      cache: { ...this.debugCache },
+      scheduler: this.tileScheduler.stats(),
     };
   }
 
@@ -1196,6 +1352,69 @@ export class Renderer {
 
   debugSetFpv(on: boolean): void {
     if (on !== this.fpvOn) this.toggleFpv();
+  }
+
+  /**
+   * Remove autonomous ignition/suppression inputs so a benchmark starts with
+   * a clean fire workload. Production callbacks are untouched unless the
+   * explicit benchmark entry point invokes this control.
+   */
+  debugPrepareBenchmark(): void {
+    this.actors.onFireIncident = null;
+    this.actors.onTankFire = null;
+    this.fire.onNewFire = null;
+  }
+
+  /**
+   * Seed a repeatable visible workload without changing FireSim's production
+   * randomness or exposing its internals. Building choices come from fixed
+   * quantiles of the current near-tile window; explicit impact coordinates
+   * make ignition and damage placement repeatable for a staged map.
+   */
+  debugStartActiveFireScenario(): DebugFireScenario {
+    const activeBefore = this.fire.activeFires;
+    const candidates: number[] = [];
+    const seen = new Set<number>();
+    const samplesPerTile = 8;
+    for (const tile of this.wantBuildings) {
+      const from = this.store.tileStart[tile]!;
+      const to = this.store.tileStart[tile + 1]!;
+      const count = to - from;
+      for (let sample = 0; sample < samplesPerTile; sample++) {
+        const bi = from + Math.floor(((sample + 0.5) * count) / samplesPerTile);
+        if (bi < from || bi >= to || seen.has(bi) || this.city.valid[bi] !== 1) continue;
+        seen.add(bi);
+        candidates.push(bi);
+      }
+    }
+    // Tiny/sparse tiles can make quantiles collide. Deterministically fill any
+    // remaining slots from the same visible window.
+    if (candidates.length < 48) {
+      for (const tile of this.wantBuildings) {
+        const from = this.store.tileStart[tile]!;
+        const to = this.store.tileStart[tile + 1]!;
+        for (let bi = from; bi < to && candidates.length < 48; bi++) {
+          if (seen.has(bi) || this.city.valid[bi] !== 1) continue;
+          seen.add(bi);
+          candidates.push(bi);
+        }
+        if (candidates.length >= 48) break;
+      }
+    }
+
+    const ignited: number[] = [];
+    const damaged: number[] = [];
+    for (const bi of candidates) {
+      const center = this.fire.centerOf(bi);
+      if (ignited.length < 24 && (ignited.length <= damaged.length || damaged.length >= 24)) {
+        if (this.fire.igniteBuilding(bi, center.x, center.y)) ignited.push(bi);
+      } else if (damaged.length < 24) {
+        this.fire.damageBuilding(bi, 0.75, 0, center.x, center.y);
+        damaged.push(bi);
+      }
+      if (ignited.length >= 24 && damaged.length >= 24) break;
+    }
+    return { ignited, damaged, activeBefore, activeAfter: this.fire.activeFires };
   }
 
   /** Exercise the same single-loop pause/resume path as lifecycle handlers. */

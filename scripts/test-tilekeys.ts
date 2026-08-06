@@ -32,6 +32,9 @@ import {
   decodeHeightfield,
   decodeLayers,
   decodeProps,
+  decodeStreets,
+  findFeatureTile,
+  findStreetTile,
   findTile,
   tileKeyAt,
   type GameMap,
@@ -55,6 +58,7 @@ map.buildings = [];
 const buildings = decodeBuildings(gunzipSync(readFileSync(join(MAP_DIR, "buildings.bin.gz"))));
 const layers = decodeLayers(gunzipSync(readFileSync(join(MAP_DIR, "layers.bin.gz"))));
 const propStore = decodeProps(gunzipSync(readFileSync(join(MAP_DIR, "props.bin.gz"))));
+const streetStore = decodeStreets(gunzipSync(readFileSync(join(MAP_DIR, "streets.bin.gz"))));
 let hf: Heightfield | null = null;
 try {
   hf = decodeHeightfield(toBuf(gunzipSync(readFileSync(join(MAP_DIR, "heightmap.bin.gz")))));
@@ -75,7 +79,7 @@ function want(cx: number, cy: number, r: number): number[] {
 }
 
 const city = buildCityModel(buildings, hf);
-const { world, steps } = beginWorld(map, buildings, layers, hf, city);
+const { world, steps } = beginWorld(map, buildings, layers, hf, city, true, streetStore);
 for (const _ of steps) void _;
 const props = buildProps(map, propStore, hf);
 
@@ -100,6 +104,16 @@ check("dressing answers the renderer's keys", world.detailTiles.stats().tiles > 
 // has to resolve.
 const found = KEYS.filter((k) => findTile(buildings, k) >= 0);
 check("buildings answer the renderer's keys", found.length > 0, `${found.length} of ${KEYS.length} tiles exist`);
+const detailHits = KEYS.filter((key) =>
+  findFeatureTile(layers.sidewalks, key) >= 0 ||
+  findFeatureTile(layers.markingAreas, key) >= 0 ||
+  findFeatureTile(layers.markingLines, key) >= 0 ||
+  findFeatureTile(layers.trails, key) >= 0 ||
+  findFeatureTile(layers.rails, key) >= 0
+);
+check("baked detail indexes answer renderer keys", detailHits.length > 0, `${detailHits.length} occupied keys`);
+const streetHits = KEYS.filter((key) => findStreetTile(streetStore, key) >= 0);
+check("baked street index answers renderer keys", streetHits.length > 0, `${streetHits.length} occupied keys`);
 
 // Every prop must live in a tile the renderer can ask for. A prop keyed into
 // a tile no window ever names is a prop that never draws.
@@ -109,6 +123,16 @@ for (let i = 0; i < propStore.count; i++) {
   if (reachable.has(tileKeyAt(propStore.x[i]!, propStore.y[i]!, TS))) inWindow++;
 }
 check("props fall inside the window keys that built them", inWindow > 0, `${inWindow} props in the 5x5`);
+
+// A byte budget smaller than one dense tile still pins the nearest visible
+// core, but deterministically evicts every farther tile.
+world.detailTiles.sync(KEYS, Infinity, 1);
+check("detail byte budget pins only the visible core", world.detailTiles.stats().tiles <= 1);
+props.sync(KEYS, Infinity, 1);
+check("prop byte budget pins only the visible core", props.stats().tiles <= 1);
+const buildingTiles = KEYS.map((key) => findTile(buildings, key)).filter((tile) => tile >= 0);
+world.buildings.sync(buildingTiles, Infinity, { residentBytes: 1 });
+check("building byte budget pins only the visible core", world.buildings.stats().tiles <= 1);
 
 // The bias exists because the extract has coordinates just outside the map.
 // Distinct tiles must stay distinct there, or two rows collide into one key.

@@ -10,6 +10,7 @@ import {
   type PropStore,
 } from "@battle-juice/shared";
 import { toScene } from "./camera.js";
+import { geometryBytes } from "./bytes.js";
 
 const TRUNK_COLOR = 0x5c4a36;
 const CANOPY_BASE = new THREE.Color(0x3e7c4f);
@@ -66,7 +67,7 @@ export interface PropLayers {
    * that gate means nothing ever pops: a tile leaves the resident set only
    * once it is too far to be drawn anyway.
    */
-  sync(want: Iterable<number>, budget?: number): boolean;
+  sync(want: Iterable<number>, budget?: number, residentByteBudget?: number): boolean;
   /** Build the whole city — headless tools and the FPV prop set. */
   buildAll(): void;
   /** Day/night dial: 0 = daylight (lamps off) .. 1 = deep night (full glow). */
@@ -80,7 +81,14 @@ export interface PropLayers {
   /** Release tile-owned instance buffers and the shared prop resources. */
   dispose(): void;
   /** Debug/benchmark counters that do not force a renderer readback. */
-  stats(): { tiles: number; instances: number; matrixBytes: number };
+  stats(): {
+    tiles: number;
+    instances: number;
+    matrixBytes: number;
+    residentBytes: number;
+    uploadBytes: number;
+    evicted: number;
+  };
 }
 
 type Tree = Extract<Prop, { kind: "tree" }>;
@@ -261,6 +269,18 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
 
   /** Tiles currently built, and the meshes each contributed. */
   const live = new Map<number, THREE.Object3D[]>();
+  const liveBytes = new Map<number, number>();
+  let tileResidentBytes = 0;
+  let uploadBytes = 0;
+  let evicted = 0;
+  const instanceBytes = (objects: Iterable<THREE.Object3D>): number => {
+    let bytes = 0;
+    for (const object of objects) {
+      if (!(object instanceof THREE.InstancedMesh)) continue;
+      bytes += object.instanceMatrix.array.byteLength + (object.instanceColor?.array.byteLength ?? 0);
+    }
+    return bytes;
+  };
   function buildTile(key: number): void {
     const tile = findPropTile(store, key);
     if (tile < 0 || live.has(key)) return;
@@ -397,6 +417,10 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
     }
   }
     live.set(key, made);
+    const bytes = instanceBytes(made);
+    liveBytes.set(key, bytes);
+    tileResidentBytes += bytes;
+    uploadBytes += bytes;
   }
 
   function evictTile(key: number): void {
@@ -421,7 +445,10 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
         if (gi >= 0) treeSlots.delete(gi);
       }
     }
+    tileResidentBytes -= liveBytes.get(key) ?? 0;
+    liveBytes.delete(key);
     live.delete(key);
+    evicted++;
   }
 
   const dayOff = new THREE.Color(0x565c66);
@@ -430,7 +457,7 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
     group,
     near,
     glow,
-    sync(want: Iterable<number>, budget = Infinity): boolean {
+    sync(want: Iterable<number>, budget = Infinity, residentByteBudget = Infinity): boolean {
       const order = [...want];
       const keep = new Set(order);
       let changed = false;
@@ -445,6 +472,12 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
         if (live.has(key) || findPropTile(store, key) < 0) continue;
         buildTile(key);
         made++;
+        changed = true;
+      }
+      for (let i = order.length - 1; tileResidentBytes > residentByteBudget && i > 0; i--) {
+        const key = order[i]!;
+        if (!live.has(key)) continue;
+        evictTile(key);
         changed = true;
       }
       return changed;
@@ -486,7 +519,14 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
       poolTexture.dispose();
       treeSlots.clear();
     },
-    stats(): { tiles: number; instances: number; matrixBytes: number } {
+    stats(): {
+      tiles: number;
+      instances: number;
+      matrixBytes: number;
+      residentBytes: number;
+      uploadBytes: number;
+      evicted: number;
+    } {
       let instances = 0;
       let matrixBytes = 0;
       for (const made of live.values()) {
@@ -501,7 +541,19 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
         instances += o.count;
         matrixBytes += o.instanceMatrix.array.byteLength + (o.instanceColor?.array.byteLength ?? 0);
       }
-      return { tiles: live.size, instances, matrixBytes };
+      const sharedBytes = [
+        trunkGeo, canopyGeo, poleGeo, faceGeo, sigPoleGeo, sigHeadGeo,
+        lightPoleGeo, lightHeadGeo, poolGeo, meterGeo, meterHeadGeo,
+        benchGeo, rackGeo, bumpGeo, hydrantGeo, hydrantCapGeo,
+      ].reduce((sum, geometry) => sum + geometryBytes(geometry), 0);
+      return {
+        tiles: live.size,
+        instances,
+        matrixBytes,
+        residentBytes: sharedBytes + matrixBytes,
+        uploadBytes,
+        evicted,
+      };
     },
   };
 }

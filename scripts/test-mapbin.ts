@@ -19,12 +19,19 @@ import {
   buildingHeight,
   buildingUse,
   decodeBuildings,
+  decodeLayers,
   encodeBuildings,
+  encodeLayers,
   encodeProps,
   decodeProps,
   encodeStreets,
   decodeStreets,
   findTile,
+  findFeatureTile,
+  findStreetTile,
+  featureStoreBytes,
+  layerInputs,
+  LAYER_NAMES,
   PROP_KINDS,
   propStoreBytes,
   streetEdge,
@@ -214,11 +221,43 @@ if (real) {
   }
   check("street attributes round-trip", streetMismatch === 0, `${streetMismatch} sampled mismatches`);
   check("street coordinates within 1 cm", worstStreetXY <= 0.011, `worst ${(worstStreetXY * 1000).toFixed(2)} mm`);
+  let streetCovered = 0;
+  let streetTilesOk = true;
+  const seenEdges = new Uint8Array(streets.edgeCount);
+  for (let tile = 0; tile < streets.tileKey.length; tile++) {
+    const from = streets.tileStart[tile]!;
+    const to = streets.tileStart[tile + 1]!;
+    streetCovered += to - from;
+    if (findStreetTile(streets, streets.tileKey[tile]!) !== tile) streetTilesOk = false;
+    for (let at = from; at < to; at++) {
+      const edge = streets.tileEdge[at]!;
+      if (edge >= streets.edgeCount || seenEdges[edge]) streetTilesOk = false;
+      else seenEdges[edge] = 1;
+    }
+  }
+  check("street render tiles partition every edge", streetCovered === streets.edgeCount && streetTilesOk);
   console.log(
     `  streets     ${(streetBytes.length / 1e6).toFixed(1)} MB raw, ` +
       `${(gzipSync(streetBytes, { level: 9 }).length / 1e6).toFixed(1)} MB gzipped, ` +
       `${(streetStoreBytes(streets) / 1e6).toFixed(1)} MB resident\n`,
   );
+
+  const layerBytes = encodeLayers(layerInputs(map));
+  const layerStores = decodeLayers(layerBytes);
+  let allLayerTilesOk = true;
+  let layerResident = 0;
+  for (const name of LAYER_NAMES) {
+    const layer = layerStores[name];
+    let covered = 0;
+    for (let tile = 0; tile < layer.tileKey.length; tile++) {
+      covered += layer.tileStart[tile + 1]! - layer.tileStart[tile]!;
+      if (findFeatureTile(layer, layer.tileKey[tile]!) !== tile) allLayerTilesOk = false;
+    }
+    if (covered !== layer.count) allLayerTilesOk = false;
+    layerResident += featureStoreBytes(layer);
+  }
+  check("detail tile tables partition every feature", allLayerTilesOk);
+  check("detail indexes stay compact", layerResident < 100e6, mb(layerResident));
 }
 
 // The tile table is what lets the renderer build one tile without touching

@@ -16,7 +16,9 @@ shipped and keeps browser measurements distinct from Node component profiles.
 - Cold boot to an interactive rendered city below 3 seconds on the reference
   desktop; phone results are recorded separately rather than inferred from it.
 
-## Reproducible browser baseline (2026-08-06)
+## Reproducible browser baselines
+
+### Pre-change baseline — compact-store harness (2026-08-06)
 
 Run the client with `?benchmark=1`, or start Vite on port 5555 and execute
 `node --import tsx scripts/run-browser-benchmark.ts`. The harness covers cold
@@ -58,12 +60,44 @@ revisit / final dense center). Resource counts were identical across revisits.
 This verifies tier selection and workload bounds, not iPhone GPU or thermal
 behavior; no physical iPhone-class device was connected to this machine.
 
+### Current baseline — expanded closure harness
+
+The current harness retains every scenario above and adds a deterministic
+visible set of active fires and damaged buildings. Each frame scenario now
+records renderer CPU timing deltas and cache activity, and every scenario
+records a settled memory/resource snapshot with an explicit `stable` flag.
+The renderer counters include actual tile attribute/index/instance bytes,
+worker queue/result bytes, cumulative uploads, evictions, and main-thread
+build/upload time.
+
+Fresh local results on 2026-08-06, headless Chrome 151:
+
+- Desktop, 756×469 at DPR 1: full fill 316 ms; idle/night/FPV/active-fire p95
+  17.9 / 17.4 / 18.2 / 17.8 ms; two long tasks totaling 331 ms (190 ms max).
+  JS-heap signals were 413 MB initial, 378 MB after pan, 289 MB after the
+  identical revisit, and 658 MB after FPV + active fire + lifecycle.
+- Emulated handheld, 390×844 at DPR 3: full fill 285 ms;
+  idle/night/FPV/active-fire p95 34.7 / 34.5 / 34.9 / 34.5 ms; two long tasks
+  totaling 293 ms (149 ms max). JS-heap signals were 356 MB initial, 316 MB
+  after pan, 265 MB after the identical revisit, and 560 MB after FPV + active
+  fire + lifecycle.
+- Every settled snapshot reached a stable resource signature. Both final
+  scheduler snapshots had zero pending, in-flight, completed, pending-byte,
+  and completed-byte work. Lifecycle and context-loss checks all passed.
+
+The handheld interval is the deliberate 30 fps thermal cap (two 60 Hz display
+ticks), not CPU saturation: the active-fire renderer work averaged 1.64 ms per
+rendered frame. Raising it to 60 fps solely to report a p95 below 33 ms would
+double draw frequency and undermine the thermal goal. `performance.memory`
+remains a heap signal rather than total tab/GPU residency; the final 300–500 MB
+decision remains a physical-device gate.
+
 ## Compact staged assets
 
 The production client no longer parses buildings, props, streets/nodes, or
-render layers from the JSON object graph. Current staged download is 16.9 MB
+render layers from the JSON object graph. Current staged download is 17.1 MB
 gzip (47% below the original 32.0 MB), with measured typed-array residency:
-38.2 MB buildings, 6.1 MB props including tile/tree indexes, 5.3 MB streets
+38.2 MB buildings, 6.1 MB props including tile/tree indexes, 5.7 MB streets
 and nodes, and 7.5 MB vector layers. `map-lite.json.gz` is metadata-only.
 
 ---

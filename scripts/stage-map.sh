@@ -8,12 +8,18 @@ set -euo pipefail
 # committing it would add 30 MB to history on every regeneration. It lives as a
 # GitHub Release asset instead. This script puts it where Vite will publish it:
 #
-#   client/src/public/map/buildings.bin.gz   538k footprints, binary store
-#   client/src/public/map/map-lite.json.gz   every other layer, still JSON
+#   client/src/public/map/buildings.bin.gz   building footprints
+#   client/src/public/map/props.bin.gz       trees and street furniture
+#   client/src/public/map/streets.bin.gz     street graph
+#   client/src/public/map/layers.bin.gz      render-only vector layers
+#   client/src/public/map/city-lod.bin.gz    far-zoom urban mass
+#   client/src/public/map/map-lite.json.gz   map metadata and remaining data
 #   client/src/public/map/heightmap.bin.gz   terrain (optional; flat if absent)
 #
 # The release asset stays map.json.gz — the split is a local bake step, so a
-# re-bake never needs a new upload.
+# re-bake never needs a new upload. Before returning, this script rereads and
+# decodes every staged artifact with the shared runtime decoders. A missing or
+# incompatible required file therefore stops staging before the client build.
 #
 # Locally it copies from data/maps/. In CI, where data/maps/ doesn't exist, it
 # downloads the release asset instead.
@@ -35,6 +41,9 @@ note() { printf '\033[1m==>\033[0m %s\n' "$1"; }
 fail() { printf '\033[31merror:\033[0m %s\n' "$1" >&2; exit 1; }
 
 mkdir -p "$DEST_DIR"
+# Do not let a heightmap from an earlier staging run masquerade as the optional
+# artifact for a source/release that does not provide one.
+rm -f "$DEST_DIR/heightmap.bin.gz"
 
 # The extractor writes <name>.json.gz plus <name>-heightmap.bin.gz. Pick the
 # map file, ignoring the heightmap that sits beside it.
@@ -78,10 +87,21 @@ fi
 # JSON cost ~820 MB of browser heap; the store costs 38 MB. map.json.gz is the
 # bake INPUT and is removed afterwards so Vite doesn't publish 32 MB nobody
 # downloads — re-run this script to get it back.
-note "Baking the binary building store"
-( cd "$REPO_ROOT" && npx tsx --max-old-space-size=10240 scripts/bake-map.ts ) \
+rm -f \
+    "$DEST_DIR/buildings.bin.gz" \
+    "$DEST_DIR/props.bin.gz" \
+    "$DEST_DIR/streets.bin.gz" \
+    "$DEST_DIR/layers.bin.gz" \
+    "$DEST_DIR/city-lod.bin.gz" \
+    "$DEST_DIR/map-lite.json.gz"
+note "Baking client map artifacts"
+( cd "$REPO_ROOT" && node --max-old-space-size=10240 --import tsx scripts/bake-map.ts ) \
     || fail "bake failed — map.json.gz left in place so you can retry"
 rm -f "$DEST_DIR/map.json.gz"
 
+note "Verifying staged map artifacts"
+( cd "$REPO_ROOT" && node --import tsx scripts/verify-staged-map.ts "$DEST_DIR" ) \
+    || fail "staged map verification failed — refusing to continue to the client build"
+
 du -h "$DEST_DIR"/* | sed 's/^/    /'
-note "Staged into client/src/public/map/ — the build will publish these"
+note "Staged and verified in client/src/public/map/ — the build will publish these"

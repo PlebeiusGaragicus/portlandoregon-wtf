@@ -13,6 +13,7 @@ import { join } from "node:path";
 const url = process.env["BJ_BENCHMARK_URL"] ?? "http://127.0.0.1:5555/?benchmark=1";
 const port = Number(process.env["BJ_BENCHMARK_PORT"] ?? 9223);
 const emulateMobile = process.env["BJ_BENCHMARK_MOBILE"] === "1";
+const timeoutMs = Number(process.env["BJ_BENCHMARK_TIMEOUT_MS"] ?? 600_000);
 const chrome =
   process.env["CHROME_BIN"] ??
   (process.platform === "darwin"
@@ -100,11 +101,16 @@ async function main(): Promise<void> {
   await call("Page.navigate", { url });
   const response = (await call("Runtime.evaluate", {
     expression: `new Promise((resolve, reject) => {
-      const until = Date.now() + 300000;
+      const until = Date.now() + ${timeoutMs};
       const poll = () => {
+        if (window.__bjBenchmarkError) return reject(new Error(
+          window.__bjBenchmarkError + " (stage: " + (window.__bjBenchmarkStage || "unknown") + ")"
+        ));
         const value = window.__bjBenchmark;
         if (value && value.running !== true) return resolve(value);
-        if (Date.now() > until) return reject(new Error("benchmark timed out"));
+        if (Date.now() > until) return reject(new Error(
+          "benchmark timed out at stage " + (window.__bjBenchmarkStage || "unknown")
+        ));
         setTimeout(poll, 250);
       };
       poll();

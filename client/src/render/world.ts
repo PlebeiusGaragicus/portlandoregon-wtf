@@ -3,11 +3,11 @@ import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import {
   buildingHeight,
   buildingUse,
+  findFeatureTile,
   forEachRingVertex,
   heightAt,
   ringBase,
   ringCount,
-  featureAnchor,
   featureRings,
   ringLength,
   tileKeyAt,
@@ -26,7 +26,19 @@ import {
 } from "@battle-juice/shared";
 import { buildCityModel, type CityModel } from "../city.js";
 import { streetsFrom, type StreetAccess } from "../streets.js";
-import type { PrismTileRequest, PrismTileResult } from "./tile-worker-protocol.js";
+import { geometryBytes } from "./bytes.js";
+import { TileScheduler, type TileTicket } from "./tile-scheduler.js";
+import {
+  DETAIL_MATERIAL,
+  type DetailFeatureSlice,
+  type DetailGroupResult,
+  type DetailHeightSlice,
+  type DetailStreetSlice,
+  type DetailTileRequest,
+  type DetailTileResult,
+  type PrismTileRequest,
+  type PrismTileResult,
+} from "./tile-worker-protocol.js";
 
 /** Rail kinds, in the order the layer store encodes them. */
 const RAIL_KINDS = ["rail", "max", "streetcar", "wes"] as const;
@@ -217,7 +229,8 @@ export interface WorldLayers {
   /** Switch between box chunks and the baked urban-mass far tier. */
   setViewHeight(height: number): void;
   /** Keep a bounded high-resolution terrain window around the camera. */
-  syncGround(x: number, y: number, viewHeight: number, budget?: number): void;
+  syncGround(x: number, y: number, viewHeight: number, budget?: number, residentByteBudget?: number): void;
+  terrainStats(): TileCacheStats;
   /** Stop workers and release detached streaming caches. */
   dispose(): void;
   /** In-place surgery on the merged building soups (fire/destruction). */
@@ -244,10 +257,37 @@ export interface WorldLayers {
 export interface DecalTiles {
   group: THREE.Group;
   /** As BuildingTiles.sync: evicts fully, builds at most `budget` tiles. */
-  sync(want: Iterable<number>, budget?: number): void;
+  sync(
+    want: Iterable<number>,
+    budget?: number,
+    residentByteBudget?: number,
+    uploadByteBudget?: number,
+  ): void;
   buildAll(): void;
-  stats(): { tiles: number; verts: number };
+  stats(): TileCacheStats;
   dispose(): void;
+}
+
+export interface TileCacheStats {
+  tiles: number;
+  verts: number;
+  residentBytes: number;
+  uploadBytes: number;
+  evicted: number;
+}
+
+export interface BuildingTileStats extends TileCacheStats {
+  pending: number;
+  inFlight: number;
+  completed: number;
+  pendingBytes: number;
+  completedBytes: number;
+}
+
+export interface TileByteLimits {
+  residentBytes: number;
+  completedBytes: number;
+  uploadBytes: number;
 }
 
 function createDetailTiles(
@@ -257,51 +297,29 @@ function createDetailTiles(
   overWater: (p: [number, number][]) => boolean,
   ground: GroundFn,
   cell: number,
+  hf?: Heightfield | null,
 ): DecalTiles {
   const group = new THREE.Group();
   const TS = TILE;
 
-  // Features are filed under one tile by a representative point, so a slab
-  // that straddles a tile line belongs to exactly one of them and is never
-  // built twice or dropped by both.
-  const sidewalks = new Map<number, number[]>();
-  const areas = new Map<number, number[]>();
-  const lines = new Map<number, number[]>();
-  const trails = new Map<number, number[]>();
-  const rails = new Map<number, number[]>();
-  const file = (index: Map<number, number[]>, key: number, i: number): void => {
-    const at = index.get(key);
-    if (at) at.push(i);
-    else index.set(key, [i]);
-  };
-  // Filed straight from the stores — no feature objects are created until a
-  // tile is actually built, and then only that tile's.
+  // Feature stores arrive pre-partitioned into sorted typed-array tile slices.
+  // The browser no longer rebuilds six city-wide Map<number, number[]> indexes.
   const swStore = layers.sidewalks;
   const areaStore = layers.markingAreas;
   const lineStore = layers.markingLines;
   const trailStore = layers.trails;
   const railStore = layers.rails;
-  const fileAll = (store: FeatureStore, index: Map<number, number[]>): void => {
-    for (let i = 0; i < store.count; i++) {
-      const [x, y] = featureAnchor(store, i);
-      file(index, tileKeyAt(x, y, TS), i);
-    }
+  const tileBounds = (store: FeatureStore, key: number): [number, number] => {
+    if (store.tileSize !== TS) return [0, 0];
+    const tile = findFeatureTile(store, key);
+    return tile < 0 ? [0, 0] : [store.tileStart[tile]!, store.tileStart[tile + 1]!];
   };
-  fileAll(swStore, sidewalks);
-  fileAll(areaStore, areas);
-  fileAll(lineStore, lines);
-  fileAll(trailStore, trails);
-  fileAll(railStore, rails);
-  const streets = new Map<number, number[]>();
-  for (let i = 0; i < edges.edgeCount; i++) {
-    const e = edges.edge(i);
-    if (e.struct === "tunnel") continue; // roads vanish into the hillside
-    const [mx, my] = e.polyline[Math.floor(e.polyline.length / 2)]!;
-    file(streets, tileKeyAt(mx, my, TS), i);
-  }
 
   const laneMat = decalMat({ color: MARK_YELLOW });
   const trailMat = decalMat({ color: TRAIL_COLOR });
+  const sidewalkMat = decalMat({ color: SIDEWALK_COLOR, solid: true });
+  const markingWhiteMat = decalMat({ color: MARK_WHITE });
+  const markingYellowMat = decalMat({ color: MARK_YELLOW });
   const railMats = new Map<RailLine["kind"], THREE.Material>();
   const railMat = (kind: RailLine["kind"]): THREE.Material => {
     let material = railMats.get(kind);
@@ -311,26 +329,52 @@ function createDetailTiles(
     }
     return material;
   };
+  const detailMaterial = (group: DetailGroupResult): THREE.Material => {
+    switch (group.materialSlot) {
+      case DETAIL_MATERIAL.sidewalk: return sidewalkMat;
+      case DETAIL_MATERIAL.markingWhite: return markingWhiteMat;
+      case DETAIL_MATERIAL.markingYellow: return markingYellowMat;
+      case DETAIL_MATERIAL.street: return streetMat;
+      case DETAIL_MATERIAL.laneLine: return laneMat;
+      case DETAIL_MATERIAL.trail: return trailMat;
+      case DETAIL_MATERIAL.railMax: return railMat("max");
+      case DETAIL_MATERIAL.railStreetcar: return railMat("streetcar");
+      case DETAIL_MATERIAL.railWes: return railMat("wes");
+      default: return railMat("rail");
+    }
+  };
+  const sharedMaterials = new Set<THREE.Material>([
+    streetMat, laneMat, trailMat, sidewalkMat, markingWhiteMat, markingYellowMat,
+  ]);
   const live = new Map<number, THREE.Mesh[]>();
+  const liveBytes = new Map<number, number>();
   let verts = 0;
+  let residentBytes = 0;
+  let uploadBytes = 0;
+  let evicted = 0;
 
-  function build(key: number): void {
+  function buildSync(key: number): void {
     if (live.has(key)) return;
     const meshes: THREE.Mesh[] = [];
+    const [swFrom, swTo] = tileBounds(swStore, key);
     for (const m of order(
       drapedPolyTiles(
-        (sidewalks.get(key) ?? []).map((i) => ({ rings: featureRings(swStore, i), color: SIDEWALK_COLOR })),
+        Array.from({ length: swTo - swFrom }, (_, offset) => ({
+          rings: featureRings(swStore, swFrom + offset),
+          color: SIDEWALK_COLOR,
+        })),
         SIDEWALK_Y,
         ground,
         CURB_H,
       ),
       SIDEWALK_ORDER,
     )) meshes.push(m);
+    const [areaFrom, areaTo] = tileBounds(areaStore, key);
     for (const m of order(
       drapedPolyTiles(
-        (areas.get(key) ?? []).map((i) => ({
-          rings: featureRings(areaStore, i),
-          color: areaStore.attr[i] === 1 ? MARK_YELLOW : MARK_WHITE,
+        Array.from({ length: areaTo - areaFrom }, (_, offset) => ({
+          rings: featureRings(areaStore, areaFrom + offset),
+          color: areaStore.attr[areaFrom + offset] === 1 ? MARK_YELLOW : MARK_WHITE,
         })),
         DECAL_Y,
         ground,
@@ -340,11 +384,13 @@ function createDetailTiles(
     // Accurate, terrain-conforming asphalt for the tiles you are close to.
     // The coarse city-wide version underneath is the same colour at the same
     // height and writes no depth, so the two simply agree where they overlap.
-    const streetIdx = streets.get(key) ?? [];
+    const streetIdx = edges.tileEdges(key, TS);
     if (streetIdx.length) {
       const soup: Soup = { pos: [], nrm: [] };
-      for (const i of streetIdx) {
+      for (let at = 0; at < streetIdx.length; at++) {
+        const i = streetIdx[at]!;
         const e = edges.edge(i);
+        if (e.struct === "tunnel") continue; // roads vanish into the hillside
         pushRibbon(
           soup.pos, e.polyline, RENDER_WIDTH[e.class] ?? e.width, DECAL_Y, ground, cell,
           e.struct === "bridge" || overWater(e.polyline),
@@ -353,25 +399,27 @@ function createDetailTiles(
       if (soup.pos.length) meshes.push(...order([soupMesh(soup, streetMat)], DECAL_ORDER.street));
     }
 
-    const laneIdx = lines.get(key) ?? [];
-    if (laneIdx.length) {
+    const [lineFrom, lineTo] = tileBounds(lineStore, key);
+    if (lineTo > lineFrom) {
       const soup: Soup = { pos: [], nrm: [] };
-      for (const i of laneIdx) pushRibbon(soup.pos, featureRings(lineStore, i)[0]!, 0.35, DECAL_Y, ground, cell);
+      for (let i = lineFrom; i < lineTo; i++) {
+        pushRibbon(soup.pos, featureRings(lineStore, i)[0]!, 0.35, DECAL_Y, ground, cell);
+      }
       if (soup.pos.length) meshes.push(...order([soupMesh(soup, laneMat)], DECAL_ORDER.laneLine));
     }
-    const trailIdx = trails.get(key) ?? [];
-    if (trailIdx.length) {
+    const [trailFrom, trailTo] = tileBounds(trailStore, key);
+    if (trailTo > trailFrom) {
       const soup: Soup = { pos: [], nrm: [] };
-      for (const i of trailIdx) {
+      for (let i = trailFrom; i < trailTo; i++) {
         const line = featureRings(trailStore, i)[0]!;
         pushRibbon(soup.pos, line, 2.5, DECAL_Y, ground, cell, overWater(line), Infinity);
       }
       if (soup.pos.length) meshes.push(...order([soupMesh(soup, trailMat)], DECAL_ORDER.trail));
     }
-    const railIdx = rails.get(key) ?? [];
-    if (railIdx.length) {
+    const [railFrom, railTo] = tileBounds(railStore, key);
+    if (railTo > railFrom) {
       const soups = new Map<RailLine["kind"], Soup>();
-      for (const i of railIdx) {
+      for (let i = railFrom; i < railTo; i++) {
         const kind = RAIL_KINDS[railStore.attr[i]!] ?? "rail";
         let soup = soups.get(kind);
         if (!soup) {
@@ -385,12 +433,17 @@ function createDetailTiles(
         if (soup.pos.length) meshes.push(...order([soupMesh(soup, railMat(kind))], DECAL_ORDER.rail));
       }
     }
+    let tileBytes = 0;
     for (const m of meshes) {
       m.receiveShadow = true;
       group.add(m);
       verts += (m.geometry.getAttribute("position") as THREE.BufferAttribute).count;
+      tileBytes += geometryBytes(m.geometry);
     }
     live.set(key, meshes);
+    liveBytes.set(key, tileBytes);
+    residentBytes += tileBytes;
+    uploadBytes += tileBytes;
   }
 
   function evict(key: number): void {
@@ -403,42 +456,356 @@ function createDetailTiles(
       const materials = Array.isArray(m.material) ? m.material : [m.material];
       for (const material of materials) {
         if (
-          material !== streetMat &&
-          material !== laneMat &&
-          material !== trailMat &&
+          !sharedMaterials.has(material) &&
           ![...railMats.values()].includes(material)
         ) material.dispose();
       }
     }
+    residentBytes -= liveBytes.get(key) ?? 0;
+    liveBytes.delete(key);
     live.delete(key);
+    evicted++;
   }
 
   const occupied = new Set<number>([
-    ...sidewalks.keys(), ...areas.keys(), ...lines.keys(), ...streets.keys(),
-    ...trails.keys(), ...rails.keys(),
+    ...swStore.tileKey,
+    ...areaStore.tileKey,
+    ...lineStore.tileKey,
+    ...trailStore.tileKey,
+    ...railStore.tileKey,
+    ...Array.from(edges.renderTileKeys(TS)),
   ]);
+
+  function featureSlice(
+    store: FeatureStore,
+    key: number,
+    spanOf?: (line: [number, number][]) => boolean,
+  ): DetailFeatureSlice {
+    const [from, to] = tileBounds(store, key);
+    if (to <= from) {
+      return {
+        featureRingStart: new Uint32Array(1),
+        ringOffset: new Uint32Array(1),
+        coords: new Float32Array(),
+        attr: new Uint8Array(),
+        span: new Uint8Array(),
+      };
+    }
+    const sourceRing = store.ringStart[from]!;
+    const sourceRingEnd = store.ringStart[to]!;
+    const sourcePoint = store.ringOffset[sourceRing]!;
+    const sourcePointEnd = store.ringOffset[sourceRingEnd]!;
+    const featureRingStart = new Uint32Array(to - from + 1);
+    for (let feature = from; feature <= to; feature++) {
+      featureRingStart[feature - from] = store.ringStart[feature]! - sourceRing;
+    }
+    const ringOffset = new Uint32Array(sourceRingEnd - sourceRing + 1);
+    for (let ring = sourceRing; ring <= sourceRingEnd; ring++) {
+      ringOffset[ring - sourceRing] = store.ringOffset[ring]! - sourcePoint;
+    }
+    const span = new Uint8Array(to - from);
+    if (spanOf) {
+      for (let feature = from; feature < to; feature++) {
+        span[feature - from] = spanOf(featureRings(store, feature)[0] ?? []) ? 1 : 0;
+      }
+    }
+    return {
+      featureRingStart,
+      ringOffset,
+      coords: store.coords.slice(sourcePoint * 2, sourcePointEnd * 2),
+      attr: store.attr.slice(from, to),
+      span,
+    };
+  }
+
+  function streetSlice(key: number): DetailStreetSlice {
+    const indices = edges.tileEdges(key, TS);
+    const coords: number[] = [];
+    const width: number[] = [];
+    const span: number[] = [];
+    const lineStart = [0];
+    for (let at = 0; at < indices.length; at++) {
+      const edge = edges.edge(indices[at]!);
+      if (edge.struct === "tunnel") continue;
+      for (const [x, y] of edge.polyline) coords.push(x, y);
+      lineStart.push(coords.length / 2);
+      width.push(RENDER_WIDTH[edge.class] ?? edge.width);
+      span.push(edge.struct === "bridge" || overWater(edge.polyline) ? 1 : 0);
+    }
+    return {
+      lineStart: Uint32Array.from(lineStart),
+      coords: Float32Array.from(coords),
+      width: Float32Array.from(width),
+      span: Uint8Array.from(span),
+    };
+  }
+
+  function heightSlice(request: Omit<DetailTileRequest, "height">): DetailHeightSlice | null {
+    if (!hf) return null;
+    const coordinateArrays = [
+      request.sidewalks.coords,
+      request.markingAreas.coords,
+      request.markingLines.coords,
+      request.streets.coords,
+      request.trails.coords,
+      request.rails.coords,
+    ];
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const coords of coordinateArrays) {
+      for (let point = 0; point < coords.length; point += 2) {
+        minX = Math.min(minX, coords[point]!);
+        minY = Math.min(minY, coords[point + 1]!);
+        maxX = Math.max(maxX, coords[point]!);
+        maxY = Math.max(maxY, coords[point + 1]!);
+      }
+    }
+    if (!Number.isFinite(minX)) return null;
+    let margin = 2;
+    for (const width of request.streets.width) margin = Math.max(margin, width / 2);
+    const baseCol = (x: number): number =>
+      Math.floor(Math.max(0, Math.min(hf.cols - 1.001, x / hf.cellSize)));
+    const baseRow = (y: number): number =>
+      Math.floor(Math.max(0, Math.min(hf.rows - 1.001, y / hf.cellSize)));
+    const originCol = baseCol(minX - margin);
+    const originRow = baseRow(minY - margin);
+    const endCol = Math.min(hf.cols - 1, baseCol(maxX + margin) + 1);
+    const endRow = Math.min(hf.rows - 1, baseRow(maxY + margin) + 1);
+    const cols = endCol - originCol + 1;
+    const rows = endRow - originRow + 1;
+    const data = new Uint16Array(cols * rows);
+    for (let row = 0; row < rows; row++) {
+      const source = (originRow + row) * hf.cols + originCol;
+      data.set(hf.data.subarray(source, source + cols), row * cols);
+    }
+    return {
+      originCol,
+      originRow,
+      cols,
+      rows,
+      mapCols: hf.cols,
+      mapRows: hf.rows,
+      cellSize: hf.cellSize,
+      scale: hf.scale,
+      data,
+    };
+  }
+
+  function detailRequest(key: number, generation: number): DetailTileRequest {
+    const partial: Omit<DetailTileRequest, "height"> = {
+      type: "details",
+      tile: key,
+      generation,
+      cell,
+      sidewalks: featureSlice(swStore, key),
+      markingAreas: featureSlice(areaStore, key),
+      markingLines: featureSlice(lineStore, key),
+      streets: streetSlice(key),
+      trails: featureSlice(trailStore, key, overWater),
+      rails: featureSlice(railStore, key, overWater),
+    };
+    return { ...partial, height: heightSlice(partial) };
+  }
+
+  function requestTransfers(request: DetailTileRequest): Transferable[] {
+    const transfers: Transferable[] = [];
+    const addFeature = (slice: DetailFeatureSlice): void => {
+      transfers.push(
+        slice.featureRingStart.buffer,
+        slice.ringOffset.buffer,
+        slice.coords.buffer,
+        slice.attr.buffer,
+        slice.span.buffer,
+      );
+    };
+    addFeature(request.sidewalks);
+    addFeature(request.markingAreas);
+    addFeature(request.markingLines);
+    transfers.push(
+      request.streets.lineStart.buffer,
+      request.streets.coords.buffer,
+      request.streets.width.buffer,
+      request.streets.span.buffer,
+    );
+    addFeature(request.trails);
+    addFeature(request.rails);
+    if (request.height) transfers.push(request.height.data.buffer);
+    return transfers;
+  }
+
+  const scheduler = new TileScheduler();
+  const completed: { ticket: TileTicket; result: DetailTileResult }[] = [];
+  const liveTickets = new Map<number, TileTicket>();
+  let active: TileTicket | null = null;
+  let worker: Worker | null = null;
+
+  function startWorker(): Worker | null {
+    if (typeof window === "undefined" || typeof Worker === "undefined") return null;
+    const next = new Worker(new URL("./tile-worker.ts", import.meta.url), { type: "module" });
+    next.addEventListener("message", (event: MessageEvent<DetailTileResult>) => {
+      const result = event.data;
+      const ticket: TileTicket = {
+        kind: "dressing",
+        key: result.tile,
+        generation: result.generation,
+        priority: 0,
+      };
+      if (active?.key === ticket.key && active.generation === ticket.generation) active = null;
+      if (scheduler.complete(ticket, result.bytes)) completed.push({ ticket, result });
+    });
+    next.addEventListener("error", () => {
+      if (active) scheduler.retry(active);
+      active = null;
+      if (worker === next) {
+        next.terminate();
+        worker = null;
+      }
+    });
+    return next;
+  }
+  worker = startWorker();
+
+  function stopActive(): void {
+    if (!worker || !active) return;
+    worker.postMessage({ type: "cancel-details", tile: active.key, generation: active.generation });
+    worker.terminate();
+    active = null;
+    worker = startWorker();
+  }
+
+  function scheduleDetail(): void {
+    if (!worker || active) return;
+    const ticket = scheduler.claim(1)[0];
+    if (!ticket) return;
+    const request = detailRequest(ticket.key, ticket.generation);
+    active = ticket;
+    worker.postMessage(request, requestTransfers(request));
+  }
+
+  function acceptDetail(result: DetailTileResult): void {
+    const meshes: THREE.Mesh[] = [];
+    let tileBytes = 0;
+    for (const built of result.groups) {
+      if (!built.position.length) continue;
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute(
+        "position",
+        new THREE.BufferAttribute(built.position, 3, built.position instanceof Int16Array),
+      );
+      geometry.setAttribute("normal", new THREE.BufferAttribute(built.normal, 3, true));
+      const mesh = seal(new THREE.Mesh(geometry, detailMaterial(built)));
+      mesh.position.set(...built.positionOffset);
+      mesh.scale.set(...built.positionScale);
+      mesh.renderOrder = built.renderOrder;
+      mesh.receiveShadow = true;
+      mesh.userData["detailMaterial"] = built.materialSlot;
+      mesh.userData["solid"] = built.solid;
+      group.add(mesh);
+      verts += built.position.length / 3;
+      tileBytes += geometryBytes(geometry);
+      meshes.push(mesh);
+    }
+    live.set(result.tile, meshes);
+    liveBytes.set(result.tile, tileBytes);
+    residentBytes += tileBytes;
+    uploadBytes += tileBytes;
+    packError.h = Math.max(packError.h, result.packErrorH);
+    packError.v = Math.max(packError.v, result.packErrorV);
+  }
+
   return {
     group,
-    sync(want: Iterable<number>, budget = Infinity): void {
+    sync(
+      want: Iterable<number>,
+      budget = Infinity,
+      residentByteBudget = Infinity,
+      uploadByteBudget = Infinity,
+    ): void {
       const order = [...want];
       const keep = new Set(order);
-      for (const key of [...live.keys()]) if (!keep.has(key)) evict(key);
+      for (const key of [...live.keys()]) {
+        if (keep.has(key)) continue;
+        evict(key);
+        liveTickets.delete(key);
+      }
+      if (worker) {
+        const wanted = order.filter((key) => occupied.has(key));
+        const wantedSet = new Set(wanted);
+        scheduler.updateWanted("dressing", wanted);
+        if (active && !wantedSet.has(active.key)) stopActive();
+        const rank = new Map(order.map((key, index) => [key, index]));
+        completed.sort(
+          (a, b) => (rank.get(a.ticket.key) ?? Number.MAX_SAFE_INTEGER) -
+            (rank.get(b.ticket.key) ?? Number.MAX_SAFE_INTEGER),
+        );
+        let made = 0;
+        let wrappedBytes = 0;
+        for (let index = 0; index < completed.length;) {
+          const done = completed[index]!;
+          if (!keep.has(done.ticket.key)) {
+            completed.splice(index, 1);
+            continue;
+          }
+          if (made >= budget) break;
+          if (made > 0 && wrappedBytes + done.result.bytes > uploadByteBudget) break;
+          completed.splice(index, 1);
+          if (!scheduler.accept(done.ticket)) continue;
+          acceptDetail(done.result);
+          wrappedBytes += done.result.bytes;
+          liveTickets.set(done.ticket.key, done.ticket);
+          made++;
+        }
+        // Completed wrapping and worker admission are separate frame budgets:
+        // keep the worker busy after accepting the previous tile.
+        if (budget > 0) scheduleDetail();
+        for (let i = order.length - 1; residentBytes > residentByteBudget && i > 0; i--) {
+          const key = order[i]!;
+          const ticket = liveTickets.get(key);
+          if (!live.has(key)) continue;
+          evict(key);
+          liveTickets.delete(key);
+          if (ticket) scheduler.retry(ticket);
+        }
+        return;
+      }
       let made = 0;
       for (const key of order) {
         if (made >= budget) break;
         if (!occupied.has(key) || live.has(key)) continue;
-        build(key);
+        buildSync(key);
         made++;
+      }
+      // The nearest wanted tile is the visible core and remains pinned. If a
+      // dense outer tile pushes the cache over budget, drop farthest first.
+      for (let i = order.length - 1; residentBytes > residentByteBudget && i > 0; i--) {
+        const key = order[i]!;
+        if (live.has(key)) evict(key);
       }
     },
     buildAll(): void {
-      for (const key of occupied) build(key);
+      worker?.terminate();
+      worker = null;
+      active = null;
+      completed.length = 0;
+      scheduler.reset();
+      liveTickets.clear();
+      for (const key of occupied) buildSync(key);
     },
-    stats: () => ({ tiles: live.size, verts }),
+    stats: () => ({ tiles: live.size, verts, residentBytes, uploadBytes, evicted }),
     dispose(): void {
+      worker?.terminate();
+      worker = null;
+      active = null;
+      completed.length = 0;
+      scheduler.reset();
       for (const key of [...live.keys()]) evict(key);
       laneMat.dispose();
       trailMat.dispose();
+      sidewalkMat.dispose();
+      markingWhiteMat.dispose();
+      markingYellowMat.dispose();
       for (const material of railMats.values()) material.dispose();
       group.removeFromParent();
     },
@@ -751,6 +1118,7 @@ function buildCityLodMesh(map: GameMap, lod: CityLod, hf?: Heightfield | null): 
     polygonOffsetFactor: -3,
   });
   const mesh = new THREE.Mesh(geo, material);
+  mesh.userData["cityLod"] = true;
   mesh.renderOrder = DECAL_ORDER.street + 0.25;
   mesh.frustumCulled = true;
   return mesh;
@@ -810,7 +1178,7 @@ export function beginWorld(
   // sidewalks alone outweigh every building in the city.
   const detail = new THREE.Group();
   group.add(detail);
-  const detailTiles = createDetailTiles(layers, streets, streetMat, overWaterLater, ground, cell);
+  const detailTiles = createDetailTiles(layers, streets, streetMat, overWaterLater, ground, cell, hf);
   detail.add(detailTiles.group);
 
   // The water test needs the rasterized mask, which is cheap but not free, and
@@ -839,9 +1207,10 @@ export function beginWorld(
       tiles.far.visible = !textureTier;
       if (lod2) lod2.visible = textureTier;
     },
-    syncGround(x: number, y: number, viewHeight: number, budget = 1): void {
-      terrain?.sync(x, y, viewHeight, budget);
+    syncGround(x: number, y: number, viewHeight: number, budget = 1, residentByteBudget = Infinity): void {
+      terrain?.sync(x, y, viewHeight, budget, residentByteBudget);
     },
+    terrainStats: () => terrain?.stats() ?? { tiles: 0, verts: 0, residentBytes: 0, uploadBytes: 0, evicted: 0 },
     dispose(): void {
       tiles.dispose();
       detailTiles.dispose();
@@ -1093,7 +1462,8 @@ function* terrainTiles(map: GameMap, layers: LayerStores, hf: Heightfield): Gene
 interface TerrainCache {
   group: THREE.Group;
   prepare(): Generator<void, void, void>;
-  sync(x: number, y: number, viewHeight: number, budget?: number): void;
+  sync(x: number, y: number, viewHeight: number, budget?: number, residentByteBudget?: number): void;
+  stats(): TileCacheStats;
   dispose(): void;
 }
 
@@ -1112,6 +1482,11 @@ function createTerrainCache(map: GameMap, layers: LayerStores, hf: Heightfield):
   const material = new THREE.MeshLambertMaterial({ vertexColors: true });
   const mask = new Uint8Array(hf.cols * hf.rows);
   const live = new Map<number, THREE.Mesh>();
+  const liveBytes = new Map<number, number>();
+  const backingBytes = geometryBytes(backing.geometry);
+  let residentBytes = backingBytes;
+  let uploadBytes = backingBytes;
+  let evicted = 0;
   const chunksX = Math.ceil((hf.cols - 1) / TERRAIN_CHUNK);
   const chunksY = Math.ceil((hf.rows - 1) / TERRAIN_CHUNK);
   let ready = false;
@@ -1180,12 +1555,16 @@ function createTerrainCache(map: GameMap, layers: LayerStores, hf: Heightfield):
     mesh.receiveShadow = true;
     group.add(mesh);
     live.set(key, mesh);
+    const bytes = geometryBytes(geometry);
+    liveBytes.set(key, bytes);
+    residentBytes += bytes;
+    uploadBytes += bytes;
   }
 
   return {
     group,
     prepare,
-    sync(x: number, y: number, viewHeight: number, budget = 1): void {
+    sync(x: number, y: number, viewHeight: number, budget = 1, residentByteBudget = Infinity): void {
       if (!ready) return;
       const span = TERRAIN_CHUNK * hf.cellSize;
       const centerX = Math.max(0, Math.min(chunksX - 1, Math.floor(x / span)));
@@ -1206,7 +1585,10 @@ function createTerrainCache(map: GameMap, layers: LayerStores, hf: Heightfield):
         if (keep.has(key)) continue;
         mesh.removeFromParent();
         mesh.geometry.dispose();
+        residentBytes -= liveBytes.get(key) ?? 0;
+        liveBytes.delete(key);
         live.delete(key);
+        evicted++;
       }
       let made = 0;
       for (const tile of wanted) {
@@ -1215,10 +1597,33 @@ function createTerrainCache(map: GameMap, layers: LayerStores, hf: Heightfield):
         build(tile.x, tile.y);
         made++;
       }
+      for (let i = wanted.length - 1; residentBytes > residentByteBudget && i > 0; i--) {
+        const tile = wanted[i]!;
+        const mesh = live.get(tile.key);
+        if (!mesh) continue;
+        mesh.removeFromParent();
+        mesh.geometry.dispose();
+        residentBytes -= liveBytes.get(tile.key) ?? 0;
+        liveBytes.delete(tile.key);
+        live.delete(tile.key);
+        evicted++;
+      }
     },
+    stats: () => ({
+      tiles: live.size,
+      verts: [...live.values()].reduce(
+        (sum, mesh) => sum + (mesh.geometry.getAttribute("position") as THREE.BufferAttribute).count,
+        0,
+      ),
+      residentBytes,
+      uploadBytes,
+      evicted,
+    }),
     dispose(): void {
       for (const mesh of live.values()) mesh.geometry.dispose();
       live.clear();
+      liveBytes.clear();
+      residentBytes = 0;
       backing.geometry.dispose();
       (backing.material as THREE.Material).dispose();
       material.dispose();
@@ -1938,7 +2343,11 @@ export interface BuildingTiles {
    *
    * Returns the building index ranges newly built, for repainting damage.
    */
-  sync(want: Iterable<number>, budget?: number): { built: [number, number][]; evicted: number };
+  sync(
+    want: Iterable<number>,
+    budget?: number,
+    byteLimits?: Partial<TileByteLimits>,
+  ): { built: [number, number][]; evicted: number };
   /** Build the whole city at once — the old behaviour, for headless tools. */
   buildAll(): void;
   /**
@@ -1951,7 +2360,8 @@ export interface BuildingTiles {
    * Already complete (a no-op) unless `deferFar` was set.
    */
   fillFar(): Generator<void, void, void>;
-  stats(): { tiles: number; verts: number };
+  has(tile: number): boolean;
+  stats(): BuildingTileStats;
   dispose(): void;
 }
 
@@ -2063,7 +2473,11 @@ export function createBuildingTiles(
   /** Resident tiles by index into store.tileKey. Declared before the far fill
    * because that fill has to know which tiles already have prisms. */
   const live = new Map<number, THREE.Mesh[]>();
+  const liveBytes = new Map<number, number>();
   let residentVerts = 0;
+  let residentBytes = 0;
+  let uploadBytes = 0;
+  let evictedTotal = 0;
 
   /** Tint keyed on a coarse spatial hash — see `build` for why not per part. */
   function tintOf(bi: number): number[] {
@@ -2204,6 +2618,10 @@ export function createBuildingTiles(
       residentVerts += (m.geometry.getAttribute("position") as THREE.BufferAttribute).count;
     }
     live.set(t, meshes);
+    const bytes = meshes.reduce((sum, mesh) => sum + geometryBytes(mesh.geometry), 0);
+    liveBytes.set(t, bytes);
+    residentBytes += bytes;
+    uploadBytes += bytes;
     setFarTile(t, true);
   }
 
@@ -2218,7 +2636,10 @@ export function createBuildingTiles(
     }
     // The buildings themselves keep existing — only their geometry is gone.
     shells.forget(store.tileStart[t]!, store.tileStart[t + 1]!);
+    residentBytes -= liveBytes.get(t) ?? 0;
+    liveBytes.delete(t);
     live.delete(t);
+    evictedTotal++;
     setFarTile(t, false);
   }
 
@@ -2227,6 +2648,7 @@ export function createBuildingTiles(
   const landmarkKinds = Object.keys(LANDMARK_THEMES) as Landmark["kind"][];
   const generation = new Uint32Array(store.tileKey.length);
   const pending = new Map<number, number>();
+  const pendingRequestBytes = new Map<number, number>();
   const completed: PrismTileResult[] = [];
   let inFlight = 0;
   const worker =
@@ -2235,6 +2657,7 @@ export function createBuildingTiles(
       : null;
   worker?.addEventListener("message", (event: MessageEvent<PrismTileResult>) => {
     inFlight = Math.max(0, inFlight - 1);
+    pendingRequestBytes.set(event.data.tile, 0);
     completed.push(event.data);
   });
 
@@ -2293,6 +2716,13 @@ export function createBuildingTiles(
     generation[tile] = requestGeneration;
     const request = prismRequest(tile, requestGeneration);
     pending.set(tile, requestGeneration);
+    pendingRequestBytes.set(
+      tile,
+      request.buildingIndex.byteLength + request.sourceId.byteLength +
+        request.buildingRingStart.byteLength + request.ringOffset.byteLength +
+        request.coords.byteLength + request.height.byteLength + request.baseZ.byteLength +
+        request.color.byteLength + request.materialSlot.byteLength,
+    );
     inFlight++;
     worker.postMessage(request, [
       request.buildingIndex.buffer,
@@ -2310,6 +2740,7 @@ export function createBuildingTiles(
   function accept(result: PrismTileResult): [number, number] | null {
     if (generation[result.tile] !== result.generation || live.has(result.tile)) return null;
     pending.delete(result.tile);
+    pendingRequestBytes.delete(result.tile);
     const meshes: THREE.Mesh[] = [];
     for (const built of result.groups) {
       if (!built.position.length) continue;
@@ -2336,6 +2767,10 @@ export function createBuildingTiles(
       meshes.push(mesh);
     }
     live.set(result.tile, meshes);
+    const bytes = meshes.reduce((sum, mesh) => sum + geometryBytes(mesh.geometry), 0);
+    liveBytes.set(result.tile, bytes);
+    residentBytes += bytes;
+    uploadBytes += bytes;
     setFarTile(result.tile, true);
     return [store.tileStart[result.tile]!, store.tileStart[result.tile + 1]!];
   }
@@ -2344,9 +2779,18 @@ export function createBuildingTiles(
     group,
     shells,
     far,
-    sync(want: Iterable<number>, budget = Infinity): { built: [number, number][]; evicted: number } {
+    sync(
+      want: Iterable<number>,
+      budget = Infinity,
+      byteLimits: Partial<TileByteLimits> = {},
+    ): { built: [number, number][]; evicted: number } {
       const order = [...want];
       const keep = new Set(order);
+      const limits: TileByteLimits = {
+        residentBytes: byteLimits.residentBytes ?? Infinity,
+        completedBytes: byteLimits.completedBytes ?? 64 * 1024 * 1024,
+        uploadBytes: byteLimits.uploadBytes ?? 8 * 1024 * 1024,
+      };
       const built: [number, number][] = [];
       let evicted = 0;
       for (const t of [...live.keys()]) {
@@ -2358,6 +2802,21 @@ export function createBuildingTiles(
         if (keep.has(t)) continue;
         generation[t] = generation[t]! + 1;
         pending.delete(t);
+        pendingRequestBytes.delete(t);
+      }
+      const rank = new Map(order.map((tile, index) => [tile, index]));
+      completed.sort(
+        (a, b) => (rank.get(a.tile) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.tile) ?? Number.MAX_SAFE_INTEGER),
+      );
+      let queuedBytes = completed.reduce((sum, result) => sum + result.bytes, 0);
+      while (queuedBytes > limits.completedBytes && completed.length > 1) {
+        const result = completed.pop()!;
+        queuedBytes -= result.bytes;
+        if (pending.get(result.tile) === result.generation) {
+          pending.delete(result.tile);
+          pendingRequestBytes.delete(result.tile);
+          generation[result.tile] = generation[result.tile]! + 1;
+        }
       }
       // Wrap/upload completed buffers under both byte and time limits. One
       // result is always accepted so low-end devices cannot starve.
@@ -2369,7 +2828,10 @@ export function createBuildingTiles(
           completed.splice(i, 1);
           continue;
         }
-        if (built.length && (uploadedBytes + result.bytes > 8 * 1024 * 1024 || performance.now() - uploadStarted > 4)) break;
+        if (
+          built.length &&
+          (uploadedBytes + result.bytes > limits.uploadBytes || performance.now() - uploadStarted > 4)
+        ) break;
         completed.splice(i, 1);
         uploadedBytes += result.bytes;
         const range = accept(result);
@@ -2388,6 +2850,12 @@ export function createBuildingTiles(
         }
         made++;
       }
+      for (let i = order.length - 1; residentBytes > limits.residentBytes && i > 0; i--) {
+        const tile = order[i]!;
+        if (!live.has(tile)) continue;
+        evict(tile);
+        evicted++;
+      }
       return { built, evicted };
     },
     buildAll(): void {
@@ -2400,11 +2868,24 @@ export function createBuildingTiles(
         yield;
       }
     },
-    stats: () => ({ tiles: live.size, verts: residentVerts }),
+    has: (tile) => live.has(tile),
+    stats: () => ({
+      tiles: live.size,
+      verts: residentVerts,
+      residentBytes,
+      uploadBytes,
+      evicted: evictedTotal,
+      pending: Math.max(0, pending.size - completed.length),
+      inFlight,
+      completed: completed.length,
+      pendingBytes: [...pendingRequestBytes.values()].reduce((sum, bytes) => sum + bytes, 0),
+      completedBytes: completed.reduce((sum, result) => sum + result.bytes, 0),
+    }),
     dispose(): void {
       worker?.terminate();
       completed.length = 0;
       pending.clear();
+      pendingRequestBytes.clear();
       for (const tile of [...live.keys()]) evict(tile);
       for (const mesh of farTiles) {
         if (!mesh) continue;
