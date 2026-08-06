@@ -309,10 +309,31 @@ export class BuildingShells {
 }
 
 /** Static map meshes: terrain (or flat ground), water, tiled street ribbons
- * + buildings — all draped onto the heightfield when one is provided. */
+ * + buildings — all draped onto the heightfield when one is provided.
+ *
+ * Drains {@link buildWorldSteps}. Callers that want to report progress (the
+ * boot console) should drive the generator instead. */
 export function buildWorld(map: GameMap, hf?: Heightfield | null): WorldLayers {
+  const it = buildWorldSteps(map, hf);
+  let r = it.next();
+  while (!r.done) r = it.next();
+  return r.value;
+}
+
+/**
+ * buildWorld as a generator, yielding the label of the step it is ABOUT to
+ * run. This is the slowest thing in the whole client (~20 s on a laptop), and
+ * a caller that pumps it between animation frames can both paint the label
+ * and keep the page alive — a single opaque "building the city" line is
+ * useless when the interesting question is which step ate the time (or died).
+ */
+export function* buildWorldSteps(
+  map: GameMap,
+  hf?: Heightfield | null,
+): Generator<string, WorldLayers, void> {
   const ground: GroundFn = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
   const group = new THREE.Group();
+  yield hf ? "terrain mesh" : "flat ground plane";
   if (hf) {
     // Water/parks/yards are painted INTO the terrain's vertex colors instead
     // of draped as separate polygons: no z-fighting, no sliver triangles
@@ -333,22 +354,27 @@ export function buildWorld(map: GameMap, hf?: Heightfield | null): WorldLayers {
   // Ribbon legs that cross water are bridges: their deck spans between the
   // bank heights instead of sagging onto the riverbed. (Land overpasses
   // still drape — the ZLEV rule is phase 2.)
+  yield "water mask";
   const overWater = waterTester(map.water ?? [], map.meta.width, map.meta.height);
 
   // Terrain cell size lets ribbon vertices land exactly where the ground
   // surface kinks, so draped decals conform instead of clipping.
   const cell = hf ? hf.cellSize : Infinity;
 
+  yield `${(map.trails ?? []).length} trails`;
   const trails = buildTrails(map.trails ?? [], ground, cell, overWater);
   if (trails) group.add(trails);
 
+  yield `${map.edges.length} street edges`;
   const streetMat = decalMat({ color: STREET_COLOR });
   for (const mesh of buildStreetTiles(map.edges, streetMat, ground, cell, overWater)) group.add(mesh);
 
+  yield `${(map.rails ?? []).length} rail lines + ${(map.railStops ?? []).length} stops`;
   for (const mesh of buildRails(map.rails ?? [], ground, cell, overWater)) group.add(mesh);
   const stops = buildRailStops(map.railStops ?? [], ground);
   if (stops) group.add(stops);
 
+  yield `${map.buildings.length} building prisms`;
   const landmarkBuildings = new Map<number, Landmark["kind"]>();
   for (const m of map.landmarks ?? []) for (const id of m.buildingIds ?? []) landmarkBuildings.set(id, m.kind);
   const { meshes: buildingMeshes, shells } = buildBuildingTiles(map.buildings, landmarkBuildings, ground);
@@ -357,12 +383,14 @@ export function buildWorld(map: GameMap, hf?: Heightfield | null): WorldLayers {
   // Street-level dressing, in its own zoom-gated group.
   const detail = new THREE.Group();
   group.add(detail);
+  yield `${(map.sidewalks ?? []).length} sidewalk slabs`;
   for (const mesh of drapedPolyTiles(
     (map.sidewalks ?? []).map((s) => ({ rings: s.rings, color: SIDEWALK_COLOR })),
     SIDEWALK_Y,
     ground,
     CURB_H,
   )) detail.add(mesh);
+  yield `${(map.markingAreas ?? []).length} painted areas + ${(map.markingLines ?? []).length} lane lines`;
   for (const mesh of drapedPolyTiles(
     (map.markingAreas ?? []).map((a) => ({ rings: a.rings, color: a.style === "yellow" ? MARK_YELLOW : MARK_WHITE })),
     MARK_Y,

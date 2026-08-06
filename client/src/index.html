@@ -150,10 +150,80 @@
         display: flex;
         flex-direction: column;
         align-items: center;
-        justify-content: center;
-        gap: 1.1rem;
+        justify-content: flex-start;
+        gap: 0.8rem;
+        padding: 1rem;
+        box-sizing: border-box;
         z-index: 10;
         transition: opacity 0.4s ease;
+      }
+      /* Boot console: a cold load takes tens of seconds and can die partway,
+         so every step is printed rather than hidden behind one status line.
+         Monospace, scrolling, dmesg-ish — the log IS the bug report, which
+         matters most on a phone where there is no devtools. */
+      #bootlog {
+        width: min(100%, 60rem);
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        overflow-x: hidden;
+        margin: 0;
+        padding: 0.7rem 0.85rem;
+        box-sizing: border-box;
+        border: 1px solid #262c38;
+        border-radius: 8px;
+        background: #0d1014;
+        color: #8f9aab;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.72rem;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        -webkit-overflow-scrolling: touch;
+      }
+      #bootlog .l-ok { color: #6fbf73; }
+      #bootlog .l-warn { color: #e0a044; }
+      #bootlog .l-fail { color: #e8635a; }
+      #bootbar {
+        width: min(100%, 60rem);
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        flex-wrap: wrap;
+      }
+      #bootbar h1 { flex: 1 1 auto; }
+      #bootbar button {
+        font: inherit;
+        font-size: 0.8rem;
+        padding: 0.35rem 0.8rem;
+        border-radius: 7px;
+        border: 1px solid #3a4150;
+        background: #222936;
+        color: #e6e6e6;
+        cursor: pointer;
+      }
+      #bootbar button:hover { background: #2c3444; }
+      /* A boot that died and came back needs the verdict up top, not buried
+         in the scrollback. */
+      #bootcrash {
+        display: none;
+        width: min(100%, 60rem);
+        box-sizing: border-box;
+        padding: 0.7rem 0.85rem;
+        border: 1px solid #6b3a34;
+        border-radius: 8px;
+        background: #241a19;
+        color: #e8a49d;
+        font-size: 0.82rem;
+        line-height: 1.5;
+      }
+      #bootcrash.show { display: block; }
+      #bootcrash code {
+        display: block;
+        margin-top: 0.4rem;
+        font-size: 0.72rem;
+        color: #f0c4bf;
+        overflow-wrap: anywhere;
       }
       #loading.done { opacity: 0; pointer-events: none; }
       /* Offline state: the spinner would otherwise keep turning forever behind
@@ -178,10 +248,11 @@
       #offline button:focus-visible { outline: 2px solid #4f7cff; outline-offset: 2px; }
       #retry-note { font-variant-numeric: tabular-nums; min-height: 1.2em; }
       #loading .spin {
-        width: 3rem;
-        height: 3rem;
+        width: 1.4rem;
+        height: 1.4rem;
+        flex: none;
         border-radius: 50%;
-        border: 4px solid #2a303c;
+        border: 3px solid #2a303c;
         border-top-color: #4f7cff;
         animation: spin 0.9s linear infinite;
       }
@@ -195,9 +266,18 @@
       <canvas id="canvas"></canvas>
     </div>
     <div id="loading">
-      <div class="spin"></div>
-      <h1>Battle Juice</h1>
+      <div id="bootbar">
+        <div class="spin"></div>
+        <h1>Battle Juice</h1>
+        <button id="copylog" type="button">Copy log</button>
+      </div>
       <p id="loading-status">loading the city…</p>
+      <div id="bootcrash">
+        <strong id="bootcrash-title"></strong>
+        <span id="bootcrash-detail"></span>
+        <code id="bootcrash-line"></code>
+      </div>
+      <div id="bootlog"></div>
       <div id="offline">
         <p id="offline-detail"></p>
         <button id="retry" type="button">Try again</button>

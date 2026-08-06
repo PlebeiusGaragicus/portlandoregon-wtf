@@ -24,10 +24,17 @@ export class MapUnavailableError extends Error {}
  * Everything stays a stream: the map inflates to hundreds of megabytes, and
  * buffering that as an ArrayBuffer and again as a string — before parsing —
  * pins the main thread and spikes memory on weaker machines. */
-async function openGzipped(url: string): Promise<Response> {
+/** Download reporter: called with bytes-so-far and the total when the server
+ * declared one (0 when it didn't). Lets the boot console show a real transfer
+ * rate instead of one frozen "downloading…" line for 32 MB. */
+export type Progress = (received: number, total: number) => void;
+
+async function openGzipped(url: string, onProgress?: Progress): Promise<Response> {
   const res = await fetch(url);
   if (!res.ok) throw new MapUnavailableError(`${url} → ${res.status}`);
   if (!res.body) throw new MapUnavailableError(`${url} → empty response`);
+  const total = Number(res.headers.get("content-length") ?? 0);
+  let received = 0;
 
   // Peek at the first chunk, then re-emit it ahead of the rest. Deliberately
   // NOT body.tee(): a tee whose second branch isn't drained buffers the whole
@@ -40,13 +47,22 @@ async function openGzipped(url: string): Promise<Response> {
 
   const source = new ReadableStream({
     start(controller) {
-      if (first.value) controller.enqueue(first.value);
+      if (first.value) {
+        received += first.value.byteLength;
+        onProgress?.(received, total);
+        controller.enqueue(first.value);
+      }
       if (first.done) controller.close();
     },
     async pull(controller) {
       const { value, done } = await reader.read();
-      if (done) controller.close();
-      else controller.enqueue(value);
+      if (done) {
+        controller.close();
+      } else {
+        received += value.byteLength;
+        onProgress?.(received, total);
+        controller.enqueue(value);
+      }
     },
     cancel(reason) {
       void reader.cancel(reason);
@@ -56,10 +72,10 @@ async function openGzipped(url: string): Promise<Response> {
   return new Response(isGzip ? source.pipeThrough(new DecompressionStream("gzip")) : source);
 }
 
-export async function loadMap(): Promise<GameMap> {
+export async function loadMap(onProgress?: Progress): Promise<GameMap> {
   try {
     // Response.json() parses straight off the stream — no intermediate string.
-    return (await (await openGzipped(MAP_URL)).json()) as GameMap;
+    return (await (await openGzipped(MAP_URL, onProgress)).json()) as GameMap;
   } catch (err) {
     if (err instanceof MapUnavailableError) throw err;
     // Network-level failure: offline, or the asset never got deployed.
@@ -68,9 +84,9 @@ export async function loadMap(): Promise<GameMap> {
 }
 
 /** Terrain is optional — a missing heightmap means flat ground, not a failure. */
-export async function loadHeightfield(): Promise<Heightfield | null> {
+export async function loadHeightfield(onProgress?: Progress): Promise<Heightfield | null> {
   try {
-    return decodeHeightfield(await (await openGzipped(HEIGHTMAP_URL)).arrayBuffer());
+    return decodeHeightfield(await (await openGzipped(HEIGHTMAP_URL, onProgress)).arrayBuffer());
   } catch {
     return null;
   }

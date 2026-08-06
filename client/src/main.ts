@@ -3,16 +3,25 @@
 // standalone on GitHub Pages. (Units and the multiplayer join flow return in a
 // later phase; net.ts and the server's join path are kept for that.)
 import * as THREE from "three";
-import type { Heightfield } from "@battle-juice/shared";
+import type { GameMap, Heightfield } from "@battle-juice/shared";
+import { BootLog, CRASH_LIMIT, fmtBytes, probeDevice } from "./bootlog.js";
 import { loadHeightfield, loadMap, MapUnavailableError } from "./mapdata.js";
 import { Renderer } from "./render/index.js";
 import { buildLandmarks } from "./render/landmarks.js";
 import { buildProps } from "./render/props.js";
-import { buildWorld } from "./render/world.js";
+import { buildWorldSteps } from "./render/world.js";
 
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const loadingEl = document.getElementById("loading") as HTMLDivElement;
 const statusEl = document.getElementById("loading-status") as HTMLParagraphElement;
+const bootlogEl = document.getElementById("bootlog") as HTMLDivElement;
+const crashEl = document.getElementById("bootcrash") as HTMLDivElement;
+const crashTitleEl = document.getElementById("bootcrash-title") as HTMLElement;
+const crashDetailEl = document.getElementById("bootcrash-detail") as HTMLElement;
+const crashLineEl = document.getElementById("bootcrash-line") as HTMLElement;
+const copyBtn = document.getElementById("copylog") as HTMLButtonElement;
+
+const log = new BootLog(bootlogEl);
 
 /** Paint a status line, then yield two frames so it actually shows before
  * the next main-thread-blocking build step.
@@ -20,8 +29,8 @@ const statusEl = document.getElementById("loading-status") as HTMLParagraphEleme
  * Raced against a timer because background tabs throttle requestAnimationFrame
  * to a stop: without the race, loading a backgrounded tab hangs on whatever
  * status line it reached and never even issues the map request. */
-async function status(text: string): Promise<void> {
-  statusEl.textContent = text;
+async function paint(text?: string): Promise<void> {
+  if (text !== undefined) statusEl.textContent = text;
   await new Promise<void>((resolve) => {
     let settled = false;
     const done = (): void => {
@@ -34,40 +43,104 @@ async function status(text: string): Promise<void> {
   });
 }
 
-/** Boot is slow enough (tens of seconds on a cold load) that "which phase" is
- * the first question whenever it feels wrong. Timings go to the console so the
- * answer is one refresh away. */
-function phase(label: string, startedAt: number): number {
-  const now = performance.now();
-  console.log(`[boot] ${label}: ${((now - startedAt) / 1000).toFixed(2)}s`);
-  return now;
+/** Log + show a step label, then hand the main thread back long enough to
+ * repaint before the step blocks it again. */
+async function announce(text: string): Promise<void> {
+  log.line(`${text} ...`);
+  await paint(text);
+}
+
+/**
+ * Peak memory the build is about to demand, derived from the map itself.
+ *
+ * Every building ring edge becomes 6 wall vertices and the roof earcuts to
+ * roughly (ringVerts - 2) triangles. Each vertex is buffered first as 9
+ * JS array numbers (position/normal/color, 8 bytes each) and then copied into
+ * Float32Arrays (36 bytes) before the JS arrays are dropped — so ~108 bytes
+ * per vertex is live at the peak. This is the number that decides whether a
+ * phone survives, so it is worth printing before we find out the hard way.
+ */
+function estimatePeakBytes(map: GameMap): { verts: number; bytes: number } {
+  let ringVerts = 0;
+  for (const b of map.buildings) {
+    ringVerts += b.footprint.length;
+    for (const h of b.holes ?? []) ringVerts += h.length;
+  }
+  const wall = ringVerts * 6;
+  const roof = Math.max(0, ringVerts - 2 * map.buildings.length) * 3;
+  return { verts: wall + roof, bytes: (wall + roof) * 108 };
 }
 
 async function boot(): Promise<void> {
   const bootStart = performance.now();
-  let t = bootStart;
 
-  await status("downloading Portland…");
+  log.line("boot console online");
+  probeDevice(log);
+
+  let done = log.step("download map.json.gz");
+  let lastLogged = 0;
   const heightPromise: Promise<Heightfield | null> = loadHeightfield();
-  const map = await loadMap();
-  t = phase("download + decode map", t);
-  await status("unpacking the city…");
+  const map = await loadMap((received, total) => {
+    // One line per ~4 MB: enough to see the transfer move, not so much that
+    // the log becomes a progress bar made of text.
+    if (received - lastLogged < 4 * 1024 * 1024 && received !== total) return;
+    lastLogged = received;
+    const pct = total ? ` (${((received / total) * 100).toFixed(0)}%)` : "";
+    log.line(`  ${fmtBytes(received)}${total ? ` / ${fmtBytes(total)}` : ""}${pct}`);
+  });
+  done(`${map.buildings.length} buildings decoded`);
+
+  done = log.step("decode heightmap");
   const hf = await heightPromise;
-  t = phase("heightmap", t);
+  done(hf ? `${hf.cols}x${hf.rows} cells` : "absent — flat ground");
 
-  await status("raising terrain, streets and 538k buildings…");
-  const world = buildWorld(map, hf);
-  t = phase("buildWorld", t);
-  await status("planting trees and street lights…");
+  // What we actually got, and what it is going to cost.
+  log.line(
+    `map: ${map.buildings.length} buildings · ${map.edges.length} edges · ` +
+      `${map.props.length} props · ${(map.sidewalks ?? []).length} sidewalks · ` +
+      `${(map.markingLines ?? []).length} lane lines`,
+  );
+  const est = estimatePeakBytes(map);
+  const heavy = est.bytes > 1.5e9;
+  log.line(
+    `geometry budget: ~${(est.verts / 1e6).toFixed(1)}M vertices, ` +
+      `~${fmtBytes(est.bytes)} peak heap`,
+    heavy ? "warn" : "info",
+  );
+  if (heavy) {
+    log.line("→ this exceeds what a phone browser will allow; a crash here is expected", "warn");
+  }
+
+  await announce("building the city");
+  const t0 = performance.now();
+  const steps = buildWorldSteps(map, hf);
+  let next = steps.next();
+  while (!next.done) {
+    // The generator yields the label of the step it is about to run, so the
+    // log names the step BEFORE it blocks — which is the whole point when the
+    // step is the one that kills the tab.
+    await announce(`  ${next.value}`);
+    next = steps.next();
+  }
+  const world = next.value;
+  log.line(`city built in ${((performance.now() - t0) / 1000).toFixed(2)}s`, "ok");
+
+  done = log.step("planting trees and street lights");
   const props = buildProps(map, hf);
-  t = phase("buildProps", t);
-  await status("labeling landmarks…");
-  const landmarks = buildLandmarks(map, hf);
-  t = phase("buildLandmarks", t);
+  done(`${map.props.length} props`);
+  await paint();
 
-  await status("ready");
-  phase("TOTAL", bootStart);
+  done = log.step("labeling landmarks");
+  const landmarks = buildLandmarks(map, hf);
+  done(`${(map.landmarks ?? []).length} landmarks`);
+  await paint();
+
+  done = log.step("starting renderer");
   const renderer = new Renderer(canvas, map, { prebuilt: { world, props, landmarks }, heightfield: hf });
+  done();
+
+  log.line(`ready — total ${((performance.now() - bootStart) / 1000).toFixed(2)}s`, "ok");
+  log.finish();
   // Dev/debug handle (headless smoke tests steer the camera through this).
   (window as unknown as Record<string, unknown>)["__bj"] = { renderer, THREE };
   loadingEl.classList.add("done");
@@ -110,6 +183,7 @@ function attempt(): void {
   statusEl.textContent = "loading the city…";
 
   boot().catch((err) => {
+    log.line(String(err), "fail");
     if (err instanceof MapUnavailableError) {
       showOffline(
         "The map couldn't be downloaded. Check your connection — this page will keep trying.",
@@ -130,4 +204,44 @@ retryBtn.addEventListener("click", () => {
   attempt();
 });
 
-attempt();
+copyBtn.addEventListener("click", () => {
+  void navigator.clipboard?.writeText(log.text()).then(
+    () => (copyBtn.textContent = "Copied"),
+    () => (copyBtn.textContent = "Copy failed"),
+  );
+  setTimeout(() => (copyBtn.textContent = "Copy log"), 2000);
+});
+
+// An uncaught error during a blocking build never reaches boot()'s catch —
+// it lands here, and on a phone this is the only place it will ever be seen.
+addEventListener("error", (e) => log.line(`uncaught: ${e.message} @ ${e.filename}:${e.lineno}`, "fail"));
+addEventListener("unhandledrejection", (e) => log.line(`unhandled rejection: ${String(e.reason)}`, "fail"));
+
+/**
+ * An out-of-memory kill on iOS is not an error — Safari discards the tab and
+ * silently reloads it, so the page appears to restart its own loading screen
+ * forever. The log survives in sessionStorage, so a boot that never reached
+ * `finish()` is visible from here: report where it died, and after two of
+ * them stop feeding the loop and let the user decide.
+ */
+if (log.diedAt) {
+  crashEl.classList.add("show");
+  crashTitleEl.textContent = `Previous boot died (attempt ${log.crashes}). `;
+  crashDetailEl.textContent =
+    "The tab was killed mid-load — on iOS that means it ran out of memory, and Safari reloaded it. Last step reached:";
+  crashLineEl.textContent = log.diedAt;
+}
+
+if (log.crashes >= CRASH_LIMIT) {
+  statusEl.textContent = "stopped after repeated crashes";
+  crashDetailEl.textContent =
+    `This device has failed to load the city ${log.crashes} times in a row, so the retry loop is ` +
+    "stopped. The full city needs several GB of memory to build — more than a phone browser allows. " +
+    "Last step reached:";
+  retryBtn.disabled = false;
+  loadingEl.classList.add("offline");
+  offlineDetailEl.textContent = "Press Try again to attempt the load anyway.";
+  log.line(`auto-retry stopped after ${log.crashes} consecutive crashes`, "fail");
+} else {
+  attempt();
+}
