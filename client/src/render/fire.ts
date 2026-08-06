@@ -16,6 +16,7 @@ import { toScene } from "./camera.js";
 import { radialGlowTexture } from "./props.js";
 import type { PropLayers } from "./props.js";
 import type { CityModel } from "../city.js";
+import { CellGrid } from "../grid.js";
 import { ScarField } from "../scars.js";
 import type { BuildingShells } from "./world.js";
 import { CYCLES_PER_DAY } from "./daynight.js";
@@ -145,12 +146,18 @@ interface Smolder {
   size: number;
 }
 
-interface Tree {
-  x: number;
-  y: number;
+/**
+ * Trees, as parallel typed arrays rather than 400k `{x, y, state, t}` objects.
+ * Only `state` and `t` ever change; x/y alias straight into the prop store.
+ */
+interface TreeState {
+  count: number;
+  x: Float32Array;
+  y: Float32Array;
   /** 0 = green, 1 = burning, 2 = charred. */
-  state: number;
-  t: number;
+  state: Uint8Array;
+  /** Seconds burning. */
+  t: Float32Array;
 }
 
 /**
@@ -393,10 +400,11 @@ export class FireSim {
   private embers: Ember[] = [];
   private fireballs: Fireball[] = [];
   private smolders: Smolder[] = [];
-  private trees: Tree[] = [];
+  private trees: TreeState;
   private burningTrees = new Set<number>();
-  private treeGrid = new Map<number, number[]>();
-  private grid = new Map<number, number[]>(); // building centroid buckets
+  /** Neighbour lookup for trees and for building centroids. */
+  private treeGrid: CellGrid;
+  private grid: CellGrid;
   /** Aliases into the city model — centroids and ground heights are facts
    * about the map, not about what is currently drawn. */
   private cx: Float32Array;
@@ -447,27 +455,35 @@ export class FireSim {
     this.cx = city.cx;
     this.cy = city.cy;
     this.baseZ = city.baseZ;
-    for (let i = 0; i < n; i++) {
-      if (!city.valid[i]) continue;
-      const key = this.cellKey(this.cx[i]!, this.cy[i]!);
-      const cell = this.grid.get(key);
-      if (cell) cell.push(i);
-      else this.grid.set(key, [i]);
-    }
-    let ti = 0;
+    const w = map.meta.width;
+    const h = map.meta.height;
+    this.grid = new CellGrid(
+      FireSim.CELL, w, h, n,
+      (i) => this.cx[i]!,
+      (i) => this.cy[i]!,
+      (i) => city.valid[i] === 1,
+    );
+
     // Same order buildProps walks, so a tree's index here is the same "global
     // tree index" the prop layers register their instanced slots under.
+    let count = 0;
+    for (let i = 0; i < props.count; i++) if (PROP_KINDS[props.kind[i]!] === "tree") count++;
+    const trees: TreeState = {
+      count,
+      x: new Float32Array(count),
+      y: new Float32Array(count),
+      state: new Uint8Array(count),
+      t: new Float32Array(count),
+    };
+    let ti = 0;
     for (let i = 0; i < props.count; i++) {
       if (PROP_KINDS[props.kind[i]!] !== "tree") continue;
-      const px = props.x[i]!;
-      const py = props.y[i]!;
-      this.trees.push({ x: px, y: py, state: 0, t: 0 });
-      const key = this.cellKey(px, py);
-      const cell = this.treeGrid.get(key);
-      if (cell) cell.push(ti);
-      else this.treeGrid.set(key, [ti]);
+      trees.x[ti] = props.x[i]!;
+      trees.y[ti] = props.y[i]!;
       ti++;
     }
+    this.trees = trees;
+    this.treeGrid = new CellGrid(FireSim.CELL, w, h, count, (i) => trees.x[i]!, (i) => trees.y[i]!);
     const tex = radialGlowTexture();
     // Draw order: light halos under the solid flame bodies, smoke on top.
     this.glow = new BillboardPool(GLOW_MAX, tex, THREE.AdditiveBlending, 40);
@@ -508,48 +524,24 @@ export class FireSim {
    */
   repaintTrees(): void {
     for (const gi of this.burningTrees) this.paintTreeState(gi);
-    for (let gi = 0; gi < this.trees.length; gi++) {
-      if (this.trees[gi]!.state === 2) this.paintTreeState(gi);
+    for (let gi = 0; gi < this.trees.count; gi++) {
+      if (this.trees.state[gi] === 2) this.paintTreeState(gi);
     }
-  }
-
-  private cellKey(x: number, y: number): number {
-    return Math.floor(y / FireSim.CELL) * 8192 + Math.floor(x / FireSim.CELL);
   }
 
   private nearBuildings(x: number, y: number, r: number, fn: (bi: number, d: number) => void): void {
-    const c0 = Math.floor((x - r) / FireSim.CELL);
-    const c1 = Math.floor((x + r) / FireSim.CELL);
-    const r0 = Math.floor((y - r) / FireSim.CELL);
-    const r1 = Math.floor((y + r) / FireSim.CELL);
-    for (let ry = r0; ry <= r1; ry++) {
-      for (let cx = c0; cx <= c1; cx++) {
-        const cell = this.grid.get(ry * 8192 + cx);
-        if (!cell) continue;
-        for (const bi of cell) {
-          const d = Math.hypot(this.cx[bi]! - x, this.cy[bi]! - y);
-          if (d <= r) fn(bi, d);
-        }
-      }
-    }
+    this.grid.forEachNear(x, y, r, (bi) => {
+      const d = Math.hypot(this.cx[bi]! - x, this.cy[bi]! - y);
+      if (d <= r) fn(bi, d);
+    });
   }
 
   private nearTrees(x: number, y: number, r: number, fn: (ti: number, d: number) => void): void {
-    const c0 = Math.floor((x - r) / FireSim.CELL);
-    const c1 = Math.floor((x + r) / FireSim.CELL);
-    const r0 = Math.floor((y - r) / FireSim.CELL);
-    const r1 = Math.floor((y + r) / FireSim.CELL);
-    for (let ry = r0; ry <= r1; ry++) {
-      for (let cx = c0; cx <= c1; cx++) {
-        const cell = this.treeGrid.get(ry * 8192 + cx);
-        if (!cell) continue;
-        for (const ti of cell) {
-          const t = this.trees[ti]!;
-          const d = Math.hypot(t.x - x, t.y - y);
-          if (d <= r) fn(ti, d);
-        }
-      }
-    }
+    const trees = this.trees;
+    this.treeGrid.forEachNear(x, y, r, (ti) => {
+      const d = Math.hypot(trees.x[ti]! - x, trees.y[ti]! - y);
+      if (d <= r) fn(ti, d);
+    });
   }
 
   private area(bi: number): number {
@@ -991,21 +983,20 @@ export class FireSim {
   }
 
   private igniteTree(ti: number): void {
-    const t = this.trees[ti]!;
-    if (t.state !== 0) return;
-    t.state = 1;
-    t.t = 0;
+    if (this.trees.state[ti] !== 0) return;
+    this.trees.state[ti] = 1;
+    this.trees.t[ti] = 0;
     this.burningTrees.add(ti);
   }
 
   private paintTreeState(gi: number): void {
-    const t = this.trees[gi]!;
-    if (t.state === 1) {
-      const f = Math.min(1, t.t / TREE_BURN_S);
+    const state = this.trees.state[gi]!;
+    if (state === 1) {
+      const f = Math.min(1, this.trees.t[gi]! / TREE_BURN_S);
       // Green -> ember orange -> black.
       if (f < 0.45) this.treeColor.setHex(0x3e7c4f).lerp(new THREE.Color(0xd96a1e), f / 0.45);
       else this.treeColor.setHex(0xd96a1e).lerp(new THREE.Color(0x1a1512), (f - 0.45) / 0.55);
-    } else if (t.state === 2) {
+    } else if (state === 2) {
       this.treeColor.setHex(0x1a1512);
     } else {
       return;
@@ -1444,21 +1435,22 @@ export class FireSim {
 
     // Trees.
     for (const ti of [...this.burningTrees]) {
-      const t = this.trees[ti]!;
-      t.t += dt;
+      const elapsed = (this.trees.t[ti]! += dt);
       this.paintTreeState(ti);
-      if (t.t >= TREE_BURN_S) {
-        t.state = 2;
+      if (elapsed >= TREE_BURN_S) {
+        this.trees.state[ti] = 2;
         this.burningTrees.delete(ti);
         this.paintTreeState(ti);
         continue;
       }
       if (Math.random() < dt * 0.35) {
-        this.nearTrees(t.x, t.y, TREE_TREE_R, (tj) => {
+        const tx = this.trees.x[ti]!;
+        const ty = this.trees.y[ti]!;
+        this.nearTrees(tx, ty, TREE_TREE_R, (tj) => {
           if (Math.random() < 0.4) this.igniteTree(tj);
         });
-        this.nearBuildings(t.x, t.y, 9, (bi) => {
-          if (Math.random() < 0.15) this.igniteBuilding(bi, t.x, t.y);
+        this.nearBuildings(tx, ty, 9, (bi) => {
+          if (Math.random() < 0.15) this.igniteBuilding(bi, tx, ty);
         });
       }
     }
@@ -1590,14 +1582,15 @@ export class FireSim {
       this.glow.push(e.x, e.y, e.z, 0.9, 1, 0.97, 0.85, fade);
     }
     for (const ti of this.burningTrees) {
-      const t = this.trees[ti]!;
-      if (Math.hypot(t.x - focus.x, t.y - focus.y) > RANGE) continue;
-      const f = Math.min(1, t.t / TREE_BURN_S);
+      const tx = this.trees.x[ti]!;
+      const ty = this.trees.y[ti]!;
+      if (Math.hypot(tx - focus.x, ty - focus.y) > RANGE) continue;
+      const f = Math.min(1, this.trees.t[ti]! / TREE_BURN_S);
       const a = Math.sin(f * Math.PI);
-      const gz = this.terrain(t.x, t.y);
+      const gz = this.terrain(tx, ty);
       const s = 7 + 5 * a;
-      this.pushFlame(t.x, t.y, gz + s * 0.44, s, a * 1.2, ti, ti * 0.63);
-      this.glow.push(t.x, t.y, gz + 4, s * 1.5, 1, 0.38, 0.08, 0.5 * a);
+      this.pushFlame(tx, ty, gz + s * 0.44, s, a * 1.2, ti, ti * 0.63);
+      this.glow.push(tx, ty, gz + 4, s * 1.5, 1, 0.38, 0.08, 0.5 * a);
     }
     for (const fl of this.flashes) {
       const k = 1 - fl.t / fl.life;
