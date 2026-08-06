@@ -234,7 +234,8 @@ export interface WorldLayers {
  */
 export interface DecalTiles {
   group: THREE.Group;
-  sync(want: Iterable<number>): void;
+  /** As BuildingTiles.sync: evicts fully, builds at most `budget` tiles. */
+  sync(want: Iterable<number>, budget?: number): void;
   buildAll(): void;
   stats(): { tiles: number; verts: number };
 }
@@ -353,10 +354,17 @@ function createDetailTiles(
   const occupied = new Set<number>([...sidewalks.keys(), ...areas.keys(), ...lines.keys(), ...streets.keys()]);
   return {
     group,
-    sync(want: Iterable<number>): void {
-      const keep = want instanceof Set ? (want as Set<number>) : new Set(want);
+    sync(want: Iterable<number>, budget = Infinity): void {
+      const order = [...want];
+      const keep = new Set(order);
       for (const key of [...live.keys()]) if (!keep.has(key)) evict(key);
-      for (const key of keep) if (occupied.has(key)) build(key);
+      let made = 0;
+      for (const key of order) {
+        if (made >= budget) break;
+        if (!occupied.has(key) || live.has(key)) continue;
+        build(key);
+        made++;
+      }
     },
     buildAll(): void {
       for (const key of occupied) build(key);
@@ -1376,10 +1384,16 @@ export interface BuildingTiles {
   /** Whole-city massing, one draw call, always resident. */
   far: THREE.InstancedMesh;
   /**
-   * Make exactly `want` resident. Returns the building index ranges that were
-   * newly built, so the caller can repaint their damage.
+   * Make `want` resident, building at most `budget` tiles this call.
+   *
+   * Eviction always completes — it is cheap and frees memory. Building is
+   * rationed, because doing a whole window at once is a multi-second block on
+   * a phone, which reads as the app freezing. `want` is taken in order, so
+   * pass it nearest-first and the view fills in from the camera outward.
+   *
+   * Returns the building index ranges newly built, for repainting damage.
    */
-  sync(want: Iterable<number>): { built: [number, number][]; evicted: number };
+  sync(want: Iterable<number>, budget?: number): { built: [number, number][]; evicted: number };
   /** Build the whole city at once — the old behaviour, for headless tools. */
   buildAll(): void;
   stats(): { tiles: number; verts: number };
@@ -1602,8 +1616,9 @@ export function createBuildingTiles(
     group,
     shells,
     far,
-    sync(want: Iterable<number>): { built: [number, number][]; evicted: number } {
-      const keep = want instanceof Set ? (want as Set<number>) : new Set(want);
+    sync(want: Iterable<number>, budget = Infinity): { built: [number, number][]; evicted: number } {
+      const order = [...want];
+      const keep = new Set(order);
       const built: [number, number][] = [];
       let evicted = 0;
       for (const t of [...live.keys()]) {
@@ -1611,9 +1626,12 @@ export function createBuildingTiles(
         evict(t);
         evicted++;
       }
-      for (const t of keep) {
+      let made = 0;
+      for (const t of order) {
+        if (made >= budget) break;
         if (t < 0 || t >= store.tileKey.length || live.has(t)) continue;
         build(t);
+        made++;
         built.push([store.tileStart[t]!, store.tileStart[t + 1]!]);
       }
       return { built, evicted };

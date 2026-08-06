@@ -27,8 +27,7 @@ import { createViewSaver, restoreView } from "../view.js";
 // Zoom thresholds (meters of vertical view).
 const BLEND_START = 2200; // street tint starts brightening
 const BLEND_END = 3200;
-const PROPS_VIEW = 3000; // above: hide trees/street lights (subpixel anyway)
-const NEAR_PROPS_VIEW = 1000; // above: hide small street furniture (signs, hydrants, benches...)
+
 
 
 const SKY_R = 20000; // FPV sky dome radius, inside the FPV far plane
@@ -46,18 +45,63 @@ const SHADOW_MAX_VIEW = 8000; // above: shadows are subpixel, skip the pass
  */
 const PRISM_NEAR_VIEW = 1200; // below: 5x5 km of full prisms
 const PRISM_FAR_VIEW = 3000; // below: 3x3. above: boxes alone read fine
-/** Sidewalks and pavement paint, out to 5x5 km whenever the zoom gate shows
- * them at all. They were 18.6M vertices city-wide and are subpixel past
- * PROPS_VIEW anyway. */
-const DETAIL_RADIUS = 2;
 /**
- * Prop tiles, wider than anything that draws them: 4.5 km against PROPS_VIEW's
- * 3 km and FPV's 3.8 km glow range. Trees popping in would be far more
- * noticeable than sidewalks, so a tile is evicted only once it is already
- * invisible either way. 9x9 tiles of props is a few MB against 59 MB for the
- * city, which is why the radius can afford to be generous.
+ * How much city to keep built, and how fast to build it.
+ *
+ * One tunable, chosen once from what the device is, rather than a mobile
+ * branch through the renderer: the same code runs everywhere and only these
+ * numbers move. A handheld keeps a smaller window and fills it more slowly —
+ * it has a fraction of the memory bandwidth and no fan.
+ *
+ * `prism` is the full-geometry radius (boxes cover the rest of the city
+ * regardless). `dressing` and `props` are gated by `propsView`; props
+ * deliberately runs wider than that gate so trees are never seen appearing.
+ *
+ * `perFrame` is the ration. A 5x5 window is 25 tiles; building it in one go
+ * blocks for seconds on a phone, so it arrives over a second or two instead,
+ * nearest first.
  */
-const PROP_RADIUS = 4;
+const HANDHELD =
+  typeof matchMedia === "function" &&
+  matchMedia("(pointer: coarse)").matches &&
+  Math.min(screen.width, screen.height) < 900;
+
+const DETAIL = HANDHELD
+  ? {
+      prism: 1,
+      dressing: 1,
+      props: 2,
+      // The gates move with the windows. A window tighter than the gate that
+      // draws it is exactly how you get things popping in at a boundary, so
+      // these two numbers are set together or not at all.
+      propsView: 1400,
+      nearPropsView: 700,
+      perFrame: { buildings: 1, dressing: 1, props: 1 },
+    }
+  : {
+      prism: 2,
+      dressing: 2,
+      props: 4,
+      propsView: 3000,
+      nearPropsView: 1000,
+      perFrame: { buildings: 2, dressing: 2, props: 4 },
+    };
+
+/**
+ * Render scale, capped.
+ *
+ * A 3x phone renders nine pixels for every one it can show a difference at,
+ * and every one of them costs fill rate, power and heat — the reported iPhone
+ * viewport is 390x844 at 3x, which is 2.96M pixels per frame. At this art
+ * style (flat-shaded blocks, no fine texture detail) the third factor buys
+ * nothing you can see and costs everything you can feel.
+ *
+ * 2x is still retina-sharp for edges, which is all this scene has.
+ */
+const MAX_PIXEL_RATIO = 2;
+function pixelRatio(): number {
+  return Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
+}
 
 export interface PrebuiltLayers {
   world: WorldLayers;
@@ -120,6 +164,9 @@ export class Renderer {
   private tileCx = NaN;
   private tileCy = NaN;
   private tileRadius = -1;
+  private wantBuildings: number[] = [];
+  private wantDressing: number[] = [];
+  private wantProps: number[] = [];
   private ground: (x: number, y: number) => number;
 
   private map: GameMap;
@@ -151,7 +198,7 @@ export class Renderer {
     // Log depth: a perspective frustum spanning tens of km would otherwise
     // z-fight the street ribbons floating just over the ground.
     this.webgl = new THREE.WebGLRenderer({ canvas, antialias: true, logarithmicDepthBuffer: true });
-    this.webgl.setPixelRatio(window.devicePixelRatio);
+    this.webgl.setPixelRatio(pixelRatio());
     this.scene.background = new THREE.Color(0x14171c);
 
     this.hemi = new THREE.HemisphereLight(0xbfd0e8, 0x33302a, 0.9);
@@ -624,6 +671,8 @@ export class Renderer {
   private resize(): void {
     const w = this.canvas.clientWidth || 1;
     const h = this.canvas.clientHeight || 1;
+    // Re-apply the cap: dragging a window between displays changes DPR.
+    this.webgl.setPixelRatio(pixelRatio());
     this.webgl.setSize(w, h, false);
   }
 
@@ -640,39 +689,48 @@ export class Renderer {
     const { x, y } = focus;
     // At altitude a prism and a box are the same handful of pixels, so the
     // near tier shrinks to nothing rather than growing to cover the view.
-    const radius = viewHeight < PRISM_NEAR_VIEW ? 2 : viewHeight < PRISM_FAR_VIEW ? 1 : 0;
+    const radius = viewHeight < PRISM_NEAR_VIEW ? DETAIL.prism : viewHeight < PRISM_FAR_VIEW ? DETAIL.prism - 1 : 0;
     const cx = Math.floor(x / store.tileSize);
     const cy = Math.floor(y / store.tileSize);
-    if (cx === this.tileCx && cy === this.tileCy && radius === this.tileRadius) return;
-    this.tileCx = cx;
-    this.tileCy = cy;
-    this.tileRadius = radius;
 
-    // Two independent windows: prisms upgrade the boxes near the camera,
-    // dressing exists wherever the zoom gate would show it.
-    const detailRadius = viewHeight < PROPS_VIEW ? DETAIL_RADIUS : -1;
-    const propRadius = viewHeight < PROPS_VIEW ? PROP_RADIUS : -1;
-    const want: number[] = [];
-    const detailKeys: number[] = [];
-    const propKeys: number[] = [];
-    const span = Math.max(radius, detailRadius, propRadius);
-    for (let dy = -span; dy <= span; dy++) {
-      for (let dx = -span; dx <= span; dx++) {
+    // Recompute the wanted windows only when the view actually moved; the
+    // build queue below is drained every frame regardless.
+    if (cx !== this.tileCx || cy !== this.tileCy || radius !== this.tileRadius) {
+      this.tileCx = cx;
+      this.tileCy = cy;
+      this.tileRadius = radius;
+
+      // Three independent windows: prisms upgrade the boxes near the camera,
+      // dressing and props exist wherever their zoom gates would show them.
+      const detailRadius = viewHeight < DETAIL.propsView ? DETAIL.dressing : -1;
+      const propRadius = viewHeight < DETAIL.propsView ? DETAIL.props : -1;
+      const span = Math.max(radius, detailRadius, propRadius);
+      // Nearest first, so a window fills in from the camera outward instead of
+      // from a corner — it matters once building is rationed per frame.
+      const ring: { dx: number; dy: number }[] = [];
+      for (let dy = -span; dy <= span; dy++) for (let dx = -span; dx <= span; dx++) ring.push({ dx, dy });
+      ring.sort((a, b) => a.dx * a.dx + a.dy * a.dy - (b.dx * b.dx + b.dy * b.dy));
+
+      this.wantBuildings = [];
+      this.wantDressing = [];
+      this.wantProps = [];
+      for (const { dx, dy } of ring) {
         const key = tileKeyAt((cx + dx) * store.tileSize, (cy + dy) * store.tileSize, store.tileSize);
-        if (Math.abs(dx) <= detailRadius && Math.abs(dy) <= detailRadius) detailKeys.push(key);
-        if (Math.abs(dx) <= propRadius && Math.abs(dy) <= propRadius) propKeys.push(key);
+        if (Math.abs(dx) <= detailRadius && Math.abs(dy) <= detailRadius) this.wantDressing.push(key);
+        if (Math.abs(dx) <= propRadius && Math.abs(dy) <= propRadius) this.wantProps.push(key);
         if (Math.abs(dx) > radius || Math.abs(dy) > radius) continue;
         const t = findTile(store, key);
-        if (t >= 0) want.push(t);
+        if (t >= 0) this.wantBuildings.push(t);
       }
     }
-    const { built } = this.world.buildings.sync(want);
-    this.world.detailTiles.sync(detailKeys);
-    // Props stream one ring wider than the zoom gate that hides them, so a
-    // tile is only ever dropped once it is already invisible.
-    let propsChanged = this.props.sync(propKeys);
+
+    // Rationed: a whole window in one frame is a multi-second block on a
+    // phone, which is what "zoom out, pan, zoom in" felt like.
+    const { built } = this.world.buildings.sync(this.wantBuildings, DETAIL.perFrame.buildings);
+    this.world.detailTiles.sync(this.wantDressing, DETAIL.perFrame.dressing);
+    let propsChanged = this.props.sync(this.wantProps, DETAIL.perFrame.props);
     // The life-size FPV set streams on the same window.
-    if (this.fpvProps && this.fpvProps.sync(propKeys)) propsChanged = true;
+    if (this.fpvProps && this.fpvProps.sync(this.wantProps, DETAIL.perFrame.props)) propsChanged = true;
     if (propsChanged) this.fire.repaintTrees();
     // A rebuilt tile comes back pristine — the fire sim owns what happened to
     // it, so it repaints the damage. This is why scars had to move out of the
@@ -765,9 +823,9 @@ export class Renderer {
 
     const vh = this.rig.viewHeight;
     this.world.setBlend((vh - BLEND_START) / (BLEND_END - BLEND_START));
-    this.props.group.visible = vh < PROPS_VIEW;
-    this.props.near.visible = vh < NEAR_PROPS_VIEW;
-    this.world.detail.visible = vh < PROPS_VIEW;
+    this.props.group.visible = vh < DETAIL.propsView;
+    this.props.near.visible = vh < DETAIL.nearPropsView;
+    this.world.detail.visible = vh < DETAIL.propsView;
     this.landmarks.setViewScale(vh);
 
     this.applyCamera();

@@ -339,10 +339,13 @@ export class Controls {
       const mdy = cur.my - g.start.my;
       if (Math.abs(mdy) > TILT_TRIGGER_PX && Math.abs(mdy) > 2 * Math.abs(mdx) && spread < SPREAD_TRIGGER_PX && twist < TWIST_TRIGGER_RAD) {
         g.mode = "tilt";
-      } else if (spread > SPREAD_TRIGGER_PX || twist > TWIST_TRIGGER_RAD || Math.hypot(mdx, mdy) > TILT_TRIGGER_PX) {
+      } else if (spread > SPREAD_TRIGGER_PX || twist > TWIST_TRIGGER_RAD) {
         g.mode = "zoomrotate";
       } else {
-        return; // still ambiguous — hold still rather than drift
+        // Midpoint drift alone no longer starts anything: two fingers are for
+        // zoom, twist and tilt, and one finger is for panning. Letting the
+        // midpoint pan too meant every pinch dragged the map as well.
+        return;
       }
       // Recognition costs a threshold's worth of travel. Replay it from the
       // gesture's start so the whole drag ends up tracking the fingers 1:1.
@@ -351,7 +354,6 @@ export class Controls {
 
     const dSpread = cur.dist - g.last.dist;
     const dAng = wrapPi(cur.ang - g.last.ang);
-    const dmx = cur.mx - g.last.mx;
     const dmy = cur.my - g.last.my;
     g.last = cur;
 
@@ -359,11 +361,12 @@ export class Controls {
       this.rig.tiltBy(dmy * TILT_PER_PX);
       return;
     }
-    // Zoom about the midpoint, twist the map with the fingers, and let the
-    // midpoint itself drag the map (all three run together, as on a map app).
+    // Zoom about the midpoint and twist the map with the fingers. The
+    // midpoint deliberately does NOT pan: zooming about a moving anchor
+    // already tracks the fingers, and adding pan on top made every pinch
+    // shove the map sideways.
     if (cur.dist > 1 && cur.dist - dSpread > 1) this.delegate.zoomAt(cur.mx, cur.my, (cur.dist - dSpread) / cur.dist);
     this.rotateBy(dAng);
-    this.rig.panScreen(dmx, dmy, this.canvas.clientHeight);
     this.rig.clampToMap(this.map);
   }
 

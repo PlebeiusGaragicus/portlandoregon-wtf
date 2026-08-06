@@ -65,7 +65,7 @@ export interface PropLayers {
    * that gate means nothing ever pops: a tile leaves the resident set only
    * once it is too far to be drawn anyway.
    */
-  sync(want: Iterable<number>): boolean;
+  sync(want: Iterable<number>, budget?: number): boolean;
   /** Build the whole city — headless tools and the FPV prop set. */
   buildAll(): void;
   /** Day/night dial: 0 = daylight (lamps off) .. 1 = deep night (full glow). */
@@ -365,17 +365,21 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
     group,
     near,
     glow,
-    sync(want: Iterable<number>): boolean {
-      const keep = want instanceof Set ? (want as Set<number>) : new Set(want);
+    sync(want: Iterable<number>, budget = Infinity): boolean {
+      const order = [...want];
+      const keep = new Set(order);
       let changed = false;
       for (const key of [...live.keys()]) {
         if (keep.has(key)) continue;
         evictTile(key);
         changed = true;
       }
-      for (const key of keep) {
+      let made = 0;
+      for (const key of order) {
+        if (made >= budget) break;
         if (live.has(key) || !byTile.has(key)) continue;
         buildTile(key);
+        made++;
         changed = true;
       }
       return changed;
