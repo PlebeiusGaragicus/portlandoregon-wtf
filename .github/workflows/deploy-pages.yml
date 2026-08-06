@@ -43,9 +43,9 @@ jobs:
         run: ./scripts/stage-map.sh --download
 
       - name: Build client
-        # The Pages site is served from play.internal.invalid but the game lives on
-        # the deployment, so the server origin is baked in at build time. Override
-        # it with a repo variable if the deployment ever moves.
+        # Only the WebSocket uses this — the map is a static asset, so the
+        # published build needs no server. Baked in at build time; override with
+        # a VITE_SERVER_ORIGIN repo variable when the game server moves.
         env:
           VITE_SERVER_ORIGIN: ${{ vars.VITE_SERVER_ORIGIN || 'https://game.internal.invalid' }}
         run: npm run build -w client

@@ -15,14 +15,15 @@ const PORT = Number(process.env.PORT ?? 4000);
 const REPO_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "../..");
 const clientDist = join(fileURLToPath(new URL(".", import.meta.url)), "../../client/dist");
 
-// The frontend is hosted on GitHub Pages (play.internal.invalid), a different
-// origin from this server — so /map and /heightmap need CORS headers, and the
-// WebSocket upgrade needs its own Origin check (WS is exempt from CORS, so the
-// browser will happily let a foreign page connect; we say no here instead).
-// ALLOWED_ORIGINS (comma-separated) extends the list without a code change.
+// The frontend is hosted on GitHub Pages (internal.invalid/battle-juice/), a
+// different origin from this server — so /map and /heightmap need CORS headers,
+// and the WebSocket upgrade needs its own Origin check (WS is exempt from CORS,
+// so the browser will happily let a foreign page connect; we say no here
+// instead). ALLOWED_ORIGINS (comma-separated) extends the list without a code
+// change — which is how a future game host gets added.
 const ALLOWED_ORIGINS = new Set(
   [
-    "https://play.internal.invalid",
+    "https://internal.invalid",
     "https://game.internal.invalid",
     ...(process.env.ALLOWED_ORIGINS ?? "").split(",").map((o) => o.trim()),
   ].filter(Boolean),

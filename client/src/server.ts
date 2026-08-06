@@ -1,10 +1,12 @@
 // Where the game server lives.
 //
-// Empty (the default) means same-origin: in dev that's Vite proxying /ws, /map
-// and /heightmap to localhost, and in the deployment-served build it's the game
-// server hosting client/dist itself. The GitHub Pages build is the odd one out
-// — it is served from play.internal.invalid but must talk to game.internal.invalid —
-// so CI bakes VITE_SERVER_ORIGIN in at build time.
+// Only live game traffic (the WebSocket) uses this — the map is a static asset
+// now, so the published spectator build talks to no server at all.
+//
+// Empty (the default) means same-origin: in dev that's Vite proxying /ws to
+// localhost. The Pages build is the odd one out — it is served from
+// internal.invalid but any game server lives elsewhere — so CI bakes
+// VITE_SERVER_ORIGIN in at build time.
 const ORIGIN = (import.meta.env.VITE_SERVER_ORIGIN ?? "").trim().replace(/\/+$/, "");
 
 /** Absolute URL for an HTTP endpoint (`/map`, `/heightmap`). */

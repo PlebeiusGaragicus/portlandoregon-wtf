@@ -5,7 +5,8 @@ set -euo pipefail
 #
 # Development happens on PlebeiusGaragicus/battle-juice, which has GitHub Pages
 # disabled. The abvstudio-net fork is the published copy: it has Pages enabled
-# and serves play.internal.invalid. Syncing the fork is what triggers a deploy.
+# and serves internal.invalid/battle-juice/, inherited from that account's user
+# site. Syncing the fork is what triggers a deploy.
 #
 # The fork must stay a pure mirror — never commit to it directly, or these
 # fast-forwards start failing and you inherit a divergence to hand-manage.
@@ -18,7 +19,7 @@ set -euo pipefail
 UPSTREAM="PlebeiusGaragicus/battle-juice"
 FORK="abvstudio-net/battle-juice"
 BRANCH="main"
-SITE="https://play.internal.invalid"
+SITE="https://internal.invalid/battle-juice/"
 
 dry_run=false
 watch=false

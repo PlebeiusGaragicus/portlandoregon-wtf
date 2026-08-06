@@ -1,22 +1,30 @@
-# Hosting: GitHub Pages frontend + deployment game server
+# Hosting: the game on GitHub Pages
 
-The game is split across two origins:
+**<https://internal.invalid/battle-juice/>** — served entirely by GitHub Pages,
+with no server involved. The city is a static asset (see `scripts/stage-map.sh`),
+so nothing is fetched from a backend at runtime.
 
-| Origin                        | Serves                                            | Who hosts it |
-| ----------------------------- | ------------------------------------------------- | ------------ |
-| `https://play.internal.invalid`  | the client bundle (static)                        | GitHub Pages |
-| `https://game.internal.invalid`  | `/ws`, `/map`, `/heightmap` (+ a fallback client)  | deployment, via reverse proxy on the VPS |
+How that URL works, since it surprises people: `internal.invalid`'s apex `A`
+records point at GitHub Pages' IPs, and the `abvstudio-net` account's user-site
+repo claims `internal.invalid` as its custom domain. Every *project* site on that
+account is then published beneath it, so `abvstudio-net.github.io/battle-juice/`
+301-redirects to `internal.invalid/battle-juice/`. GitHub doesn't own the domain —
+the DNS records delegate it.
 
-The game server still serves `client/dist` itself, so `game.internal.invalid` alone
-remains playable if Pages or DNS breaks, and `npm run build && npm start` stays
-a complete local test of a production build.
+Because the site lives at a sub-path, the client builds with `base: './'`
+(relative asset URLs). An absolute base deploys green and then 404s on its own
+JavaScript.
+
+There is deliberately no dedicated subdomain. `play.internal.invalid` was tried and
+dropped: it needed its own DNS record to beat the wildcard, plus a `CNAME` file
+in the build, to end up at a URL no better than the inherited one.
 
 ## Two repos: develop here, publish from the fork
 
 This repo (`PlebeiusGaragicus/battle-juice`) is where the game is developed and
 has **GitHub Pages disabled**. `abvstudio-net/battle-juice` is a fork with Pages
-enabled; it is the copy that serves `play.internal.invalid`. The fork is only ever
-fast-forwarded — never commit to it directly.
+enabled; it is the copy that serves `internal.invalid/battle-juice/`. The fork is
+only ever fast-forwarded — never commit to it directly.
 
 Why: a GitHub project site inherits its account's user-site domain, and this
 account's is `internal.invalid`. Publishing from the abvstudio fork keeps the game
@@ -52,15 +60,15 @@ deployment repo's `docs/github-publishing.md`.
   a `VITE_SERVER_ORIGIN` repo variable overrides it if the deployment moves.
 
 Because Pages is HTTPS-only, the client always speaks `wss://` and
-cross-origin `https://` — so `game.internal.invalid` must be live behind reverse proxy
-with a valid cert and WebSocket upgrade proxying before the Pages site can get
-past "contacting server…".
+cross-origin `https://`, so the server must be behind a valid cert with
+WebSocket upgrade proxying. None of this is exercised yet — the published game
+is spectator-only and talks to no server at all.
 
 ## Cross-origin access
 
-`server/src/index.ts` keeps an origin allowlist (`play.internal.invalid`,
-`game.internal.invalid`, any localhost, plus a comma-separated `ALLOWED_ORIGINS`
-env var):
+Only relevant once multiplayer returns. `server/src/index.ts` keeps an origin
+allowlist (`internal.invalid`, `game.internal.invalid`, any localhost, plus a
+comma-separated `ALLOWED_ORIGINS` env var):
 
 - `/map` and `/heightmap` echo the caller's origin in
   `Access-Control-Allow-Origin` when it's trusted — never `*`, since the game
@@ -86,14 +94,7 @@ On github.com:
 3. Give whoever runs `release.sh` push access to the fork; the development
    account has read-only access by default.
 
-DNS (belongs in the `infra` repo, following its conventions):
-
-```
-CNAME  play.internal.invalid.  →  abvstudio-net.github.io.
-```
-
-The target is the **fork's** account. Without this record the fork publishes at
-`internal.invalid/battle-juice/`, a sub-path, which breaks the `base: '/'` build.
-
-`client/src/public/CNAME` is copied into `dist` on every build — Pages clears
-the custom domain on any deploy that lacks it, so don't delete that file.
+**No DNS record is needed.** The fork inherits `internal.invalid` from its
+account's user site and publishes at `internal.invalid/battle-juice/`. There is
+deliberately no `CNAME` file in the build: adding one would claim a custom
+domain for this repo alone and break the inherited URL.
