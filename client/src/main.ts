@@ -10,7 +10,7 @@ import { loadBuildings, loadHeightfield, loadLayers, loadMap, loadProps, MapUnav
 import { Renderer } from "./render/index.js";
 import { buildLandmarks } from "./render/landmarks.js";
 import { buildProps } from "./render/props.js";
-import { beginWorld } from "./render/world.js";
+import { beginWorld, packError } from "./render/world.js";
 
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const loadingEl = document.getElementById("loading") as HTMLDivElement;
@@ -143,9 +143,8 @@ async function boot(): Promise<void> {
   // renderer drains a few milliseconds at a time from its own frame loop: the
   // page is interactive from the first frame and the city arrives around the
   // camera over the next few seconds, instead of after twenty of them.
-  const t0 = performance.now();
   const { world, steps } = beginWorld(map, buildings, layers, hf, city);
-  done(`${((performance.now() - t0) / 1000).toFixed(2)}s`);
+  done(`${buildings.tileKey.length} building tiles ready to stream`);
   await paint();
 
   done = log.step("indexing trees and street lights");
@@ -164,8 +163,19 @@ async function boot(): Promise<void> {
     prebuilt: { world, props: propLayers, landmarks },
     boot: steps,
     onBootProgress: (phase) => {
-      if (phase) log.line(`  ${phase} ...`);
-      else log.line(`city filled in ${((performance.now() - worldStart) / 1000).toFixed(2)}s`, "ok");
+      if (phase) {
+        log.line(`  ${phase} ...`);
+        return;
+      }
+      // Positions on the flat layers are Int16 with the scale in the mesh
+      // transform. Worth printing: if a decal ever looks like it is sinking
+      // into a hillside, this is the first number to rule out.
+      log.line(
+        `city filled in ${((performance.now() - worldStart) / 1000).toFixed(2)}s ` +
+          `(packed positions within ${(packError.v * 1000).toFixed(1)}mm vertical, ` +
+          `${(packError.h * 100).toFixed(1)}cm horizontal)`,
+        "ok",
+      );
     },
     heightfield: hf,
     city,

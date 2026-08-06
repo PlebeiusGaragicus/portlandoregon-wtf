@@ -330,3 +330,70 @@ either way.
 
 The softest remaining number is the 380 MB total, which still rests on
 estimated browser and WebGL baseline overhead.
+
+---
+
+## 10. Where it actually landed (2026-08-06)
+
+Stages 1–3 shipped; Stage 4 is DPR clamping and frame budgets only. Then three
+follow-ups that were not in the original plan.
+
+| | before | now |
+| --- | --- | --- |
+| Chrome tab | 6 GB | 943 MB (before the changes below) |
+| download | 32 MB | 18.4 MB |
+| blocking boot (laptop) | 21.6 s | **0.29 s** |
+| resident positions | 152.8 MB | **101.4 MB** |
+
+### Progressive boot
+
+`buildWorld` no longer runs before the first frame. `beginWorld` returns a
+renderable skeleton (~40 ms) plus a generator the frame loop drains at 6–10 ms
+a frame, so the city arrives around the camera while the page is interactive.
+Fill order — terrain, building massing, streets, rails, trails — is what makes
+the opening view legible from altitude first.
+
+Two things had to be made frame-sized before slicing was possible, and both
+were real bugs rather than granularity problems: `paintMask` allocated a dense
+per-row array for every one of ~12k park bodies and scanned the full map
+height for each (851 ms → 282 ms once sparse), and turning a soup into a
+BufferGeometry is one unsplittable pass, so every rail line in the city was a
+single 75 ms conversion.
+
+### The city model was NOT baked
+
+Stage 3's plan was to freeze `baseZ`/`valid`/centroids into `buildings.bin`.
+Measured before doing it (`scripts/measure-citybake.ts`): quantized to
+decimetres it is **+2.7 MB gzipped, +14.6% of the download**, to save 187 ms of
+laptop CPU. Centroids are near-random inside a tile and barely compress, so
+2.0 MB of that is irreducible. On a phone those bytes take longer to arrive
+than the work takes to do.
+
+So the work got smaller instead: `buildCityModel` is 188 ms → 72 ms written
+flat against the store's typed arrays, verified bit-exact against the original
+formulation over all 538k buildings.
+
+The fire sim's neighbour grids were the other half of the ask, and those did
+not need the format either — `Map<number, number[]>` became a dense CSR index
+in two typed arrays, **79 MB → 14 MB**, built by counting sort.
+
+### Int16 positions, and the constraint that decides their scope
+
+Positions pack only where normals are constant-up. An axis-aligned scale
+transforms normals by its inverse transpose, which leaves (0, 1, 0) exactly
+alone and tilts everything else — so the flat decal layers pack and terrain
+and sidewalk skirts do not. That same property allows a *per-axis* scale,
+which is where the precision comes from: 2.0 mm vertical, 3.0 cm horizontal,
+both well inside the p95 11 cm drape error these layers already carry.
+
+Trails and rails had to be tiled first, since as city-spanning meshes their
+boxes were 43 km. That turned out to fix a rendering bug too: they could never
+be frustum-culled, so all 3.0M of their vertices were drawn while looking at a
+single block.
+
+### Still open
+
+Stage 4 proper (worker builds, 30 fps idle, pause when hidden); LOD1
+roof-only; terrain and coarse streets never stream; ZLEV grade separation; the
+street graph is still 88 MB of JSON; per-tile ground flattening and the LOD2
+ground texture.
