@@ -20,15 +20,11 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      // The map is a static asset now (src/public/map, staged by
+      // scripts/stage-map.sh), so only live game traffic needs proxying.
       "/ws": {
         target: `ws://localhost:${gamePort}`,
         ws: true,
-      },
-      "/map": {
-        target: `http://localhost:${gamePort}`,
-      },
-      "/heightmap": {
-        target: `http://localhost:${gamePort}`,
       },
     },
   },

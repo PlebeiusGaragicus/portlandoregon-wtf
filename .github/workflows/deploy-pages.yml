@@ -34,6 +34,14 @@ jobs:
 
       - run: npm ci
 
+      - name: Stage the map
+        # The city is a ~30 MB release asset, not a git object. Without this the
+        # site deploys but has no map to load.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAP_REPO: PlebeiusGaragicus/battle-juice
+        run: ./scripts/stage-map.sh --download
+
       - name: Build client
         # The Pages site is served from play.internal.invalid but the game lives on
         # the deployment, so the server origin is baked in at build time. Override

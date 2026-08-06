@@ -1,13 +1,14 @@
-// Spectator-first boot: the map loads and renders immediately — no login.
-// (Units and the multiplayer join flow return in a later phase; net.ts and
-// the server's join path are kept for that.)
+// Spectator-first boot: the map loads and renders immediately — no login, and
+// no server. The city ships with the site as a static asset, so the game runs
+// standalone on GitHub Pages. (Units and the multiplayer join flow return in a
+// later phase; net.ts and the server's join path are kept for that.)
 import * as THREE from "three";
-import { decodeHeightfield, type GameMap, type Heightfield } from "@battle-juice/shared";
+import type { Heightfield } from "@battle-juice/shared";
+import { loadHeightfield, loadMap, MapUnavailableError } from "./mapdata.js";
 import { Renderer } from "./render/index.js";
 import { buildLandmarks } from "./render/landmarks.js";
 import { buildProps } from "./render/props.js";
 import { buildWorld } from "./render/world.js";
-import { apiUrl } from "./server.js";
 
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const loadingEl = document.getElementById("loading") as HTMLDivElement;
@@ -33,54 +34,39 @@ async function status(text: string): Promise<void> {
   });
 }
 
-/** The server is reachable-but-down, or not reachable at all. Distinguished
- * from a genuine bug so the UI can say something the player can act on. */
-class ServerDownError extends Error {
-  constructor(readonly detail: string) {
-    super(detail);
-  }
-}
-
-/** The city lives on the game server, so there is nothing to render without it.
- * Translate the ways that fetch can fail into one actionable message. */
-async function fetchMap(): Promise<Response> {
-  let res: Response;
-  try {
-    res = await fetch(apiUrl("/map"));
-  } catch {
-    // DNS failure, refused connection, TLS failure, offline browser.
-    throw new ServerDownError(
-      "The game server can't be reached. It may be offline, or your connection may be down.",
-    );
-  }
-  // reverse proxy is up and proxying, but nothing is listening behind it.
-  if (res.status === 502 || res.status === 503 || res.status === 504) {
-    throw new ServerDownError(
-      "The game server isn't running right now. It should come back on its own — this page will keep checking.",
-    );
-  }
-  if (!res.ok) throw new Error(`map fetch failed: ${res.status}`);
-  return res;
+/** Boot is slow enough (tens of seconds on a cold load) that "which phase" is
+ * the first question whenever it feels wrong. Timings go to the console so the
+ * answer is one refresh away. */
+function phase(label: string, startedAt: number): number {
+  const now = performance.now();
+  console.log(`[boot] ${label}: ${((now - startedAt) / 1000).toFixed(2)}s`);
+  return now;
 }
 
 async function boot(): Promise<void> {
+  const bootStart = performance.now();
+  let t = bootStart;
+
   await status("downloading Portland…");
-  const heightPromise: Promise<Heightfield | null> = fetch(apiUrl("/heightmap"))
-    .then(async (r) => (r.ok ? decodeHeightfield(await r.arrayBuffer()) : null))
-    .catch(() => null);
-  const res = await fetchMap();
+  const heightPromise: Promise<Heightfield | null> = loadHeightfield();
+  const map = await loadMap();
+  t = phase("download + decode map", t);
   await status("unpacking the city…");
-  const map = (await res.json()) as GameMap;
   const hf = await heightPromise;
+  t = phase("heightmap", t);
 
   await status("raising terrain, streets and 538k buildings…");
   const world = buildWorld(map, hf);
+  t = phase("buildWorld", t);
   await status("planting trees and street lights…");
   const props = buildProps(map, hf);
+  t = phase("buildProps", t);
   await status("labeling landmarks…");
   const landmarks = buildLandmarks(map, hf);
+  t = phase("buildLandmarks", t);
 
   await status("ready");
+  phase("TOTAL", bootStart);
   const renderer = new Renderer(canvas, map, { prebuilt: { world, props, landmarks }, heightfield: hf });
   // Dev/debug handle (headless smoke tests steer the camera through this).
   (window as unknown as Record<string, unknown>)["__bj"] = { renderer, THREE };
@@ -93,14 +79,14 @@ const retryNoteEl = document.getElementById("retry-note") as HTMLParagraphElemen
 
 let retryTimer = 0;
 let countdownTimer = 0;
-/** Back off 5s, 10s, 20s, 40s, capped at a minute — a server that is being
- * restarted comes back fast; one that is off for the evening shouldn't be
- * hammered. */
+/** Back off 5s, 10s, 20s, 40s, capped at a minute. The map is a static asset,
+ * so a failure here is a flaky connection or a CDN hiccup — both worth a few
+ * quiet retries rather than one and a dead end. */
 let retryDelayMs = 5_000;
 
 function showOffline(detail: string): void {
   loadingEl.classList.add("offline");
-  statusEl.textContent = "can't reach the game";
+  statusEl.textContent = "couldn't load the city";
   offlineDetailEl.textContent = detail;
   retryBtn.disabled = false;
 
@@ -121,14 +107,16 @@ function attempt(): void {
   loadingEl.classList.remove("offline");
   retryBtn.disabled = true;
   retryNoteEl.textContent = "";
-  statusEl.textContent = "contacting server…";
+  statusEl.textContent = "loading the city…";
 
   boot().catch((err) => {
-    if (err instanceof ServerDownError) {
-      showOffline(err.detail);
+    if (err instanceof MapUnavailableError) {
+      showOffline(
+        "The map couldn't be downloaded. Check your connection — this page will keep trying.",
+      );
       return;
     }
-    // A real bug — surface it rather than pretending the server is down.
+    // A real bug — surface it rather than blaming the network.
     loadingEl.classList.add("offline");
     statusEl.textContent = "something went wrong";
     offlineDetailEl.textContent = String(err);
