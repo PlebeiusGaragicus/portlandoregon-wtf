@@ -53,12 +53,30 @@ if (lodMesh) {
   );
 }
 
-world.setViewHeight(2999);
+// The shipped city-lod texture is a density underlay, not a substitute for
+// the city: no zoom may hide the boxes until the renderer installs a runtime
+// bake via setFarTexture.
+world.setViewHeight(11000, 9000);
+check(
+  "boxes stay at wide zoom until a baked texture exists",
+  world.buildings.far.visible && !lodMesh?.visible,
+);
+
+const baked = new THREE.Texture();
+world.setFarTexture(baked);
+world.setViewHeight(8999, 9000);
 check("box tier remains visible below wide threshold", world.buildings.far.visible && !lodMesh?.visible);
-world.setViewHeight(3000);
-check("wide tier exclusively replaces boxes", !world.buildings.far.visible && lodMesh?.visible === true);
-world.setViewHeight(900);
+world.setViewHeight(9000, 9000);
+check("wide tier exclusively replaces boxes once baked", !world.buildings.far.visible && lodMesh?.visible === true);
+check(
+  "baked texture is installed on the drape",
+  ((lodMesh as THREE.Mesh | null)?.material as THREE.MeshBasicMaterial | undefined)?.map === baked,
+);
+world.setViewHeight(900, 9000);
 check("zooming back restores box tier", world.buildings.far.visible && !lodMesh?.visible);
+
+// Damage/boot-fill staleness signal for the renderer's rebake loop.
+check("far version advances as far tiles fill", world.buildings.farVersion() > 0);
 
 world.dispose();
 console.log(failed ? `\n${failed} failed` : "\nall passed");

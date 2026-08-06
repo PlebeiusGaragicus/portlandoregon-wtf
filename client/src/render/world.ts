@@ -216,7 +216,9 @@ const YARD_COLOR = 0x36322b; // ballast/gravel
 const STOP_RADIUS = 5; // m platform disc
 
 // Tile size for chunked meshes — one merged mesh per tile so the GPU
-// frustum-culls off-screen chunks. Every building renders at every zoom.
+// frustum-culls off-screen chunks. Every building renders at every zoom,
+// as boxes at least, until the runtime-baked far texture takes over near
+// max zoom-out (see setViewHeight).
 const TILE = 1000; // meters
 
 export interface WorldLayers {
@@ -226,8 +228,17 @@ export interface WorldLayers {
   detail: THREE.Group;
   /** Zoom-driven cosmetics (street tint brightens from altitude). */
   setBlend(f: number): void;
-  /** Switch between box chunks and the baked urban-mass far tier. */
-  setViewHeight(height: number): void;
+  /**
+   * Switch between the box far tier and the flat far texture.
+   *
+   * The texture tier engages only above `textureAbove` AND once a runtime
+   * bake has been installed via {@link WorldLayers.setFarTexture} — until
+   * then the boxes stay on at every zoom, because the shipped city-lod
+   * texture is a density underlay, not a substitute for the city.
+   */
+  setViewHeight(height: number, textureAbove?: number): void;
+  /** Install the runtime-baked overhead city photograph on the far drape. */
+  setFarTexture(texture: THREE.Texture): void;
   /** Keep a bounded high-resolution terrain window around the camera. */
   syncGround(x: number, y: number, viewHeight: number, budget?: number, residentByteBudget?: number): void;
   terrainStats(): TileCacheStats;
@@ -1087,6 +1098,14 @@ export interface WorldBoot {
   steps: Generator<string, void, void>;
 }
 
+/**
+ * The far drape: a heightfield-conforming plane over the whole map. It ships
+ * with the baked city-lod density texture, but that is only a placeholder —
+ * the renderer photographs the far box tier into a render target at runtime
+ * and installs it via setFarTexture, and only then may this replace the
+ * boxes (near max zoom-out, where the camera is forced top-down and a flat
+ * picture is indistinguishable from geometry).
+ */
 function buildCityLodMesh(map: GameMap, lod: CityLod, hf?: Heightfield | null): THREE.Mesh {
   const geo = new THREE.PlaneGeometry(
     map.meta.width,
@@ -1173,6 +1192,9 @@ export function beginWorld(
     lod2.visible = false;
     group.add(lod2);
   }
+  /** No zoom hides the boxes until a real runtime bake replaces the shipped
+   * density texture — see setViewHeight. */
+  let farTextureReady = false;
 
   // Street-level dressing, in its own zoom-gated group — streamed, because
   // sidewalks alone outweigh every building in the city.
@@ -1202,10 +1224,20 @@ export function beginWorld(
       const t = Math.min(1, Math.max(0, f));
       streetMat.color.lerpColors(streetNear, streetFar, t);
     },
-    setViewHeight(height: number): void {
-      const textureTier = Boolean(lod2) && height >= 3000;
+    setViewHeight(height: number, textureAbove = Infinity): void {
+      const textureTier = Boolean(lod2) && farTextureReady && height >= textureAbove;
       tiles.far.visible = !textureTier;
       if (lod2) lod2.visible = textureTier;
+    },
+    setFarTexture(texture: THREE.Texture): void {
+      if (!lod2) return;
+      const mat = lod2.material as THREE.MeshBasicMaterial;
+      if (mat.map !== texture) {
+        mat.map?.dispose();
+        mat.map = texture;
+        mat.needsUpdate = true;
+      }
+      farTextureReady = true;
     },
     syncGround(x: number, y: number, viewHeight: number, budget = 1, residentByteBudget = Infinity): void {
       terrain?.sync(x, y, viewHeight, budget, residentByteBudget);
@@ -1472,10 +1504,10 @@ interface TerrainCache {
  * views; crossing the whole map no longer leaves every uploaded chunk alive. */
 function createTerrainCache(map: GameMap, layers: LayerStores, hf: Heightfield): TerrainCache {
   const group = new THREE.Group();
+  // Lambert, not Basic: the backing must dim with the day/night lights like
+  // the real terrain chunks sitting on it, or wide night views show a bright
+  // sheet with a dark window punched out around the camera. One lit quad.
   const backing = buildGround(map);
-  (backing.material as THREE.Material).dispose();
-  backing.material = new THREE.MeshBasicMaterial({ color: GROUND_COLOR });
-  backing.geometry.deleteAttribute("normal");
   seal(backing);
   backing.position.y = -2;
   group.add(backing);
@@ -2360,6 +2392,12 @@ export interface BuildingTiles {
    * Already complete (a no-op) unless `deferFar` was set.
    */
   fillFar(): Generator<void, void, void>;
+  /**
+   * Monotonic counter bumped whenever the far tier's appearance changes —
+   * tiles filling in during boot, char tints, collapses. Lets the renderer
+   * know its baked overhead photograph of the boxes has gone stale.
+   */
+  farVersion(): number;
   has(tile: number): boolean;
   stats(): BuildingTileStats;
   dispose(): void;
@@ -2500,8 +2538,10 @@ export function createBuildingTiles(
 
   /** Boxes placed so far, one self-culling mesh per tile. */
   let farFilled = 0;
+  let farVersion = 0;
   function buildFarTile(tile: number): void {
     if (farTiles[tile]) return;
+    farVersion++;
     const from = store.tileStart[tile]!;
     const to = store.tileStart[tile + 1]!;
     const mesh = new THREE.InstancedMesh(boxGeo, boxMaterial, Math.max(1, to - from));
@@ -2556,6 +2596,7 @@ export function createBuildingTiles(
     mesh.setColorAt(slot, col.setRGB(rgb[0], rgb[1], rgb[2]));
     mesh.instanceMatrix.needsUpdate = true;
     if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    farVersion++;
   }
   shells.onChar = (building, amount) => {
     farChar[building] = Math.max(farChar[building]!, Math.round(Math.min(1, Math.max(0, amount)) * 255));
@@ -2868,6 +2909,7 @@ export function createBuildingTiles(
         yield;
       }
     },
+    farVersion: () => farVersion,
     has: (tile) => live.has(tile),
     stats: () => ({
       tiles: live.size,

@@ -78,7 +78,9 @@ const SHADOW_MAX_VIEW = 8000;
  * to tell the difference on.
  *
  * So these thresholds are not a visibility budget; they only decide where the
- * boxes get upgraded to real geometry. Zooming out never removes the city.
+ * boxes get upgraded to real geometry. Zooming out never removes the city:
+ * the box tier stays on until DETAIL.farTextureView, where a runtime-baked
+ * overhead photograph of those same boxes takes over (see syncImpostor).
  */
 const PRISM_NEAR_VIEW = 1200; // below: 5x5 km of full prisms
 const PRISM_FAR_VIEW = 3000; // below: 3x3. above: boxes alone read fine
@@ -128,6 +130,12 @@ const DETAIL = HANDHELD
       // Shadows are subpixel long before this, and the pass is the single
       // most expensive thing a frame does.
       shadowView: 2500,
+      // A phone submitting the whole city as boxes is the thing the streaming
+      // work exists to avoid, so the flat far texture takes over earlier —
+      // trading some wide-zoom sharpness (2048 px across a 43 km map) for a
+      // frame that is one textured quad instead of 6.5M triangles.
+      farTextureView: 6500,
+      farTextureSize: 2048,
       // 30 fps. The scene is a strategy map, not a shooter, and halving the
       // frame rate roughly halves the GPU energy per second — the thing the
       // phone was reporting as heat and stutter.
@@ -144,6 +152,11 @@ const DETAIL = HANDHELD
       perFrame: { buildings: 2, dressing: 2, props: 4 },
       shadowMap: 2048,
       shadowView: SHADOW_MAX_VIEW,
+      // Near max zoom-out (12 km cap): the rig is essentially top-down there,
+      // and a 4096-texel bake (~10.6 m/texel) matches what the screen resolves
+      // (~8 m/px), so the swap to the flat photograph is invisible.
+      farTextureView: 11000,
+      farTextureSize: 4096,
       frameGapMs: 0,
     };
 
@@ -183,6 +196,15 @@ const BOOT_BUDGET_MS = HANDHELD ? 6 : 10;
 const MAX_PIXEL_RATIO = 2;
 function pixelRatio(): number {
   return Math.min(window.devicePixelRatio || 1, MAX_PIXEL_RATIO);
+}
+
+/** See Renderer.impostor. */
+interface ImpostorRig {
+  target: THREE.WebGLRenderTarget;
+  camera: THREE.OrthographicCamera;
+  scene: THREE.Scene;
+  sun: THREE.DirectionalLight;
+  hemi: THREE.HemisphereLight;
 }
 
 export interface PrebuiltLayers {
@@ -250,6 +272,7 @@ export interface RendererDebugStats {
     buildingTilesBuilt: number;
     buildingTilesEvicted: number;
     propChanges: number;
+    impostorBakes: number;
   };
   scheduler: ReturnType<TileScheduler["stats"]>;
 }
@@ -367,7 +390,20 @@ export class Renderer {
     buildingTilesBuilt: 0,
     buildingTilesEvicted: 0,
     propChanges: 0,
+    impostorBakes: 0,
   };
+
+  /**
+   * Offscreen rig that photographs the far box tier straight down, so wide
+   * zoom can draw one textured quad instead of 538k boxes. Built lazily on
+   * the first approach to DETAIL.farTextureView; null until then.
+   */
+  private impostor: ImpostorRig | null = null;
+  /** Day/night cycle position the current bake was lit for. */
+  private impostorBakedT = -1;
+  /** buildings.farVersion() at bake time — damage/boot-fill staleness. */
+  private impostorBakedVersion = -1;
+  private lastImpostorBake = -Infinity;
 
   constructor(
     private canvas: HTMLCanvasElement,
@@ -891,6 +927,7 @@ export class Renderer {
     this.world.dispose();
     this.props.dispose();
     this.fpvProps?.dispose();
+    this.impostor?.target.dispose();
     disposeTree(this.scene);
     this.scene.clear();
     this.boot?.return();
@@ -928,6 +965,111 @@ export class Renderer {
     // Re-apply the cap: dragging a window between displays changes DPR.
     this.webgl.setPixelRatio(pixelRatio() * this.qualityScale);
     this.webgl.setSize(w, h, false);
+  }
+
+  private ensureImpostor(): ImpostorRig {
+    if (this.impostor) return this.impostor;
+    const w = this.map.meta.width;
+    const h = this.map.meta.height;
+    const width = Math.min(DETAIL.farTextureSize, this.webgl.capabilities.maxTextureSize);
+    const height = Math.max(1, Math.round((width * h) / w));
+    const target = new THREE.WebGLRenderTarget(width, height, { stencilBuffer: false });
+    // Round-trip through sRGB so the photograph samples back exactly as the
+    // boxes would have rasterized on screen.
+    target.texture.colorSpace = THREE.SRGBColorSpace;
+    target.texture.minFilter = THREE.LinearFilter;
+    target.texture.magFilter = THREE.LinearFilter;
+    target.texture.generateMipmaps = false;
+
+    // Straight down, north up: screen right = +x (east), screen up = -z
+    // (north). Framebuffer row 0 lands on the map's south edge, matching the
+    // south-to-north row order the drape's UVs were built for.
+    const camera = new THREE.OrthographicCamera(-w / 2, w / 2, h / 2, -h / 2, 1, 5500);
+    camera.position.set(w / 2, 4500, -h / 2);
+    camera.up.set(0, 0, -1);
+    camera.lookAt(w / 2, 0, -h / 2);
+
+    const scene = new THREE.Scene();
+    const hemi = new THREE.HemisphereLight(0xbfd0e8, 0x33302a, 0.9);
+    const sun = new THREE.DirectionalLight(0xfff2dd, 1.4);
+    scene.add(hemi, sun, sun.target);
+    this.impostor = { target, camera, scene, sun, hemi };
+    return this.impostor;
+  }
+
+  /**
+   * Photograph the far box tier into the impostor target and install it as
+   * the wide-zoom far texture. One extra render of ~6.5M flat-shaded
+   * triangles — a few milliseconds on desktop, a rare one-frame spike on a
+   * phone — in exchange for wide zoom drawing a single textured quad.
+   */
+  private bakeImpostor(now: number): void {
+    const rig = this.ensureImpostor();
+    // Light the photograph the way applyDayNight lights the live scene, so
+    // the swap is invisible. No shadows: the live scene has them off at
+    // these altitudes too (DETAIL.shadowView < farTextureView).
+    const dn = this.daynight;
+    rig.sun.color.copy(dn.lightColor);
+    rig.sun.intensity = dn.lightIntensity;
+    const cx = this.map.meta.width / 2;
+    const cz = -this.map.meta.height / 2;
+    rig.sun.position.set(cx, 0, cz).addScaledVector(dn.lightDir, 4000);
+    rig.sun.target.position.set(cx, 0, cz);
+    rig.hemi.intensity = dn.hemiIntensity;
+    rig.hemi.color.copy(dn.zenith).lerp(dn.horizon, 0.5).multiplyScalar(2.2);
+
+    // Borrow the far group: every tile visible (tiles under resident prisms
+    // are hidden on screen, but their boxes are the right massing here).
+    const far = this.world.buildings.far;
+    const prevParent = far.parent;
+    const prevVisible = far.visible;
+    const prevChildren = far.children.map((child) => child.visible);
+    for (const child of far.children) child.visible = true;
+    far.visible = true;
+    rig.scene.add(far);
+
+    const prevTarget = this.webgl.getRenderTarget();
+    const prevColor = new THREE.Color();
+    this.webgl.getClearColor(prevColor);
+    const prevAlpha = this.webgl.getClearAlpha();
+    // Transparent where there is no building, so terrain and water below the
+    // drape stay the real thing.
+    this.webgl.setRenderTarget(rig.target);
+    this.webgl.setClearColor(0x000000, 0);
+    this.webgl.render(rig.scene, rig.camera);
+    this.webgl.setRenderTarget(prevTarget);
+    this.webgl.setClearColor(prevColor, prevAlpha);
+
+    prevParent?.add(far);
+    far.visible = prevVisible;
+    far.children.forEach((child, i) => {
+      child.visible = prevChildren[i] ?? child.visible;
+    });
+
+    this.world.setFarTexture(rig.target.texture);
+    this.impostorBakedT = dn.t;
+    this.impostorBakedVersion = this.world.buildings.farVersion();
+    this.lastImpostorBake = now;
+    this.debugCache.impostorBakes++;
+  }
+
+  /**
+   * Keep the far photograph fresh. Bakes happen only on approach to the swap
+   * altitude (there is no cost while zoomed in), and go stale when the
+   * day/night cycle drifts (~30 in-game minutes), boot fills in more far
+   * tiles, or fire chars/collapses a building. Rebakes are throttled so a
+   * city-wide blaze costs at most one extra render every few seconds.
+   */
+  private syncImpostor(vh: number, now: number): void {
+    // 0.8: bake before the swap altitude, so crossing it never shows a gap.
+    if (vh < DETAIL.farTextureView * 0.8) return;
+    const version = this.world.buildings.farVersion();
+    const stale =
+      version !== this.impostorBakedVersion ||
+      Math.abs(this.daynight.t - this.impostorBakedT) > 0.02;
+    if (!stale) return;
+    if (this.impostorBakedVersion >= 0 && now - this.lastImpostorBake < 4000) return;
+    this.bakeImpostor(now);
   }
 
   /**
@@ -1200,7 +1342,8 @@ export class Renderer {
 
     const vh = this.rig.viewHeight;
     this.world.setBlend((vh - BLEND_START) / (BLEND_END - BLEND_START));
-    this.world.setViewHeight(vh);
+    this.syncImpostor(vh, now);
+    this.world.setViewHeight(vh, DETAIL.farTextureView);
     this.props.group.visible = vh < DETAIL.propsView;
     this.props.near.visible = vh < DETAIL.nearPropsView;
     this.world.detail.visible = vh < DETAIL.propsView;

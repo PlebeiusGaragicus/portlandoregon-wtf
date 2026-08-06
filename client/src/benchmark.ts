@@ -111,6 +111,7 @@ function subtractCacheCounters(
     buildingTilesBuilt: after.buildingTilesBuilt - before.buildingTilesBuilt,
     buildingTilesEvicted: after.buildingTilesEvicted - before.buildingTilesEvicted,
     propChanges: after.propChanges - before.propChanges,
+    impostorBakes: after.impostorBakes - before.impostorBakes,
   };
 }
 
