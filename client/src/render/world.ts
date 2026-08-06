@@ -8,6 +8,7 @@ import {
   ringBase,
   ringCount,
   ringLength,
+  tileKeyAt,
   type BuildingStore,
   type GameMap,
   type Heightfield,
@@ -181,6 +182,129 @@ export interface WorldLayers {
   /** Streamable building geometry. Empty until synced, unless the caller
    * asked for the whole city up front. */
   buildings: BuildingTiles;
+  /** Streamable street-level dressing (sidewalks, pavement paint). */
+  detailTiles: DecalTiles;
+}
+
+/**
+ * Street-level dressing, streamed the way buildings are.
+ *
+ * Sidewalks alone were 18.6M vertices and 277 MB — more than every building
+ * in the city as boxes, several times over — and they are already invisible
+ * above 3 km because at that range they are subpixel. So they have no
+ * business existing as geometry for the 99% of the map you are not standing
+ * on.
+ *
+ * Unlike buildings there is no far tier: the correct appearance at distance
+ * is "not drawn", which is what the zoom gate already did.
+ */
+export interface DecalTiles {
+  group: THREE.Group;
+  sync(want: Iterable<number>): void;
+  buildAll(): void;
+  stats(): { tiles: number; verts: number };
+}
+
+function createDetailTiles(
+  map: GameMap,
+  ground: GroundFn,
+  cell: number,
+): DecalTiles {
+  const group = new THREE.Group();
+  const TS = TILE;
+
+  // Features are filed under one tile by a representative point, so a slab
+  // that straddles a tile line belongs to exactly one of them and is never
+  // built twice or dropped by both.
+  const sidewalks = new Map<number, number[]>();
+  const areas = new Map<number, number[]>();
+  const lines = new Map<number, number[]>();
+  const file = (index: Map<number, number[]>, key: number, i: number): void => {
+    const at = index.get(key);
+    if (at) at.push(i);
+    else index.set(key, [i]);
+  };
+  const swList = map.sidewalks ?? [];
+  swList.forEach((sw, i) => {
+    const p = sw.rings[0]?.[0];
+    if (p) file(sidewalks, tileKeyAt(p[0], p[1], TS), i);
+  });
+  const areaList = map.markingAreas ?? [];
+  areaList.forEach((a, i) => {
+    const p = a.rings[0]?.[0];
+    if (p) file(areas, tileKeyAt(p[0], p[1], TS), i);
+  });
+  const lineList = map.markingLines ?? [];
+  lineList.forEach((l, i) => {
+    const p = l.polyline[Math.floor(l.polyline.length / 2)];
+    if (p) file(lines, tileKeyAt(p[0], p[1], TS), i);
+  });
+
+  const laneMat = decalMat({ color: MARK_YELLOW });
+  const live = new Map<number, THREE.Mesh[]>();
+  let verts = 0;
+
+  function build(key: number): void {
+    if (live.has(key)) return;
+    const meshes: THREE.Mesh[] = [];
+    for (const m of order(
+      drapedPolyTiles(
+        (sidewalks.get(key) ?? []).map((i) => ({ rings: swList[i]!.rings, color: SIDEWALK_COLOR })),
+        SIDEWALK_Y,
+        ground,
+        CURB_H,
+      ),
+      SIDEWALK_ORDER,
+    )) meshes.push(m);
+    for (const m of order(
+      drapedPolyTiles(
+        (areas.get(key) ?? []).map((i) => {
+          const a = areaList[i]!;
+          return { rings: a.rings, color: a.style === "yellow" ? MARK_YELLOW : MARK_WHITE };
+        }),
+        DECAL_Y,
+        ground,
+      ),
+      DECAL_ORDER.marking,
+    )) meshes.push(m);
+    const laneIdx = lines.get(key) ?? [];
+    if (laneIdx.length) {
+      const soup: Soup = { pos: [], nrm: [] };
+      for (const i of laneIdx) pushRibbon(soup.pos, lineList[i]!.polyline, 0.35, DECAL_Y, ground, cell);
+      if (soup.pos.length) meshes.push(...order([soupMesh(soup, laneMat)], DECAL_ORDER.laneLine));
+    }
+    for (const m of meshes) {
+      m.receiveShadow = true;
+      group.add(m);
+      verts += (m.geometry.getAttribute("position") as THREE.BufferAttribute).count;
+    }
+    live.set(key, meshes);
+  }
+
+  function evict(key: number): void {
+    const meshes = live.get(key);
+    if (!meshes) return;
+    for (const m of meshes) {
+      verts -= (m.geometry.getAttribute("position") as THREE.BufferAttribute).count;
+      group.remove(m);
+      m.geometry.dispose();
+    }
+    live.delete(key);
+  }
+
+  const occupied = new Set<number>([...sidewalks.keys(), ...areas.keys(), ...lines.keys()]);
+  return {
+    group,
+    sync(want: Iterable<number>): void {
+      const keep = want instanceof Set ? (want as Set<number>) : new Set(want);
+      for (const key of [...live.keys()]) if (!keep.has(key)) evict(key);
+      for (const key of keep) if (occupied.has(key)) build(key);
+    },
+    buildAll(): void {
+      for (const key of occupied) build(key);
+    },
+    stats: () => ({ tiles: live.size, verts }),
+  };
 }
 
 /**
@@ -466,39 +590,15 @@ export function* buildWorldSteps(
     tiles.buildAll();
   }
 
-  // Street-level dressing, in its own zoom-gated group.
+  // Street-level dressing, in its own zoom-gated group — streamed, because
+  // sidewalks alone outweigh every building in the city.
   const detail = new THREE.Group();
   group.add(detail);
-  yield `${(map.sidewalks ?? []).length} sidewalk slabs`;
-  for (const mesh of order(
-    drapedPolyTiles(
-      (map.sidewalks ?? []).map((s) => ({ rings: s.rings, color: SIDEWALK_COLOR })),
-      SIDEWALK_Y,
-      ground,
-      CURB_H,
-    ),
-    SIDEWALK_ORDER,
-  )) detail.add(mesh);
-  yield `${(map.markingAreas ?? []).length} painted areas + ${(map.markingLines ?? []).length} lane lines`;
-  for (const mesh of order(
-    drapedPolyTiles(
-      (map.markingAreas ?? []).map((a) => ({ rings: a.rings, color: a.style === "yellow" ? MARK_YELLOW : MARK_WHITE })),
-      DECAL_Y,
-      ground,
-    ),
-    DECAL_ORDER.marking,
-  )) detail.add(mesh);
-  {
-    const laneTiles = new Map<number, Soup>();
-    for (const l of map.markingLines ?? []) {
-      const [mx, my] = l.polyline[Math.floor(l.polyline.length / 2)]!;
-      let soup = laneTiles.get(tileKey(mx, my));
-      if (!soup) laneTiles.set(tileKey(mx, my), (soup = { pos: [], nrm: [] }));
-      pushRibbon(soup.pos, l.polyline, 0.35, DECAL_Y, ground, cell);
-    }
-    const laneMat = decalMat({ color: MARK_YELLOW });
-    const lanes = [...laneTiles.values()].map((soup) => soupMesh(soup, laneMat));
-    for (const mesh of order(lanes, DECAL_ORDER.laneLine)) detail.add(mesh);
+  const detailTiles = createDetailTiles(map, ground, cell);
+  detail.add(detailTiles.group);
+  if (buildEveryBuilding) {
+    yield `${(map.sidewalks ?? []).length} sidewalk slabs + ${(map.markingLines ?? []).length} lane lines`;
+    detailTiles.buildAll();
   }
 
   const streetNear = new THREE.Color(STREET_COLOR);
@@ -508,6 +608,7 @@ export function* buildWorldSteps(
     detail,
     shells: tiles.shells,
     buildings: tiles,
+    detailTiles,
     setBlend(f: number): void {
       const t = Math.min(1, Math.max(0, f));
       streetMat.color.lerpColors(streetNear, streetFar, t);
@@ -648,8 +749,68 @@ function buildTerrainTiles(map: GameMap, hf: Heightfield): THREE.Mesh[] {
   return meshes;
 }
 
-const DRAPE_EDGE = 10; // m — subdivide small-poly triangles down to this
-const DRAPE_N_CAP = 32;
+const DRAPE_EDGE = 10; // m — subdivide draped triangles down to this
+/** Bisection depth cap: 2^12 sub-triangles is far past anything sane, and it
+ * bounds a pathological input. */
+const DRAPE_DEPTH_CAP = 12;
+/**
+ * Skirt wall segment length. The skirt is a 54 cm band hugging the ground
+ * along a slab's edge; it only has to follow the terrain, and the terrain is
+ * a 30 m grid, so segmenting at 12 m was sampling a straight line 2.5x over.
+ * With the slab interior fixed, these walls were most of what was left of the
+ * sidewalks' 34M vertices.
+ */
+const SKIRT_SEG = 30;
+
+/**
+ * Split a triangle until every edge is under {@link DRAPE_EDGE}, by
+ * repeatedly bisecting its LONGEST edge.
+ *
+ * The previous version laid an n x n barycentric grid over each triangle with
+ * n from the longest edge, which is isotropic in parameter space but not in
+ * the world. Earcutting a block-long sidewalk gives long thin slivers, and a
+ * 100 m x 3 m sliver got n = 10 — a hundred sub-triangles to describe
+ * something that needs about ten. Sidewalks came to 34M vertices, 643 per
+ * slab, more than every building in the city put together.
+ *
+ * Longest-edge bisection costs O(area) on fat triangles and O(length) on thin
+ * ones, which is what draping actually needs.
+ */
+function subdivide(
+  ax: number, ay: number,
+  bx: number, by: number,
+  cx: number, cy: number,
+  depth: number,
+  emit: (x: number, y: number) => void,
+): void {
+  const ab = Math.hypot(bx - ax, by - ay);
+  const bc = Math.hypot(cx - bx, cy - by);
+  const ca = Math.hypot(ax - cx, ay - cy);
+  const longest = Math.max(ab, bc, ca);
+  if (longest <= DRAPE_EDGE || depth >= DRAPE_DEPTH_CAP) {
+    emit(ax, ay);
+    emit(bx, by);
+    emit(cx, cy);
+    return;
+  }
+  // Bisect the longest edge; both halves keep the original winding.
+  if (longest === ab) {
+    const mx = (ax + bx) / 2;
+    const my = (ay + by) / 2;
+    subdivide(ax, ay, mx, my, cx, cy, depth + 1, emit);
+    subdivide(mx, my, bx, by, cx, cy, depth + 1, emit);
+  } else if (longest === bc) {
+    const mx = (bx + cx) / 2;
+    const my = (by + cy) / 2;
+    subdivide(ax, ay, bx, by, mx, my, depth + 1, emit);
+    subdivide(ax, ay, mx, my, cx, cy, depth + 1, emit);
+  } else {
+    const mx = (cx + ax) / 2;
+    const my = (cy + ay) / 2;
+    subdivide(ax, ay, bx, by, mx, my, depth + 1, emit);
+    subdivide(mx, my, bx, by, cx, cy, depth + 1, emit);
+  }
+}
 
 /**
  * Small polygons (sidewalk strips, painted markings) draped onto terrain and
@@ -683,28 +844,11 @@ function drapedPolyTiles(
       const b = flat[tri[1]!];
       const c = flat[tri[2]!];
       if (!a || !b || !c) continue;
-      const maxEdge = Math.max(a.distanceTo(b), b.distanceTo(c), c.distanceTo(a));
-      const n = Math.max(1, Math.min(DRAPE_N_CAP, Math.ceil(maxEdge / DRAPE_EDGE)));
-      const P = (i: number, j: number): [number, number] => [
-        a.x + ((b.x - a.x) * i + (c.x - a.x) * j) / n,
-        a.y + ((b.y - a.y) * i + (c.y - a.y) * j) / n,
-      ];
-      const emit = (p: [number, number]): void => {
-        soup!.pos.push(p[0], yOff + curb + ground(p[0], p[1]), -p[1]);
+      const emit = (px: number, py: number): void => {
+        soup!.pos.push(px, yOff + curb + ground(px, py), -py);
         if (curb) soup!.nrm.push(0, 1, 0);
       };
-      for (let i = 0; i < n; i++) {
-        for (let j = 0; j < n - i; j++) {
-          emit(P(i, j));
-          emit(P(i + 1, j));
-          emit(P(i, j + 1));
-          if (j < n - i - 1) {
-            emit(P(i + 1, j));
-            emit(P(i + 1, j + 1));
-            emit(P(i, j + 1));
-          }
-        }
-      }
+      subdivide(a.x, a.y, b.x, b.y, c.x, c.y, 0, emit);
     }
     if (curb) {
       // Skirt walls along every ring edge, sunk below grade so slopes never
@@ -720,7 +864,7 @@ function drapedPolyTiles(
           if (len < 1e-6) continue;
           const nx = (y2 - y1) / len;
           const ny = -(x2 - x1) / len;
-          const segs = Math.max(1, Math.ceil(len / 12));
+          const segs = Math.max(1, Math.ceil(len / SKIRT_SEG));
           for (let k = 0; k < segs; k++) {
             const ax = x1 + ((x2 - x1) * k) / segs;
             const ay = y1 + ((y2 - y1) * k) / segs;

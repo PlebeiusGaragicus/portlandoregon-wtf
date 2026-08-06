@@ -166,5 +166,6 @@ const after = mem();
 console.log(
   `\n  whole city resident: ${mb(full - before)} of geometry` +
     `\n  after evicting it:   ${mb(after - before)} still held` +
-    `\n  scene children left: ${(solo as unknown as { group: THREE.Group }).group.children.length}`,
+    `\n  scene children left: ${(solo as unknown as { group: THREE.Group }).group.children.length}` +
+    " (the far tier, which is meant to stay)",
 );

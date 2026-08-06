@@ -44,6 +44,10 @@ const SHADOW_MAX_VIEW = 8000; // above: shadows are subpixel, skip the pass
  */
 const PRISM_NEAR_VIEW = 1200; // below: 5x5 km of full prisms
 const PRISM_FAR_VIEW = 3000; // below: 3x3. above: boxes alone read fine
+/** Sidewalks and pavement paint, out to 5x5 km whenever the zoom gate shows
+ * them at all. They were 18.6M vertices city-wide and are subpixel past
+ * PROPS_VIEW anyway. */
+const DETAIL_RADIUS = 2;
 
 export interface PrebuiltLayers {
   world: WorldLayers;
@@ -622,14 +626,23 @@ export class Renderer {
     this.tileCy = cy;
     this.tileRadius = radius;
 
+    // Two independent windows: prisms upgrade the boxes near the camera,
+    // dressing exists wherever the zoom gate would show it.
+    const detailRadius = viewHeight < PROPS_VIEW ? DETAIL_RADIUS : -1;
     const want: number[] = [];
-    for (let dy = -radius; dy <= radius && radius >= 0; dy++) {
-      for (let dx = -radius; dx <= radius; dx++) {
-        const t = findTile(store, tileKeyAt((cx + dx) * store.tileSize, (cy + dy) * store.tileSize, store.tileSize));
+    const detailKeys: number[] = [];
+    const span = Math.max(radius, detailRadius);
+    for (let dy = -span; dy <= span; dy++) {
+      for (let dx = -span; dx <= span; dx++) {
+        const key = tileKeyAt((cx + dx) * store.tileSize, (cy + dy) * store.tileSize, store.tileSize);
+        if (Math.abs(dx) <= detailRadius && Math.abs(dy) <= detailRadius) detailKeys.push(key);
+        if (Math.abs(dx) > radius || Math.abs(dy) > radius) continue;
+        const t = findTile(store, key);
         if (t >= 0) want.push(t);
       }
     }
     const { built } = this.world.buildings.sync(want);
+    this.world.detailTiles.sync(detailKeys);
     // A rebuilt tile comes back pristine — the fire sim owns what happened to
     // it, so it repaints the damage. This is why scars had to move out of the
     // colour buffer before tiling could exist.

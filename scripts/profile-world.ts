@@ -105,8 +105,14 @@ for (let dy = -2; dy <= 2; dy++) {
 }
 world.buildings.sync(want);
 step("5x5 building tiles", t);
-console.log(`  ${" ".repeat(24)}         ${world.buildings.stats().tiles} tiles, ` +
-  `${(world.buildings.stats().verts / 1e6).toFixed(2)}M vertices resident`);
+t = performance.now();
+world.detailTiles.sync(want.map((tt) => buildings.tileKey[tt]!));
+step("5x5 dressing tiles", t);
+console.log(
+  `  ${" ".repeat(24)}         buildings ${world.buildings.stats().tiles} tiles / ` +
+    `${(world.buildings.stats().verts / 1e6).toFixed(2)}M verts, dressing ` +
+    `${world.detailTiles.stats().tiles} tiles / ${(world.detailTiles.stats().verts / 1e6).toFixed(2)}M verts`,
+);
 
 // For comparison, the old behaviour.
 t = performance.now();

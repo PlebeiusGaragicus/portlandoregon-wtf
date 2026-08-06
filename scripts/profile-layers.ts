@@ -1,0 +1,92 @@
+// Where does the non-building geometry actually go?
+//
+//   npx tsx --expose-gc --max-old-space-size=10240 scripts/profile-layers.ts
+//
+// With buildings streamed, everything else in buildWorld is the dominant cost
+// — more than every building in the city put together. Before restructuring
+// any of it, find out which layer is paying.
+//
+// Each layer is built alone, so the numbers are additive and comparable.
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
+import * as THREE from "three";
+import {
+  decodeBuildings,
+  decodeHeightfield,
+  storeFromBuildings,
+  type GameMap,
+  type Heightfield,
+} from "@battle-juice/shared";
+import { buildWorld } from "../client/src/render/world.js";
+
+const MAP_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "../client/src/public/map");
+const toBuf = (b: Buffer): ArrayBuffer => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) as ArrayBuffer;
+const mb = (n: number): string => `${(n / 1e6).toFixed(0)} MB`;
+const gc = (globalThis as { gc?: () => void }).gc;
+function mem(): number {
+  gc?.();
+  const m = process.memoryUsage();
+  return m.heapUsed + m.arrayBuffers;
+}
+
+const map = JSON.parse(gunzipSync(readFileSync(join(MAP_DIR, "map-lite.json.gz"))).toString("utf8")) as GameMap;
+map.buildings = [];
+const store = decodeBuildings(gunzipSync(readFileSync(join(MAP_DIR, "buildings.bin.gz"))));
+let hf: Heightfield | null = null;
+try {
+  hf = decodeHeightfield(toBuf(gunzipSync(readFileSync(join(MAP_DIR, "heightmap.bin.gz")))));
+} catch {
+  hf = null;
+}
+
+const empty = storeFromBuildings([]);
+/** Everything stripped except the named keys. */
+function only(keys: (keyof GameMap)[]): GameMap {
+  const out: Record<string, unknown> = { meta: map.meta, buildings: [], nodes: [], edges: [], props: [] };
+  for (const k of keys) out[k] = map[k];
+  return out as unknown as GameMap;
+}
+
+function measure(label: string, sub: GameMap, withTerrain: boolean): void {
+  const before = mem();
+  const t0 = performance.now();
+  const world = buildWorld(sub, empty, withTerrain ? hf : null, undefined, false);
+  const ms = performance.now() - t0;
+  let verts = 0;
+  let meshes = 0;
+  world.group.traverse((o) => {
+    if (!(o instanceof THREE.Mesh)) return;
+    const pos = o.geometry.getAttribute("position") as THREE.BufferAttribute | undefined;
+    if (!pos) return;
+    meshes++;
+    verts += pos.count;
+  });
+  const used = mem() - before;
+  console.log(
+    `  ${label.padEnd(22)} ${String(meshes).padStart(6)} ${(verts / 1e6).toFixed(2).padStart(8)}M` +
+      ` ${mb(used).padStart(9)} ${`${ms.toFixed(0)} ms`.padStart(9)}`,
+  );
+}
+
+console.log("  layer                 meshes    verts    memory      time");
+console.log("  " + "-".repeat(58));
+
+// Terrain alone: no map features at all, just the heightfield mesh.
+measure("terrain", only([]), true);
+// Then each feature layer WITHOUT terrain, so the terrain cost is not counted
+// five times over. Draping still happens against the heightfield inside each.
+measure("streets", only(["edges"]), false);
+measure("sidewalks", only(["sidewalks"]), false);
+measure("lane markings", only(["markingLines", "markingAreas"]), false);
+measure("trails", only(["trails"]), false);
+measure("rails + stops", only(["rails", "railStops", "railYards"]), false);
+measure("water + parks", only(["water", "parks"]), false);
+
+console.log("");
+measure("everything (no bldgs)", map, true);
+console.log(
+  `\n  Counts: ${map.edges.length} edges, ${(map.sidewalks ?? []).length} sidewalks, ` +
+    `${(map.markingLines ?? []).length} lane lines, ${(map.markingAreas ?? []).length} painted areas`,
+);
