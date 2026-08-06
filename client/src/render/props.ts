@@ -3,6 +3,7 @@ import {
   heightAt,
   PROP_KINDS,
   propRotation,
+  tileKeyAt,
   type GameMap,
   type Heightfield,
   type Prop,
@@ -118,7 +119,12 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
   const px = store.x;
   const py = store.y;
   for (let i = 0; i < store.count; i++) {
-    const key = Math.floor(py[i]! / TILE) * 4096 + Math.floor(px[i]! / TILE);
+    // tileKeyAt, NOT a hand-rolled row*4096+col: the renderer asks for tiles
+    // by that key, and it carries a bias so that the footprints sitting a few
+    // metres outside the map (row -1) get a key that is still unique. Keying
+    // props any other way means sync() never matches anything and no prop is
+    // ever built — which is exactly what happened.
+    const key = tileKeyAt(px[i]!, py[i]!, TILE);
     let bucket = byTile.get(key);
     if (!bucket) {
       bucket = { trees: [], signs: [], signals: [], lights: [], meters: [], furniture: [], racks: [], bumps: [], hydrants: [] };

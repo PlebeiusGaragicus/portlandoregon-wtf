@@ -777,8 +777,11 @@ export function beginWorld(
   return { world, steps: fill() };
 }
 
+/** One keying scheme for the whole client. These buckets are internal to the
+ * boot fill and never looked up from outside, but a second scheme is exactly
+ * how props ended up unreachable — so there is only the one. */
 function tileKey(x: number, y: number): number {
-  return Math.floor(y / TILE) * 4096 + Math.floor(x / TILE);
+  return tileKeyAt(x, y, TILE);
 }
 
 function buildGround(map: GameMap): THREE.Mesh {
