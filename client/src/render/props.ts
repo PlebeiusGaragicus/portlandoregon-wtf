@@ -1,10 +1,20 @@
 import * as THREE from "three";
-import { heightAt, type GameMap, type Heightfield, type Prop } from "@battle-juice/shared";
+import {
+  heightAt,
+  PROP_KINDS,
+  propRotation,
+  type GameMap,
+  type Heightfield,
+  type Prop,
+  type PropStore,
+} from "@battle-juice/shared";
 import { toScene } from "./camera.js";
 
 const TRUNK_COLOR = 0x5c4a36;
 const CANOPY_BASE = new THREE.Color(0x3e7c4f);
 const SIGN_POLE_COLOR = 0x9aa0ab;
+/** Sign variants, in the order the prop store encodes them. */
+const SIGN_VARIANTS = ["stop", "street-name", "other"] as const;
 const SIGN_FACE: Record<Extract<Prop, { kind: "sign" }>["sign"], number> = {
   stop: 0xe74c3c,
   "street-name": 0x2ecc71,
@@ -66,50 +76,52 @@ type Simple = Extract<Prop, { kind: "meter" | "furniture" | "bikerack" | "bump" 
  * Dimensions are life-size meters multiplied by `s` (trees are always
  * life-size — they already read at every zoom).
  */
-export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE): PropLayers {
+export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | null, s = ICON_SCALE): PropLayers {
   const g = hf ? (x: number, y: number): number => heightAt(hf, x, y) : (): number => 0;
   const group = new THREE.Group();
   const near = new THREE.Group();
   const glow = new THREE.Group();
   group.add(near);
-  const byTile = new Map<
-    number,
-    {
-      trees: Tree[];
-      signs: Sign[];
-      signals: Signal[];
-      lights: Light[];
-      meters: Simple[];
-      furniture: Simple[];
-      racks: Simple[];
-      bumps: Simple[];
-      hydrants: Simple[];
-    }
-  >();
-  // Global tree index (order of tree props in map.props) -> instanced slot,
-  // so the fire sim can tint canopies across every built prop set.
+  // Buckets hold prop INDICES into the store, not prop objects — the point of
+  // the store is that 405,582 of those objects no longer exist.
+  interface Bucket {
+    trees: number[];
+    signs: number[];
+    signals: number[];
+    lights: number[];
+    meters: number[];
+    furniture: number[];
+    racks: number[];
+    bumps: number[];
+    hydrants: number[];
+  }
+  const byTile = new Map<number, Bucket>();
+  // Global tree index (order of tree props in the store) -> instanced slot,
+  // so the fire sim can tint canopies across every built prop set. FireSim
+  // walks the store in the same order, so the two agree.
   const treeSlots = new Map<number, { mesh: THREE.InstancedMesh; i: number }>();
-  const treeGi = new Map<Tree, number>();
+  const treeGi = new Map<number, number>();
   let giCounter = 0;
-  for (const p of map.props) {
-    const key = Math.floor(p.y / TILE) * 4096 + Math.floor(p.x / TILE);
+  const px = store.x;
+  const py = store.y;
+  for (let i = 0; i < store.count; i++) {
+    const key = Math.floor(py[i]! / TILE) * 4096 + Math.floor(px[i]! / TILE);
     let bucket = byTile.get(key);
     if (!bucket) {
       bucket = { trees: [], signs: [], signals: [], lights: [], meters: [], furniture: [], racks: [], bumps: [], hydrants: [] };
       byTile.set(key, bucket);
     }
-    if (p.kind === "tree") {
-      treeGi.set(p, giCounter++);
-      bucket.trees.push(p);
+    switch (PROP_KINDS[store.kind[i]!]) {
+      case "tree": treeGi.set(i, giCounter++); bucket.trees.push(i); break;
+      case "sign": bucket.signs.push(i); break;
+      case "signal": bucket.signals.push(i); break;
+      case "light": bucket.lights.push(i); break;
+      case "meter": bucket.meters.push(i); break;
+      case "furniture": bucket.furniture.push(i); break;
+      case "bikerack": bucket.racks.push(i); break;
+      case "bump": bucket.bumps.push(i); break;
+      default: bucket.hydrants.push(i); break;
     }
-    else if (p.kind === "sign") bucket.signs.push(p);
-    else if (p.kind === "signal") bucket.signals.push(p);
-    else if (p.kind === "light") bucket.lights.push(p);
-    else if (p.kind === "meter") bucket.meters.push(p);
-    else if (p.kind === "furniture") bucket.furniture.push(p);
-    else if (p.kind === "bikerack") bucket.racks.push(p);
-    else if (p.kind === "bump") bucket.bumps.push(p);
-    else bucket.hydrants.push(p);
   }
 
   // Shared geometries/materials across all tiles. Life-size meters x s.
@@ -174,17 +186,19 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
       const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, bucket.trees.length);
       const canopies = new THREE.InstancedMesh(canopyGeo, canopyMat, bucket.trees.length);
       trunks.castShadow = canopies.castShadow = true;
-      bucket.trees.forEach((t, i) => {
-        const r = CANOPY_RADIUS[t.size];
-        const gz = g(t.x, t.y);
-        m.makeTranslation(toScene(t.x, t.y, gz + 1.3));
+      bucket.trees.forEach((pi, i) => {
+        const tx = px[pi]!;
+        const ty = py[pi]!;
+        const r = CANOPY_RADIUS[(store.variant[pi] ?? 1) as 1 | 2 | 3];
+        const gz = g(tx, ty);
+        m.makeTranslation(toScene(tx, ty, gz + 1.3));
         trunks.setMatrixAt(i, m);
         // Wider than tall: a fuller crown from the same icosahedron.
-        m.makeScale(r * 1.12, r * 0.92, r * 1.12).setPosition(toScene(t.x, t.y, gz + 1.8 + r * 0.78));
+        m.makeScale(r * 1.12, r * 0.92, r * 1.12).setPosition(toScene(tx, ty, gz + 1.8 + r * 0.78));
         canopies.setMatrixAt(i, m);
         color.copy(CANOPY_BASE).offsetHSL(jitter(i) * 0.04, jitter(i + 1) * 0.08, jitter(i + 2) * 0.05);
         canopies.setColorAt(i, color);
-        const gi = treeGi.get(t);
+        const gi = treeGi.get(pi);
         if (gi !== undefined) treeSlots.set(gi, { mesh: canopies, i });
       });
       group.add(trunks, canopies);
@@ -193,14 +207,16 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
       const poles = new THREE.InstancedMesh(poleGeo, poleMat, bucket.signs.length);
       const faces = new THREE.InstancedMesh(faceGeo, faceMat, bucket.signs.length);
       poles.castShadow = faces.castShadow = true;
-      bucket.signs.forEach((si, i) => {
-        const gz = g(si.x, si.y);
-        m.makeTranslation(toScene(si.x, si.y, gz + 1.6 * s));
+      bucket.signs.forEach((pi, i) => {
+        const sx = px[pi]!;
+        const sy = py[pi]!;
+        const gz = g(sx, sy);
+        m.makeTranslation(toScene(sx, sy, gz + 1.6 * s));
         poles.setMatrixAt(i, m);
-        q.setFromAxisAngle(up, si.rot);
-        m.compose(toScene(si.x, si.y, gz + 2.7 * s), q, one);
+        q.setFromAxisAngle(up, propRotation(store, pi));
+        m.compose(toScene(sx, sy, gz + 2.7 * s), q, one);
         faces.setMatrixAt(i, m);
-        faces.setColorAt(i, color.setHex(SIGN_FACE[si.sign]));
+        faces.setColorAt(i, color.setHex(SIGN_FACE[SIGN_VARIANTS[store.variant[pi]!] ?? "other"]!));
       });
       near.add(poles, faces);
     }
@@ -208,7 +224,8 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
       const poles = new THREE.InstancedMesh(sigPoleGeo, sigPoleMat, bucket.signals.length);
       const heads = new THREE.InstancedMesh(sigHeadGeo, sigHeadMat, bucket.signals.length);
       poles.castShadow = heads.castShadow = true;
-      bucket.signals.forEach((si, i) => {
+      bucket.signals.forEach((pi, i) => {
+        const si = { x: px[pi]!, y: py[pi]! };
         const gz = g(si.x, si.y);
         m.makeTranslation(toScene(si.x, si.y, gz + 2.25 * s));
         poles.setMatrixAt(i, m);
@@ -222,7 +239,8 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
       const heads = new THREE.InstancedMesh(lightHeadGeo, lightHeadMat, bucket.lights.length);
       const pool = new THREE.InstancedMesh(poolGeo, poolMat, bucket.lights.length);
       poles.castShadow = true;
-      bucket.lights.forEach((si, i) => {
+      bucket.lights.forEach((pi, i) => {
+        const si = { x: px[pi]!, y: py[pi]! };
         const gz = g(si.x, si.y);
         m.makeTranslation(toScene(si.x, si.y, gz + 3.5 * s));
         poles.setMatrixAt(i, m);
@@ -239,7 +257,8 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
     if (bucket.meters.length) {
       const poles = new THREE.InstancedMesh(meterGeo, meterMat, bucket.meters.length);
       const heads = new THREE.InstancedMesh(meterHeadGeo, meterHeadMat, bucket.meters.length);
-      bucket.meters.forEach((si, i) => {
+      bucket.meters.forEach((pi, i) => {
+        const si = { x: px[pi]!, y: py[pi]! };
         const gz = g(si.x, si.y);
         m.makeTranslation(toScene(si.x, si.y, gz + 0.65 * s));
         poles.setMatrixAt(i, m);
@@ -251,7 +270,8 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
     }
     if (bucket.furniture.length) {
       const benches = new THREE.InstancedMesh(benchGeo, benchMat, bucket.furniture.length);
-      bucket.furniture.forEach((si, i) => {
+      bucket.furniture.forEach((pi, i) => {
+        const si = { x: px[pi]!, y: py[pi]! };
         q.setFromAxisAngle(up, jitter(i) * Math.PI);
         m.compose(toScene(si.x, si.y, g(si.x, si.y) + 0.25 * s), q, one);
         benches.setMatrixAt(i, m);
@@ -260,7 +280,8 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
     }
     if (bucket.racks.length) {
       const racks = new THREE.InstancedMesh(rackGeo, rackMat, bucket.racks.length);
-      bucket.racks.forEach((si, i) => {
+      bucket.racks.forEach((pi, i) => {
+        const si = { x: px[pi]!, y: py[pi]! };
         q.setFromAxisAngle(up, jitter(i) * Math.PI);
         m.compose(toScene(si.x, si.y, g(si.x, si.y) + 0.42 * s), q, one);
         racks.setMatrixAt(i, m);
@@ -269,7 +290,8 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
     }
     if (bucket.bumps.length) {
       const bumps = new THREE.InstancedMesh(bumpGeo, bumpMat, bucket.bumps.length);
-      bucket.bumps.forEach((si, i) => {
+      bucket.bumps.forEach((pi, i) => {
+        const si = { x: px[pi]!, y: py[pi]! };
         m.makeTranslation(toScene(si.x, si.y, g(si.x, si.y) + 0.32 * s));
         bumps.setMatrixAt(i, m);
       });
@@ -278,7 +300,8 @@ export function buildProps(map: GameMap, hf?: Heightfield | null, s = ICON_SCALE
     if (bucket.hydrants.length) {
       const barrels = new THREE.InstancedMesh(hydrantGeo, hydrantMat, bucket.hydrants.length);
       const caps = new THREE.InstancedMesh(hydrantCapGeo, hydrantMat, bucket.hydrants.length);
-      bucket.hydrants.forEach((si, i) => {
+      bucket.hydrants.forEach((pi, i) => {
+        const si = { x: px[pi]!, y: py[pi]! };
         const gz = g(si.x, si.y);
         m.makeTranslation(toScene(si.x, si.y, gz + 0.3 * s));
         barrels.setMatrixAt(i, m);

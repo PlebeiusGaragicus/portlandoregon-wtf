@@ -7,8 +7,10 @@
 import {
   decodeBuildings,
   decodeHeightfield,
+  decodeProps,
   type BuildingStore,
   type GameMap,
+  type PropStore,
   type Heightfield,
 } from "@battle-juice/shared";
 
@@ -16,6 +18,7 @@ import {
 // store, everything else left as map-lite.
 const MAP_URL = new URL("./map/map-lite.json.gz", document.baseURI).href;
 const BUILDINGS_URL = new URL("./map/buildings.bin.gz", document.baseURI).href;
+const PROPS_URL = new URL("./map/props.bin.gz", document.baseURI).href;
 const HEIGHTMAP_URL = new URL("./map/heightmap.bin.gz", document.baseURI).href;
 
 /** Thrown when the map asset itself is missing or unreadable — without it
@@ -88,6 +91,7 @@ export async function loadMap(onProgress?: Progress): Promise<GameMap> {
     // map-lite carries no buildings — those arrive as a binary store. Keeping
     // the field present but empty means nothing has to null-check it.
     if (!map.buildings) map.buildings = [];
+    if (!map.props) map.props = [];
     return map;
   } catch (err) {
     if (err instanceof MapUnavailableError) throw err;
@@ -109,6 +113,17 @@ export async function loadBuildings(onProgress?: Progress): Promise<BuildingStor
   } catch (err) {
     if (err instanceof MapUnavailableError) throw err;
     throw new MapUnavailableError(`${BUILDINGS_URL} unreachable`);
+  }
+}
+
+/** The 405k decorative props, as flat arrays rather than 405k objects. */
+export async function loadProps(onProgress?: Progress): Promise<PropStore> {
+  try {
+    const buf = await (await openGzipped(PROPS_URL, onProgress)).arrayBuffer();
+    return decodeProps(new Uint8Array(buf));
+  } catch (err) {
+    if (err instanceof MapUnavailableError) throw err;
+    throw new MapUnavailableError(`${PROPS_URL} unreachable`);
   }
 }
 

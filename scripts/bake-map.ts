@@ -17,7 +17,15 @@ import { readFileSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { decodeBuildings, encodeBuildings, storeBytes, type GameMap } from "@battle-juice/shared";
+import {
+  decodeBuildings,
+  decodeProps,
+  encodeBuildings,
+  encodeProps,
+  propStoreBytes,
+  storeBytes,
+  type GameMap,
+} from "@battle-juice/shared";
 
 const MAP_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "../client/src/public/map");
 const SRC = join(MAP_DIR, "map.json.gz");
@@ -31,9 +39,13 @@ const bin = encodeBuildings(map);
 const binGz = gzipSync(bin, { level: 9 });
 writeFileSync(join(MAP_DIR, "buildings.bin.gz"), binGz);
 
-// Everything except buildings, which the client now gets from the store.
+const propBin = encodeProps(map.props);
+const propGz = gzipSync(propBin, { level: 9 });
+writeFileSync(join(MAP_DIR, "props.bin.gz"), propGz);
+
+// Everything except buildings and props, which the client now gets from stores.
 // `undefined` drops the key entirely in JSON.stringify.
-const lite = { ...map, buildings: undefined };
+const lite = { ...map, buildings: undefined, props: undefined };
 const liteJson = JSON.stringify(lite);
 const liteGz = gzipSync(Buffer.from(liteJson, "utf8"), { level: 9 });
 writeFileSync(join(MAP_DIR, "map-lite.json.gz"), liteGz);
@@ -44,11 +56,16 @@ const check = decodeBuildings(gunzipSync(binGz));
 if (check.count !== map.buildings.length) {
   throw new Error(`baked store has ${check.count} buildings, expected ${map.buildings.length}`);
 }
+const checkProps = decodeProps(gunzipSync(propGz));
+if (checkProps.count !== map.props.length) {
+  throw new Error(`baked store has ${checkProps.count} props, expected ${map.props.length}`);
+}
 
 const before = statSync(SRC).size;
-const after = binGz.length + liteGz.length;
+const after = binGz.length + propGz.length + liteGz.length;
 console.log(`
   buildings.bin.gz   ${mb(binGz.length).padStart(8)}   ${check.count} buildings, ${mb(storeBytes(check))} resident
+  props.bin.gz       ${mb(propGz.length).padStart(8)}   ${checkProps.count} props, ${mb(propStoreBytes(checkProps))} resident
   map-lite.json.gz   ${mb(liteGz.length).padStart(8)}   ${mb(liteJson.length)} of text
   ----
   download           ${mb(after).padStart(8)}   was ${mb(before)} (${(((after - before) / before) * 100).toFixed(0)}%)`);

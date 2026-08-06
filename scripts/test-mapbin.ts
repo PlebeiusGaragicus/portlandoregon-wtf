@@ -20,7 +20,11 @@ import {
   buildingUse,
   decodeBuildings,
   encodeBuildings,
+  encodeProps,
+  decodeProps,
   findTile,
+  PROP_KINDS,
+  propStoreBytes,
   forEachRingVertex,
   ringBase,
   tileKeyAt,
@@ -125,6 +129,51 @@ check("use category preserved", badUse === 0, `${badUse} mismatches`);
 check("coordinates within 1 cm", worstXY <= 0.011, `worst ${(worstXY * 1000).toFixed(2)} mm`);
 // Heights are stored in decimetres, so half a decimetre is the bound.
 check("heights within 5 cm", worstH <= 0.051, `worst ${(worstH * 100).toFixed(1)} cm`);
+
+// --- props ----------------------------------------------------------------
+// Same contract as buildings: positions inside the quantisation grid, kinds
+// and variants exact. 405k prop objects are 65 MB of heap; the store is 4.5.
+if (real) {
+  const propBytes = encodeProps(map.props);
+  const ps = decodeProps(propBytes);
+  check("prop count survives", ps.count === map.props.length, `${ps.count} vs ${map.props.length}`);
+  // Props are tile-sorted, so match on position rather than index — and a
+  // position can hold SEVERAL props (a sign and a meter share a corner), so
+  // each key maps to a list. Keying to one index scored 84 false failures.
+  const seen = new Map<string, number[]>();
+  const key = (x: number, y: number): string =>
+    `${Math.fround(Math.round(x / 0.01) * 0.01).toFixed(2)},${Math.fround(Math.round(y / 0.01) * 0.01).toFixed(2)}`;
+  for (let i = 0; i < ps.count; i++) {
+    const k = key(ps.x[i]!, ps.y[i]!);
+    const at = seen.get(k);
+    if (at) at.push(i);
+    else seen.set(k, [i]);
+  }
+  let missing = 0;
+  let badKind = 0;
+  let badVariant = 0;
+  for (const p of map.props) {
+    const at = seen.get(key(p.x, p.y));
+    if (!at) {
+      missing++;
+      continue;
+    }
+    const hit = at.filter((i) => PROP_KINDS[ps.kind[i]!] === p.kind);
+    if (!hit.length) {
+      badKind++;
+      continue;
+    }
+    if (p.kind === "tree" && !hit.some((i) => ps.variant[i] === p.size)) badVariant++;
+  }
+  check("every prop position round-trips", missing === 0, `${missing} unmatched`);
+  check("prop kinds preserved", badKind === 0, `${badKind} mismatches`);
+  check("tree sizes preserved", badVariant === 0, `${badVariant} mismatches`);
+  console.log(
+    `  props       ${(propBytes.length / 1e6).toFixed(1)} MB raw, ` +
+      `${(gzipSync(propBytes, { level: 9 }).length / 1e6).toFixed(1)} MB gzipped, ` +
+      `${(propStoreBytes(ps) / 1e6).toFixed(1)} MB resident\n`,
+  );
+}
 
 // The tile table is what lets the renderer build one tile without touching
 // the rest of the city, so it has to partition the store exactly.

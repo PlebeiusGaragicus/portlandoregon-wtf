@@ -22,6 +22,7 @@ import { gunzipSync } from "node:zlib";
 import {
   decodeBuildings,
   decodeHeightfield,
+  decodeProps,
   findTile,
   storeBytes,
   tileKeyAt,
@@ -74,6 +75,10 @@ t = performance.now();
 const buildings: BuildingStore = decodeBuildings(gunzipSync(readFileSync(join(MAP_DIR, "buildings.bin.gz"))));
 step("decode buildings.bin.gz", t);
 
+t = performance.now();
+const props = decodeProps(gunzipSync(readFileSync(join(MAP_DIR, "props.bin.gz"))));
+step("decode props.bin.gz", t);
+
 let hf: Heightfield | null = null;
 t = performance.now();
 try {
@@ -123,5 +128,5 @@ console.log(
   `\n  ${buildings.count} buildings, ${map.edges?.length ?? 0} street edges, ` +
     `heightfield ${hf ? `${hf.cols}x${hf.rows}` : "none"}`,
 );
-console.log(`  building store: ${mb(storeBytes(buildings))} resident`);
+console.log(`  building store: ${mb(storeBytes(buildings))} resident, ${props.count} props`);
 console.log(`  peak RSS:       ${mb(process.memoryUsage().rss)}`);

@@ -26,7 +26,7 @@
  * Float32Array above at ~230 ms for the whole city, replacing `JSON.parse`'s
  * 940 ms rather than adding to it. See scripts/measure-binary.ts.
  */
-import type { Building, GameMap } from "./map.js";
+import type { Building, GameMap, Prop } from "./map.js";
 
 const MAGIC = 0x424a4231; // "BJB1"
 /** Coordinate quantisation. 1 cm costs ~2 MB of download over 5 cm and buys
@@ -476,4 +476,111 @@ export function storeBytes(s: BuildingStore): number {
     s.tileKey.byteLength +
     s.tileStart.byteLength
   );
+}
+
+
+// ------------------------------------------------------------- prop store
+//
+// 405,582 props — trees, signs, signals, lamps, hydrants — are the largest
+// object count in the map and about 65 MB of heap, all to hold a position, a
+// kind, and at most one extra byte. Flat arrays instead.
+
+/** Prop kinds, indexed by the store's `kind` array. Order is the wire format. */
+export const PROP_KINDS = [
+  "tree", "sign", "signal", "light", "meter", "furniture", "bikerack", "bump", "hydrant",
+] as const;
+export type PropKind = (typeof PROP_KINDS)[number];
+
+const SIGN_KINDS = ["stop", "street-name", "other"] as const;
+
+export interface PropStore {
+  count: number;
+  x: Float32Array;
+  y: Float32Array;
+  /** Index into {@link PROP_KINDS}. */
+  kind: Uint8Array;
+  /** Trees: canopy size 1-3. Signs: which sign. Zero elsewhere. */
+  variant: Uint8Array;
+  /** Signs: rotation quantised to 1/256 turn. Zero elsewhere. */
+  rot: Uint8Array;
+}
+
+export function propRotation(s: PropStore, i: number): number {
+  return (s.rot[i]! / 256) * Math.PI * 2;
+}
+
+export function encodeProps(props: Prop[], tile = 1000): Uint8Array {
+  const q = (v: number): number => Math.fround(Math.round(v / GRID) * GRID);
+  // Same tile ordering as buildings, for the same reasons: small deltas, and
+  // a contiguous slice per tile if props ever stream.
+  const order = props
+    .map((p, i) => ({ i, key: tileKeyAt(q(p.x), q(p.y), tile) }))
+    .sort((a, b) => a.key - b.key || a.i - b.i);
+
+  const w = new Writer();
+  w.u32(MAGIC);
+  w.u32(FORMAT_VERSION);
+  w.u32(props.length);
+  for (const { i } of order) {
+    const p = props[i]!;
+    w.u8(Math.max(0, (PROP_KINDS as readonly string[]).indexOf(p.kind)));
+  }
+  for (const { i } of order) {
+    const p = props[i]!;
+    if (p.kind === "tree") w.u8(p.size);
+    else if (p.kind === "sign") w.u8(Math.max(0, (SIGN_KINDS as readonly string[]).indexOf(p.sign)));
+    else w.u8(0);
+  }
+  for (const { i } of order) {
+    const p = props[i]!;
+    w.u8(p.kind === "sign" ? Math.round((p.rot / (Math.PI * 2)) * 256) & 0xff : 0);
+  }
+  let px = 0;
+  let py = 0;
+  for (const { i } of order) {
+    const p = props[i]!;
+    const qx = Math.round(p.x / GRID);
+    const qy = Math.round(p.y / GRID);
+    w.zig(qx - px);
+    w.zig(qy - py);
+    px = qx;
+    py = qy;
+  }
+  return w.take();
+}
+
+export function decodeProps(bytes: Uint8Array): PropStore {
+  const r = new Reader(bytes);
+  if (r.u32() !== MAGIC) throw new Error("not a prop store");
+  const version = r.u32();
+  if (version !== FORMAT_VERSION) {
+    throw new Error(`prop store is version ${version}, this build reads ${FORMAT_VERSION} — re-run scripts/stage-map.sh`);
+  }
+  const count = r.u32();
+  const kind = new Uint8Array(count);
+  for (let i = 0; i < count; i++) kind[i] = r.u8();
+  const variant = new Uint8Array(count);
+  for (let i = 0; i < count; i++) variant[i] = r.u8();
+  const rot = new Uint8Array(count);
+  for (let i = 0; i < count; i++) rot[i] = r.u8();
+  const x = new Float32Array(count);
+  const y = new Float32Array(count);
+  let px = 0;
+  let py = 0;
+  for (let i = 0; i < count; i++) {
+    px += r.zig();
+    py += r.zig();
+    x[i] = px * GRID;
+    y[i] = py * GRID;
+  }
+  return { count, x, y, kind, variant, rot };
+}
+
+/** Straight from the object graph, for the server's small synthetic maps. */
+export function storeFromProps(props: Prop[]): PropStore {
+  return decodeProps(encodeProps(props, Infinity));
+}
+
+export function propStoreBytes(s: PropStore): number {
+  return s.x.byteLength + s.y.byteLength + s.kind.byteLength + s.variant.byteLength + s.rot.byteLength;
 }

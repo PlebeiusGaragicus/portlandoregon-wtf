@@ -6,6 +6,7 @@ import {
   tileKeyAt,
   worldToLatLon,
   type BuildingStore,
+  type PropStore,
   type GameMap,
   type Heightfield,
 } from "@battle-juice/shared";
@@ -134,6 +135,7 @@ export class Renderer {
     private canvas: HTMLCanvasElement,
     map: GameMap,
     private store: BuildingStore,
+    private propStore: PropStore,
     opts: RendererOpts = {},
   ) {
     // Log depth: a perspective frustum spanning tens of km would otherwise
@@ -171,7 +173,7 @@ export class Renderer {
       o.castShadow = !("polygonOffset" in m && m.polygonOffset);
     });
     this.scene.add(this.world.group);
-    this.props = opts.prebuilt?.props ?? buildProps(map, hf);
+    this.props = opts.prebuilt?.props ?? buildProps(map, this.propStore, hf);
     this.scene.add(this.props.group, this.props.glow);
     this.landmarks = opts.prebuilt?.landmarks ?? buildLandmarks(map, store, hf);
     this.scene.add(this.landmarks.group);
@@ -180,7 +182,7 @@ export class Renderer {
 
     // Disaster sim: fires, spread, destruction — wired into dispatch both
     // ways (real fires open calls; dispatch fire incidents ignite for real).
-    this.fire = new FireSim(map, store, hf, this.city, this.world.shells);
+    this.fire = new FireSim(map, store, propStore, hf, this.city, this.world.shells);
     this.fire.addPropSet(this.props);
     this.scene.add(this.fire.group);
     this.fire.onNewFire = (x, y) => this.actors.reportFire(x, y, this.ground(x, y));
@@ -342,7 +344,7 @@ export class Renderer {
     }
     // Lazy: collision index + life-size props are built on first entry.
     if (!this.fpvProps) {
-      this.fpvProps = buildProps(this.map, this.hf, 1);
+      this.fpvProps = buildProps(this.map, this.propStore, this.hf, 1);
       this.fpvProps.group.visible = false;
       this.fpvProps.glow.visible = false;
       this.fpvProps.setNight(this.daynight.night);

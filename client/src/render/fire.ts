@@ -3,12 +3,14 @@ import {
   buildingHeight,
   buildingUse,
   forEachRingVertex,
+  PROP_KINDS,
   heightAt,
   ringBase,
   ringLength,
   type BuildingStore,
   type GameMap,
   type Heightfield,
+  type PropStore,
 } from "@battle-juice/shared";
 import { toScene } from "./camera.js";
 import { radialGlowTexture } from "./props.js";
@@ -434,6 +436,7 @@ export class FireSim {
   constructor(
     private map: GameMap,
     private store: BuildingStore,
+    props: PropStore,
     hf: Heightfield | null,
     private city: CityModel,
     private shells: BuildingShells,
@@ -452,10 +455,14 @@ export class FireSim {
       else this.grid.set(key, [i]);
     }
     let ti = 0;
-    for (const p of map.props) {
-      if (p.kind !== "tree") continue;
-      this.trees.push({ x: p.x, y: p.y, state: 0, t: 0 });
-      const key = this.cellKey(p.x, p.y);
+    // Same order buildProps walks, so a tree's index here is the same "global
+    // tree index" the prop layers register their instanced slots under.
+    for (let i = 0; i < props.count; i++) {
+      if (PROP_KINDS[props.kind[i]!] !== "tree") continue;
+      const px = props.x[i]!;
+      const py = props.y[i]!;
+      this.trees.push({ x: px, y: py, state: 0, t: 0 });
+      const key = this.cellKey(px, py);
       const cell = this.treeGrid.get(key);
       if (cell) cell.push(ti);
       else this.treeGrid.set(key, [ti]);
