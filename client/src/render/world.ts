@@ -7,10 +7,14 @@ import {
   heightAt,
   ringBase,
   ringCount,
+  featureAnchor,
+  featureRings,
   ringLength,
   tileKeyAt,
   type BuildingStore,
+  type FeatureStore,
   type GameMap,
+  type LayerStores,
   type Heightfield,
   type Landmark,
   type RailLine,
@@ -20,6 +24,36 @@ import {
   type WaterBody,
 } from "@battle-juice/shared";
 import { buildCityModel, type CityModel } from "../city.js";
+
+/** Rail kinds, in the order the layer store encodes them. */
+const RAIL_KINDS = ["rail", "max", "streetcar", "wes"] as const;
+
+/**
+ * Store -> the object shapes the mesh builders still take.
+ *
+ * These allocate, which is the thing the stores exist to avoid — so they are
+ * called per tile, or once at boot for a layer that is built whole and then
+ * dropped. Never per frame, and never over a streamed layer's full extent.
+ */
+function featurePolys(store: FeatureStore): { rings: [number, number][][] }[] {
+  const out: { rings: [number, number][][] }[] = [];
+  for (let i = 0; i < store.count; i++) out.push({ rings: featureRings(store, i) });
+  return out;
+}
+
+function featureLines<K extends string>(
+  store: FeatureStore,
+  kinds?: readonly K[],
+): { polyline: [number, number][]; kind: K }[] {
+  const out: { polyline: [number, number][]; kind: K }[] = [];
+  for (let i = 0; i < store.count; i++) {
+    out.push({
+      polyline: featureRings(store, i)[0] ?? [],
+      kind: (kinds ? kinds[store.attr[i]!] ?? kinds[0]! : ("" as K)),
+    });
+  }
+  return out;
+}
 
 /** Terrain height lookup (world meters). Flat maps use () => 0. */
 export type GroundFn = (x: number, y: number) => number;
@@ -206,7 +240,7 @@ export interface DecalTiles {
 }
 
 function createDetailTiles(
-  map: GameMap,
+  layers: LayerStores,
   ground: GroundFn,
   cell: number,
 ): DecalTiles {
@@ -224,21 +258,20 @@ function createDetailTiles(
     if (at) at.push(i);
     else index.set(key, [i]);
   };
-  const swList = map.sidewalks ?? [];
-  swList.forEach((sw, i) => {
-    const p = sw.rings[0]?.[0];
-    if (p) file(sidewalks, tileKeyAt(p[0], p[1], TS), i);
-  });
-  const areaList = map.markingAreas ?? [];
-  areaList.forEach((a, i) => {
-    const p = a.rings[0]?.[0];
-    if (p) file(areas, tileKeyAt(p[0], p[1], TS), i);
-  });
-  const lineList = map.markingLines ?? [];
-  lineList.forEach((l, i) => {
-    const p = l.polyline[Math.floor(l.polyline.length / 2)];
-    if (p) file(lines, tileKeyAt(p[0], p[1], TS), i);
-  });
+  // Filed straight from the stores — no feature objects are created until a
+  // tile is actually built, and then only that tile's.
+  const swStore = layers.sidewalks;
+  const areaStore = layers.markingAreas;
+  const lineStore = layers.markingLines;
+  const fileAll = (store: FeatureStore, index: Map<number, number[]>): void => {
+    for (let i = 0; i < store.count; i++) {
+      const [x, y] = featureAnchor(store, i);
+      file(index, tileKeyAt(x, y, TS), i);
+    }
+  };
+  fileAll(swStore, sidewalks);
+  fileAll(areaStore, areas);
+  fileAll(lineStore, lines);
 
   const laneMat = decalMat({ color: MARK_YELLOW });
   const live = new Map<number, THREE.Mesh[]>();
@@ -249,7 +282,7 @@ function createDetailTiles(
     const meshes: THREE.Mesh[] = [];
     for (const m of order(
       drapedPolyTiles(
-        (sidewalks.get(key) ?? []).map((i) => ({ rings: swList[i]!.rings, color: SIDEWALK_COLOR })),
+        (sidewalks.get(key) ?? []).map((i) => ({ rings: featureRings(swStore, i), color: SIDEWALK_COLOR })),
         SIDEWALK_Y,
         ground,
         CURB_H,
@@ -258,10 +291,10 @@ function createDetailTiles(
     )) meshes.push(m);
     for (const m of order(
       drapedPolyTiles(
-        (areas.get(key) ?? []).map((i) => {
-          const a = areaList[i]!;
-          return { rings: a.rings, color: a.style === "yellow" ? MARK_YELLOW : MARK_WHITE };
-        }),
+        (areas.get(key) ?? []).map((i) => ({
+          rings: featureRings(areaStore, i),
+          color: areaStore.attr[i] === 1 ? MARK_YELLOW : MARK_WHITE,
+        })),
         DECAL_Y,
         ground,
       ),
@@ -270,7 +303,7 @@ function createDetailTiles(
     const laneIdx = lines.get(key) ?? [];
     if (laneIdx.length) {
       const soup: Soup = { pos: [], nrm: [] };
-      for (const i of laneIdx) pushRibbon(soup.pos, lineList[i]!.polyline, 0.35, DECAL_Y, ground, cell);
+      for (const i of laneIdx) pushRibbon(soup.pos, featureRings(lineStore, i)[0]!, 0.35, DECAL_Y, ground, cell);
       if (soup.pos.length) meshes.push(...order([soupMesh(soup, laneMat)], DECAL_ORDER.laneLine));
     }
     for (const m of meshes) {
@@ -510,11 +543,12 @@ export class BuildingShells {
 export function buildWorld(
   map: GameMap,
   buildings: BuildingStore,
+  layers: LayerStores,
   hf?: Heightfield | null,
   city?: CityModel,
   buildEveryBuilding = true,
 ): WorldLayers {
-  const it = buildWorldSteps(map, buildings, hf, city, buildEveryBuilding);
+  const it = buildWorldSteps(map, buildings, layers, hf, city, buildEveryBuilding);
   let r = it.next();
   while (!r.done) r = it.next();
   return r.value;
@@ -530,12 +564,15 @@ export function buildWorld(
 export function* buildWorldSteps(
   map: GameMap,
   buildings: BuildingStore,
+  layers: LayerStores,
   hf?: Heightfield | null,
   city: CityModel = buildCityModel(buildings, hf),
   buildEveryBuilding = true,
 ): Generator<string, WorldLayers, void> {
   const ground: GroundFn = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
   const group = new THREE.Group();
+  // Needed by both the flat fallback and the bridge test below.
+  const waterRings = featurePolys(layers.water);
   yield hf ? "terrain mesh" : "flat ground plane";
   if (hf) {
     // Water/parks/yards are painted INTO the terrain's vertex colors instead
@@ -543,14 +580,14 @@ export function* buildWorldSteps(
     // from earcutting the huge clipped river rings — and since 3DEP is
     // hydro-flattened, water-tinted terrain IS the river surface (including
     // the drop at Willamette Falls).
-    for (const mesh of buildTerrainTiles(map, hf)) group.add(mesh);
+    for (const mesh of buildTerrainTiles(map, layers, hf)) group.add(mesh);
   } else {
     group.add(buildGround(map));
-    const parks = flatPolys(map.parks ?? [], PARK_COLOR, DECAL_Y);
+    const parks = flatPolys(featurePolys(layers.parks), PARK_COLOR, DECAL_Y);
     if (parks) group.add(...order([parks], DECAL_ORDER.park));
-    const water = flatPolys(map.water ?? [], WATER_COLOR, DECAL_Y);
+    const water = flatPolys(waterRings, WATER_COLOR, DECAL_Y);
     if (water) group.add(...order([water], DECAL_ORDER.water));
-    const yards = flatPolys(map.railYards ?? [], YARD_COLOR, DECAL_Y);
+    const yards = flatPolys(featurePolys(layers.railYards), YARD_COLOR, DECAL_Y);
     if (yards) group.add(...order([yards], DECAL_ORDER.yard));
   }
 
@@ -558,14 +595,14 @@ export function* buildWorldSteps(
   // bank heights instead of sagging onto the riverbed. (Land overpasses
   // still drape — the ZLEV rule is phase 2.)
   yield "water mask";
-  const overWater = waterTester(map.water ?? [], map.meta.width, map.meta.height);
+  const overWater = waterTester(waterRings, map.meta.width, map.meta.height);
 
   // Terrain cell size lets ribbon vertices land exactly where the ground
   // surface kinks, so draped decals conform instead of clipping.
   const cell = hf ? hf.cellSize : Infinity;
 
-  yield `${(map.trails ?? []).length} trails`;
-  const trails = buildTrails(map.trails ?? [], ground, cell, overWater);
+  yield `${layers.trails.count} trails`;
+  const trails = buildTrails(featureLines(layers.trails), ground, cell, overWater);
   if (trails) group.add(...order([trails], DECAL_ORDER.trail));
 
   yield `${map.edges.length} street edges`;
@@ -574,8 +611,11 @@ export function* buildWorldSteps(
     group.add(mesh);
   }
 
-  yield `${(map.rails ?? []).length} rail lines + ${(map.railStops ?? []).length} stops`;
-  for (const mesh of order(buildRails(map.rails ?? [], ground, cell, overWater), DECAL_ORDER.rail)) group.add(mesh);
+  yield `${layers.rails.count} rail lines + ${(map.railStops ?? []).length} stops`;
+  for (const mesh of order(
+    buildRails(featureLines(layers.rails, RAIL_KINDS), ground, cell, overWater),
+    DECAL_ORDER.rail,
+  )) group.add(mesh);
   const stops = buildRailStops(map.railStops ?? [], ground);
   if (stops) group.add(...order([stops], DECAL_ORDER.railStop));
 
@@ -594,7 +634,7 @@ export function* buildWorldSteps(
   // sidewalks alone outweigh every building in the city.
   const detail = new THREE.Group();
   group.add(detail);
-  const detailTiles = createDetailTiles(map, ground, cell);
+  const detailTiles = createDetailTiles(layers, ground, cell);
   detail.add(detailTiles.group);
   if (buildEveryBuilding) {
     yield `${(map.sidewalks ?? []).length} sidewalk slabs + ${(map.markingLines ?? []).length} lane lines`;
@@ -645,7 +685,7 @@ const CAT_RGB: number[][] = [GROUND_COLOR, PARK_COLOR, YARD_COLOR, WATER_COLOR].
  * Even-odd scanline fill of polygon bodies onto the heightfield vertex grid
  * (all rings together, so island holes come free). Writes `cat` where inside.
  */
-function paintMask(bodies: WaterBody[], hf: Heightfield, out: Uint8Array, cat: number): void {
+function paintMask(bodies: { rings: [number, number][][] }[], hf: Heightfield, out: Uint8Array, cat: number): void {
   const cell = hf.cellSize;
   for (const body of bodies) {
     const rowHits: number[][] = Array.from({ length: hf.rows }, () => []);
@@ -677,7 +717,7 @@ function paintMask(bodies: WaterBody[], hf: Heightfield, out: Uint8Array, cat: n
 
 /** Displaced terrain grid, chunked for frustum culling. Indexed geometry,
  * vertex-colored by the park/yard/water masks. */
-function buildTerrainTiles(map: GameMap, hf: Heightfield): THREE.Mesh[] {
+function buildTerrainTiles(map: GameMap, layers: LayerStores, hf: Heightfield): THREE.Mesh[] {
   const mat = new THREE.MeshLambertMaterial({ vertexColors: true });
   const meshes: THREE.Mesh[] = [];
   const cell = hf.cellSize;
@@ -687,9 +727,9 @@ function buildTerrainTiles(map: GameMap, hf: Heightfield): THREE.Mesh[] {
   const py = (r: number): number => (r === lastR ? map.meta.height : r * cell);
 
   const mask = new Uint8Array(hf.cols * hf.rows); // CAT_GROUND
-  paintMask(map.parks ?? [], hf, mask, CAT_PARK);
-  paintMask(map.railYards ?? [], hf, mask, CAT_YARD);
-  paintMask(map.water ?? [], hf, mask, CAT_WATER);
+  paintMask(featurePolys(layers.parks), hf, mask, CAT_PARK);
+  paintMask(featurePolys(layers.railYards), hf, mask, CAT_YARD);
+  paintMask(featurePolys(layers.water), hf, mask, CAT_WATER);
 
   for (let r0 = 0; r0 < lastR; r0 += TERRAIN_CHUNK) {
     for (let c0 = 0; c0 < lastC; c0 += TERRAIN_CHUNK) {
@@ -898,7 +938,7 @@ function drapedPolyTiles(
 }
 
 /** Flat polygon bodies (no-heightfield fallback only). */
-function flatPolys(bodies: WaterBody[], color: number, y: number): THREE.Mesh | null {
+function flatPolys(bodies: { rings: [number, number][][] }[], color: number, y: number): THREE.Mesh | null {
   const parts: THREE.BufferGeometry[] = [];
   for (const body of bodies) {
     const outer = body.rings[0];
@@ -927,7 +967,7 @@ const WATER_MASK_CELL = 40; // m
  * segment midpoint lies in water — i.e. this leg is a bridge.
  */
 function waterTester(
-  water: WaterBody[],
+  water: { rings: [number, number][][] }[],
   width: number,
   height: number,
 ): (polyline: [number, number][]) => boolean {
@@ -1152,7 +1192,7 @@ function pushRibbon(
 
 /** One mesh per rail kind: ribbon polylines in that kind's color. */
 function buildRails(
-  rails: RailLine[],
+  rails: { polyline: [number, number][]; kind: RailLine["kind"] }[],
   ground: GroundFn,
   cell: number,
   overWater: (p: [number, number][]) => boolean,

@@ -584,3 +584,196 @@ export function storeFromProps(props: Prop[]): PropStore {
 export function propStoreBytes(s: PropStore): number {
   return s.x.byteLength + s.y.byteLength + s.kind.byteLength + s.variant.byteLength + s.rot.byteLength;
 }
+
+
+// ----------------------------------------------------------- feature store
+//
+// Sidewalks, lane markings, trails, parks, water: ring sets and polylines
+// with at most a style byte. Same offset-table shape as buildings, which is
+// the only thing they have in common with each other.
+
+export interface FeatureStore {
+  count: number;
+  /** Index into `ringOffset`, per feature. Length count + 1. */
+  ringStart: Uint32Array;
+  /** Index into `coords` (in PAIRS). Length totalRings + 1. */
+  ringOffset: Uint32Array;
+  coords: Float32Array;
+  /** One byte per feature — a style or kind enum. Zero when the layer has no
+   * such notion. */
+  attr: Uint8Array;
+}
+
+export interface FeatureInput {
+  rings: [number, number][][];
+  attr?: number;
+}
+
+const EMPTY_FEATURES: FeatureStore = {
+  count: 0,
+  ringStart: new Uint32Array(1),
+  ringOffset: new Uint32Array(1),
+  coords: new Float32Array(0),
+  attr: new Uint8Array(0),
+};
+
+function writeFeatures(w: Writer, features: FeatureInput[], tile: number): void {
+  const q = (v: number): number => Math.fround(Math.round(v / GRID) * GRID);
+  // Tile-sorted for the same reason buildings are: neighbouring features make
+  // small coordinate deltas, and the renderer reads them by locality.
+  const order = features
+    .map((f, i) => {
+      const p = f.rings[0]?.[0] ?? [0, 0];
+      return { i, key: tileKeyAt(q(p[0]), q(p[1]), tile) };
+    })
+    .sort((a, b) => a.key - b.key || a.i - b.i);
+
+  w.u32(features.length);
+  let totalVerts = 0;
+  for (const { i } of order) {
+    const f = features[i]!;
+    w.varint(f.rings.length);
+    for (const r of f.rings) {
+      w.varint(r.length);
+      totalVerts += r.length;
+    }
+  }
+  w.u32(totalVerts);
+  for (const { i } of order) w.u8(features[i]!.attr ?? 0);
+  let px = 0;
+  let py = 0;
+  for (const { i } of order) {
+    for (const ring of features[i]!.rings) {
+      for (const [x, y] of ring) {
+        const qx = Math.round(x / GRID);
+        const qy = Math.round(y / GRID);
+        w.zig(qx - px);
+        w.zig(qy - py);
+        px = qx;
+        py = qy;
+      }
+    }
+  }
+}
+
+function readFeatures(r: Reader): FeatureStore {
+  const count = r.u32();
+  const ringStart = new Uint32Array(count + 1);
+  const lens: number[] = [];
+  for (let f = 0; f < count; f++) {
+    const rings = r.varint();
+    ringStart[f + 1] = ringStart[f]! + rings;
+    for (let k = 0; k < rings; k++) lens.push(r.varint());
+  }
+  const totalVerts = r.u32();
+  const ringOffset = new Uint32Array(lens.length + 1);
+  for (let i = 0; i < lens.length; i++) ringOffset[i + 1] = ringOffset[i]! + lens[i]!;
+  if (ringOffset[lens.length] !== totalVerts) throw new Error("feature store: vertex count mismatch");
+  const attr = new Uint8Array(count);
+  for (let f = 0; f < count; f++) attr[f] = r.u8();
+  const coords = new Float32Array(totalVerts * 2);
+  let px = 0;
+  let py = 0;
+  for (let i = 0; i < totalVerts; i++) {
+    px += r.zig();
+    py += r.zig();
+    coords[i * 2] = px * GRID;
+    coords[i * 2 + 1] = py * GRID;
+  }
+  return { count, ringStart, ringOffset, coords, attr };
+}
+
+/** Rings of one feature, as the object graph the mesh builders still want.
+ * Called per TILE, never over a whole layer — that would rebuild exactly what
+ * the store exists to delete. */
+export function featureRings(s: FeatureStore, f: number): [number, number][][] {
+  const out: [number, number][][] = [];
+  for (let k = s.ringStart[f]!; k < s.ringStart[f + 1]!; k++) {
+    const ring: [number, number][] = [];
+    for (let i = s.ringOffset[k]!; i < s.ringOffset[k + 1]!; i++) {
+      ring.push([s.coords[i * 2]!, s.coords[i * 2 + 1]!]);
+    }
+    out.push(ring);
+  }
+  return out;
+}
+
+/** First vertex of a feature, for filing it into a tile without building it. */
+export function featureAnchor(s: FeatureStore, f: number): [number, number] {
+  const i = s.ringOffset[s.ringStart[f]!]!;
+  return [s.coords[i * 2]!, s.coords[i * 2 + 1]!];
+}
+
+export function featureStoreBytes(s: FeatureStore): number {
+  return s.ringStart.byteLength + s.ringOffset.byteLength + s.coords.byteLength + s.attr.byteLength;
+}
+
+// --------------------------------------------------------- layer container
+//
+// One file rather than one per layer: nine more round trips at boot would
+// cost more than the bytes do.
+
+export type LayerName =
+  | "sidewalks" | "markingAreas" | "markingLines" | "trails" | "rails"
+  | "water" | "parks" | "railYards";
+
+export const LAYER_NAMES: LayerName[] = [
+  "sidewalks", "markingAreas", "markingLines", "trails", "rails", "water", "parks", "railYards",
+];
+
+export type LayerStores = Record<LayerName, FeatureStore>;
+
+export function encodeLayers(layers: Partial<Record<LayerName, FeatureInput[]>>, tile = 1000): Uint8Array {
+  const w = new Writer();
+  w.u32(MAGIC);
+  w.u32(FORMAT_VERSION);
+  w.u32(LAYER_NAMES.length);
+  for (const name of LAYER_NAMES) writeFeatures(w, layers[name] ?? [], tile);
+  return w.take();
+}
+
+export function decodeLayers(bytes: Uint8Array): LayerStores {
+  const r = new Reader(bytes);
+  if (r.u32() !== MAGIC) throw new Error("not a layer store");
+  const version = r.u32();
+  if (version !== FORMAT_VERSION) {
+    throw new Error(`layer store is version ${version}, this build reads ${FORMAT_VERSION} — re-run scripts/stage-map.sh`);
+  }
+  const n = r.u32();
+  if (n !== LAYER_NAMES.length) throw new Error(`layer store has ${n} layers, this build knows ${LAYER_NAMES.length}`);
+  const out = {} as LayerStores;
+  for (const name of LAYER_NAMES) out[name] = readFeatures(r);
+  return out;
+}
+
+export function emptyLayers(): LayerStores {
+  const out = {} as LayerStores;
+  for (const name of LAYER_NAMES) out[name] = EMPTY_FEATURES;
+  return out;
+}
+
+
+/**
+ * The GameMap -> layer-input mapping, in one place: the bake and any tool
+ * that needs stores from an object-graph map must agree on what `attr` means
+ * per layer, and duplicating that was already one enum away from a silent
+ * style swap.
+ */
+export function layerInputs(map: GameMap): Partial<Record<LayerName, FeatureInput[]>> {
+  const railKinds = ["rail", "max", "streetcar", "wes"];
+  return {
+    sidewalks: (map.sidewalks ?? []).map((f) => ({ rings: f.rings })),
+    markingAreas: (map.markingAreas ?? []).map((f) => ({ rings: f.rings, attr: f.style === "yellow" ? 1 : 0 })),
+    markingLines: (map.markingLines ?? []).map((f) => ({ rings: [f.polyline], attr: f.style === "yellow" ? 1 : 0 })),
+    trails: (map.trails ?? []).map((f) => ({ rings: [f.polyline] })),
+    rails: (map.rails ?? []).map((f) => ({ rings: [f.polyline], attr: Math.max(0, railKinds.indexOf(f.kind)) })),
+    water: (map.water ?? []).map((f) => ({ rings: f.rings })),
+    parks: (map.parks ?? []).map((f) => ({ rings: f.rings })),
+    railYards: (map.railYards ?? []).map((f) => ({ rings: f.rings })),
+  };
+}
+
+/** Layer stores straight from an object-graph map, for tools and tests. */
+export function layersFromMap(map: GameMap): LayerStores {
+  return decodeLayers(encodeLayers(layerInputs(map)));
+}

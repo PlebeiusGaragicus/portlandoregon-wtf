@@ -16,6 +16,7 @@ import {
   decodeBuildings,
   decodeHeightfield,
   storeFromBuildings,
+  layersFromMap,
   type GameMap,
   type Heightfield,
 } from "@battle-juice/shared";
@@ -60,7 +61,7 @@ let terrainMem = 0;
 function measure(label: string, sub: GameMap, isTerrainBaseline = false): void {
   const before = mem();
   const t0 = performance.now();
-  const world = buildWorld(sub, empty, hf, undefined, true);
+  const world = buildWorld(sub, empty, layersFromMap(sub), hf, undefined, true);
   const ms = performance.now() - t0;
   let verts = 0;
   let meshes = 0;

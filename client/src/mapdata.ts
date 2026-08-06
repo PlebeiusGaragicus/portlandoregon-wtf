@@ -7,9 +7,11 @@
 import {
   decodeBuildings,
   decodeHeightfield,
+  decodeLayers,
   decodeProps,
   type BuildingStore,
   type GameMap,
+  type LayerStores,
   type PropStore,
   type Heightfield,
 } from "@battle-juice/shared";
@@ -19,6 +21,7 @@ import {
 const MAP_URL = new URL("./map/map-lite.json.gz", document.baseURI).href;
 const BUILDINGS_URL = new URL("./map/buildings.bin.gz", document.baseURI).href;
 const PROPS_URL = new URL("./map/props.bin.gz", document.baseURI).href;
+const LAYERS_URL = new URL("./map/layers.bin.gz", document.baseURI).href;
 const HEIGHTMAP_URL = new URL("./map/heightmap.bin.gz", document.baseURI).href;
 
 /** Thrown when the map asset itself is missing or unreadable — without it
@@ -124,6 +127,18 @@ export async function loadProps(onProgress?: Progress): Promise<PropStore> {
   } catch (err) {
     if (err instanceof MapUnavailableError) throw err;
     throw new MapUnavailableError(`${PROPS_URL} unreachable`);
+  }
+}
+
+/** Sidewalks, markings, trails, rails, water, parks — every render-only
+ * vector layer, in one file so boot does not pay eight round trips. */
+export async function loadLayers(onProgress?: Progress): Promise<LayerStores> {
+  try {
+    const buf = await (await openGzipped(LAYERS_URL, onProgress)).arrayBuffer();
+    return decodeLayers(new Uint8Array(buf));
+  } catch (err) {
+    if (err instanceof MapUnavailableError) throw err;
+    throw new MapUnavailableError(`${LAYERS_URL} unreachable`);
   }
 }
 

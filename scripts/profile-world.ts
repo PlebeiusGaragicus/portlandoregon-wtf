@@ -22,6 +22,7 @@ import { gunzipSync } from "node:zlib";
 import {
   decodeBuildings,
   decodeHeightfield,
+  decodeLayers,
   decodeProps,
   findTile,
   storeBytes,
@@ -79,6 +80,10 @@ t = performance.now();
 const props = decodeProps(gunzipSync(readFileSync(join(MAP_DIR, "props.bin.gz"))));
 step("decode props.bin.gz", t);
 
+t = performance.now();
+const layers = decodeLayers(gunzipSync(readFileSync(join(MAP_DIR, "layers.bin.gz"))));
+step("decode layers.bin.gz", t);
+
 let hf: Heightfield | null = null;
 t = performance.now();
 try {
@@ -95,7 +100,7 @@ step("city model", t);
 // What the client now does at boot: everything EXCEPT building geometry,
 // which the renderer streams around the camera.
 t = performance.now();
-const world = buildWorld(map, buildings, hf, city, false);
+const world = buildWorld(map, buildings, layers, hf, city, false);
 step("buildWorld (streamed)", t);
 
 // One 5x5 window, the state the first frame actually renders.

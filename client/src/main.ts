@@ -3,10 +3,10 @@
 // standalone on GitHub Pages. (Units and the multiplayer join flow return in a
 // later phase; net.ts and the server's join path are kept for that.)
 import * as THREE from "three";
-import type { BuildingStore, Heightfield, PropStore } from "@battle-juice/shared";
+import type { BuildingStore, Heightfield, LayerStores, PropStore } from "@battle-juice/shared";
 import { BootLog, CRASH_LIMIT, fmtBytes, probeDevice } from "./bootlog.js";
 import { buildCityModel } from "./city.js";
-import { loadBuildings, loadHeightfield, loadMap, loadProps, MapUnavailableError } from "./mapdata.js";
+import { loadBuildings, loadHeightfield, loadLayers, loadMap, loadProps, MapUnavailableError } from "./mapdata.js";
 import { Renderer } from "./render/index.js";
 import { buildLandmarks } from "./render/landmarks.js";
 import { buildProps } from "./render/props.js";
@@ -79,6 +79,7 @@ async function boot(): Promise<void> {
   const heightPromise: Promise<Heightfield | null> = loadHeightfield();
   const buildingPromise: Promise<BuildingStore> = loadBuildings();
   const propPromise: Promise<PropStore> = loadProps();
+  const layerPromise: Promise<LayerStores> = loadLayers();
   const map = await loadMap((received, total) => {
     // One line per ~4 MB: enough to see the transfer move, not so much that
     // the log becomes a progress bar made of text.
@@ -87,7 +88,7 @@ async function boot(): Promise<void> {
     const pct = total ? ` (${((received / total) * 100).toFixed(0)}%)` : "";
     log.line(`  ${fmtBytes(received)}${total ? ` / ${fmtBytes(total)}` : ""}${pct}`);
   });
-  done(`${map.edges.length} street edges, ${(map.sidewalks ?? []).length} sidewalks`);
+  done(`${map.edges.length} street edges, ${map.nodes.length} nodes`);
 
   done = log.step("decode buildings.bin.gz");
   const buildings = await buildingPromise;
@@ -97,6 +98,10 @@ async function boot(): Promise<void> {
   const props = await propPromise;
   done(`${props.count} props`);
 
+  done = log.step("decode layers.bin.gz");
+  const layers = await layerPromise;
+  done(`${layers.sidewalks.count} sidewalks, ${layers.markingLines.count} lane lines`);
+
   done = log.step("decode heightmap");
   const hf = await heightPromise;
   done(hf ? `${hf.cols}x${hf.rows} cells` : "absent — flat ground");
@@ -104,8 +109,8 @@ async function boot(): Promise<void> {
   // What we actually got, and what it is going to cost.
   log.line(
     `map: ${buildings.count} buildings · ${map.edges.length} edges · ` +
-      `${props.count} props · ${(map.sidewalks ?? []).length} sidewalks · ` +
-      `${(map.markingLines ?? []).length} lane lines`,
+      `${props.count} props · ${layers.sidewalks.count} sidewalks · ` +
+      `${layers.markingLines.count} lane lines`,
   );
   const est = estimatePeakBytes(buildings);
   log.line(
@@ -124,7 +129,7 @@ async function boot(): Promise<void> {
   // false: do NOT build every building up front. The renderer streams tiles
   // around the camera — the whole city at once is 30.6M vertices and ~1.1 GB,
   // which is what made a cold load take 12 s and a phone give up entirely.
-  const steps = buildWorldSteps(map, buildings, hf, city, false);
+  const steps = buildWorldSteps(map, buildings, layers, hf, city, false);
   let next = steps.next();
   while (!next.done) {
     // The generator yields the label of the step it is about to run, so the
@@ -147,7 +152,7 @@ async function boot(): Promise<void> {
   await paint();
 
   done = log.step("starting renderer");
-  const renderer = new Renderer(canvas, map, buildings, props, { prebuilt: { world, props: propLayers, landmarks }, heightfield: hf, city });
+  const renderer = new Renderer(canvas, map, buildings, props, layers, { prebuilt: { world, props: propLayers, landmarks }, heightfield: hf, city });
   done();
 
   log.line(`ready — total ${((performance.now() - bootStart) / 1000).toFixed(2)}s`, "ok");

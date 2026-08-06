@@ -12,8 +12,13 @@
 // future change that re-introduces a per-layer hover, or lets a decal write
 // depth, silently brings the bug back — hence this test.
 import * as THREE from "three";
-import type { GameMap, Heightfield } from "@battle-juice/shared";
-import { heightAt, storeFromBuildings } from "@battle-juice/shared";
+import {
+  heightAt,
+  layersFromMap,
+  storeFromBuildings,
+  type GameMap,
+  type Heightfield,
+} from "@battle-juice/shared";
 import { buildWorld } from "../client/src/render/world.js";
 
 let failed = 0;
@@ -44,7 +49,7 @@ const map = {
   sidewalks: [{ id: 1, rings: [ring(20, 115, 60)] }],
 } as unknown as GameMap;
 
-const world = buildWorld(map, storeFromBuildings(map.buildings), hf);
+const world = buildWorld(map, storeFromBuildings(map.buildings), layersFromMap(map), hf);
 
 interface Layer {
   order: number;

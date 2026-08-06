@@ -6,6 +6,19 @@ const SNAP = Math.PI / 4; // 8 rotation snap angles
 const TWEEN_RATE = 12; // theta easing, higher = snappier
 const TILT_SPEED = 1.2; // rad/s while R/F held
 
+// Direct-manipulation rates, shared by touch gestures and mouse orbit.
+const TILT_PER_PX = 0.005; // drag up = lower elevation angle = more oblique
+const YAW_PER_PX = 0.006;
+
+// Two-finger gesture arbitration. Totals accumulate from the moment the
+// second finger lands; the first threshold crossed decides the gesture.
+const TILT_TRIGGER_PX = 22; // parallel vertical travel of the midpoint
+const SPREAD_TRIGGER_PX = 22; // change in finger separation
+const TWIST_TRIGGER_RAD = 0.14; // change in finger-pair angle
+
+const TAP_SLOP_PX = 12;
+const LONG_PRESS_MS = 450;
+
 /** What the renderer exposes to input handling. */
 export interface ControlDelegate {
   /** Tactical selection/dispatch is inhibited when zoomed to strategic view. */
@@ -18,18 +31,50 @@ export interface ControlDelegate {
   zoomAt(clientX: number, clientY: number, factor: number): void;
 }
 
+/** Finger-pair pose: separation, pair angle, and midpoint. */
+interface Pose {
+  dist: number;
+  ang: number;
+  mx: number;
+  my: number;
+}
+
+interface Gesture {
+  /** Pose when the second finger landed — the baseline for arbitration. */
+  start: Pose;
+  /** Pose at the previous move — the baseline for the increment we apply. */
+  last: Pose;
+  mode: "undecided" | "tilt" | "zoomrotate";
+}
+
 /**
- * Traditional map scheme: left click selects (off-click deselects), left drag
- * marquee-selects, right click dispatches, middle drag pans, WASD pans, Q/E
- * rotates (snapped), R/F tilts, N faces north, wheel zooms toward the cursor.
- * In strategic view (far zoom) left drag pans instead and selection is off.
+ * Two input schemes over one camera rig.
+ *
+ * Mouse/trackpad (RTS/CAD-flavoured): left click selects (off-click
+ * deselects), left drag marquee-selects, right click dispatches, middle drag
+ * pans, middle+shift or alt+left drag orbits (horizontal yaws, vertical
+ * tilts), WASD pans, Q/E snap-rotate, R/F tilt, N faces north, wheel zooms
+ * toward the cursor. In strategic view (far zoom) left drag pans instead and
+ * selection is off.
+ *
+ * Touch (Google Maps-flavoured): one finger drags the map, one tap selects, a
+ * long press dispatches; two fingers pinch to zoom and twist to rotate about
+ * the gesture midpoint, while a two-finger parallel drag up/down tilts.
  */
 export class Controls {
   /** False while FPV mode owns the input (all handlers become inert). */
   active = true;
   private thetaGoal = 0;
   private keys = new Set<string>();
-  private pointer: { x: number; y: number; button: number; mode: "idle" | "maybe" | "pan" | "marquee" } | null = null;
+  private pointer: {
+    x: number;
+    y: number;
+    button: number;
+    mode: "idle" | "maybe" | "pan" | "marquee" | "orbit";
+  } | null = null;
+  private touches = new Map<number, { x: number; y: number }>();
+  private tap: { x: number; y: number; moved: boolean; timer: number } | null = null;
+  private gesture: Gesture | null = null;
   private marqueeEl: HTMLDivElement;
   private disposers: (() => void)[] = [];
 
@@ -47,10 +92,15 @@ export class Controls {
     this.listen(canvas, "contextmenu", (e: MouseEvent) => e.preventDefault());
     this.listen(canvas, "pointerdown", (e: PointerEvent) => {
       if (!this.active) return;
+      if (e.pointerType === "touch") {
+        canvas.setPointerCapture(e.pointerId);
+        this.touchDown(e);
+        return;
+      }
       if (e.button === 1) {
-        this.pointer = { x: e.clientX, y: e.clientY, button: 1, mode: "pan" };
+        this.pointer = { x: e.clientX, y: e.clientY, button: 1, mode: e.shiftKey ? "orbit" : "pan" };
       } else if (e.button === 0) {
-        this.pointer = { x: e.clientX, y: e.clientY, button: 0, mode: "maybe" };
+        this.pointer = { x: e.clientX, y: e.clientY, button: 0, mode: e.altKey ? "orbit" : "maybe" };
       } else {
         return;
       }
@@ -58,6 +108,10 @@ export class Controls {
     });
     this.listen(canvas, "pointermove", (e: PointerEvent) => {
       if (!this.active) return;
+      if (e.pointerType === "touch") {
+        this.touchMove(e);
+        return;
+      }
       const p = this.pointer;
       if (!p) return;
       if (p.mode === "maybe") {
@@ -68,12 +122,19 @@ export class Controls {
       if (p.mode === "pan") {
         this.rig.panScreen(e.movementX, e.movementY, this.canvas.clientHeight);
         this.rig.clampToMap(this.map);
+      } else if (p.mode === "orbit") {
+        this.rotateBy(e.movementX * YAW_PER_PX);
+        this.rig.tiltBy(e.movementY * TILT_PER_PX);
       } else if (p.mode === "marquee") {
         this.drawMarquee(p.x, p.y, e.clientX, e.clientY);
       }
     });
     this.listen(canvas, "pointerup", (e: PointerEvent) => {
       if (!this.active) return;
+      if (e.pointerType === "touch") {
+        this.touchUp(e);
+        return;
+      }
       const p = this.pointer;
       this.pointer = null;
       this.marqueeEl.style.display = "none";
@@ -85,25 +146,32 @@ export class Controls {
         this.delegate.marqueeSelect(p.x, p.y, e.clientX, e.clientY);
       }
     });
-    this.listen(canvas, "pointercancel", () => {
+    this.listen(canvas, "pointercancel", (e: PointerEvent) => {
+      if (e.pointerType === "touch") {
+        this.touchUp(e);
+        return;
+      }
       this.pointer = null;
       this.marqueeEl.style.display = "none";
     });
     // Right click never drags: dispatch on the raw event.
     this.listen(canvas, "pointerdown", (e: PointerEvent) => {
+      if (e.pointerType === "touch") return;
       if (e.button === 2 && this.active && !this.delegate.isStrategic()) this.delegate.dispatchAt(e.clientX, e.clientY);
     });
     this.listen(canvas, "wheel", (e: WheelEvent) => {
-      e.preventDefault();
+      e.preventDefault(); // also suppresses trackpad pinch-to-page-zoom
       if (!this.active) return;
-      this.delegate.zoomAt(e.clientX, e.clientY, Math.pow(1.1, e.deltaY / 100));
+      // Trackpad pinch arrives as ctrl+wheel with much smaller deltas.
+      const scale = e.ctrlKey ? 0.35 : 1;
+      this.delegate.zoomAt(e.clientX, e.clientY, Math.pow(1.1, (e.deltaY * scale) / 100));
     });
     this.listen(window, "keydown", (e: KeyboardEvent) => {
       if (!this.active) return;
       const k = e.key.toLowerCase();
       if (e.repeat) return;
-      if (k === "q") this.thetaGoal -= SNAP;
-      else if (k === "e") this.thetaGoal += SNAP;
+      if (k === "q") this.snapRotate(1);
+      else if (k === "e") this.snapRotate(-1);
       else if (k === "n") this.faceNorth();
       else if (k === "escape") this.delegate.deselect();
       else this.keys.add(k);
@@ -143,7 +211,156 @@ export class Controls {
   dispose(): void {
     for (const d of this.disposers) d();
     this.disposers = [];
+    this.cancelLongPress();
     this.marqueeEl.remove();
+  }
+
+  /**
+   * Step to the next snap angle, re-aligning to the 45-degree grid so a free
+   * drag-rotate followed by Q/E still lands on a clean bearing. dir +1 swings
+   * the camera left, which reads as the map turning clockwise.
+   */
+  private snapRotate(dir: number): void {
+    this.thetaGoal = (Math.round(this.thetaGoal / SNAP) + dir) * SNAP;
+  }
+
+  /** Free rotation (drag/twist): move theta now and drop any pending tween. */
+  private rotateBy(delta: number): void {
+    this.rig.theta += delta;
+    this.thetaGoal = this.rig.theta;
+  }
+
+  // ---- touch ----------------------------------------------------------
+
+  private touchDown(e: PointerEvent): void {
+    this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (this.touches.size === 1) {
+      this.tap = { x: e.clientX, y: e.clientY, moved: false, timer: 0 };
+      if (!this.delegate.isStrategic()) {
+        this.tap.timer = window.setTimeout(() => {
+          const t = this.tap;
+          if (!t || t.moved || this.touches.size !== 1) return;
+          this.tap = null;
+          this.delegate.dispatchAt(t.x, t.y);
+        }, LONG_PRESS_MS);
+      }
+    } else if (this.touches.size === 2) {
+      this.cancelLongPress();
+      this.beginGesture();
+    } else {
+      this.gesture = null; // three or more fingers: ignore until we're back to two
+    }
+  }
+
+  private touchMove(e: PointerEvent): void {
+    const prev = this.touches.get(e.pointerId);
+    if (!prev) return;
+    const dx = e.clientX - prev.x;
+    const dy = e.clientY - prev.y;
+    prev.x = e.clientX;
+    prev.y = e.clientY;
+
+    if (this.touches.size === 1) {
+      const t = this.tap;
+      if (t && !t.moved && Math.hypot(e.clientX - t.x, e.clientY - t.y) > TAP_SLOP_PX) {
+        t.moved = true;
+        this.cancelLongPress();
+      }
+      this.rig.panScreen(dx, dy, this.canvas.clientHeight);
+      this.rig.clampToMap(this.map);
+      return;
+    }
+    if (this.touches.size === 2) this.updateGesture();
+  }
+
+  private touchUp(e: PointerEvent): void {
+    const t = this.tap;
+    const lifted = this.touches.delete(e.pointerId);
+    if (!lifted) return;
+    this.gesture = null;
+    if (this.touches.size === 0) {
+      this.cancelLongPress();
+      this.tap = null;
+      if (t && !t.moved && e.type === "pointerup" && !this.delegate.isStrategic()) {
+        this.delegate.selectAt(e.clientX, e.clientY);
+      }
+    } else {
+      // Dropping from two fingers to one: resume panning, but never as a tap.
+      this.tap = null;
+    }
+  }
+
+  private cancelLongPress(): void {
+    if (this.tap?.timer) window.clearTimeout(this.tap.timer);
+    if (this.tap) this.tap.timer = 0;
+  }
+
+  /** Snapshot the finger pair so the next move is measured against it. */
+  private beginGesture(): void {
+    const [a, b] = [...this.touches.values()];
+    if (!a || !b) return;
+    this.gesture = {
+      dist: Math.hypot(b.x - a.x, b.y - a.y),
+      ang: Math.atan2(b.y - a.y, b.x - a.x),
+      mx: (a.x + b.x) / 2,
+      my: (a.y + b.y) / 2,
+      spreadTotal: 0,
+      twistTotal: 0,
+      tiltTotal: 0,
+      mode: "undecided",
+    };
+  }
+
+  private updateGesture(): void {
+    const g = this.gesture;
+    if (!g) {
+      this.beginGesture();
+      return;
+    }
+    const [a, b] = [...this.touches.values()];
+    if (!a || !b) return;
+    const dist = Math.hypot(b.x - a.x, b.y - a.y);
+    const ang = Math.atan2(b.y - a.y, b.x - a.x);
+    const mx = (a.x + b.x) / 2;
+    const my = (a.y + b.y) / 2;
+
+    const dSpread = dist - g.dist;
+    // Wrap the twist into (-pi, pi] so the pair angle can cross the branch cut.
+    let dAng = ang - g.ang;
+    dAng -= 2 * Math.PI * Math.round(dAng / (2 * Math.PI));
+    const dmx = mx - g.mx;
+    const dmy = my - g.my;
+
+    g.dist = dist;
+    g.ang = ang;
+    g.mx = mx;
+    g.my = my;
+    g.spreadTotal += Math.abs(dSpread);
+    g.twistTotal += Math.abs(dAng);
+    g.tiltTotal += dmy;
+
+    if (g.mode === "undecided") {
+      // Tilt wins only if the fingers travelled vertically together without
+      // spreading or twisting; anything else is a pinch/twist.
+      if (Math.abs(g.tiltTotal) > TILT_TRIGGER_PX && g.spreadTotal < SPREAD_TRIGGER_PX && g.twistTotal < TWIST_TRIGGER_RAD) {
+        g.mode = "tilt";
+      } else if (g.spreadTotal > SPREAD_TRIGGER_PX || g.twistTotal > TWIST_TRIGGER_RAD) {
+        g.mode = "zoomrotate";
+      } else {
+        return; // still ambiguous — hold still rather than drift
+      }
+    }
+
+    if (g.mode === "tilt") {
+      this.rig.tiltBy(dmy * TILT_PER_PX);
+      return;
+    }
+    // Zoom about the midpoint, twist the map with the fingers, and let the
+    // midpoint itself drag the map (all three run together, as on a map app).
+    if (dist > 1 && dist - dSpread > 1) this.delegate.zoomAt(mx, my, (dist - dSpread) / dist);
+    this.rotateBy(dAng);
+    this.rig.panScreen(dmx, dmy, this.canvas.clientHeight);
+    this.rig.clampToMap(this.map);
   }
 
   private drawMarquee(x0: number, y0: number, x1: number, y1: number): void {

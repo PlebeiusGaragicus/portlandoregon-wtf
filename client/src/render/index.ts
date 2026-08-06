@@ -6,6 +6,7 @@ import {
   tileKeyAt,
   worldToLatLon,
   type BuildingStore,
+  type LayerStores,
   type PropStore,
   type GameMap,
   type Heightfield,
@@ -136,6 +137,7 @@ export class Renderer {
     map: GameMap,
     private store: BuildingStore,
     private propStore: PropStore,
+    private layers: LayerStores,
     opts: RendererOpts = {},
   ) {
     // Log depth: a perspective frustum spanning tens of km would otherwise
@@ -162,7 +164,7 @@ export class Renderer {
     const hf = this.hf;
     this.ground = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
     this.city = opts.city ?? buildCityModel(store, hf);
-    this.world = opts.prebuilt?.world ?? buildWorld(map, store, hf, this.city);
+    this.world = opts.prebuilt?.world ?? buildWorld(map, store, layers, hf, this.city);
     this.world.group.traverse((o) => {
       if (!(o instanceof THREE.Mesh)) return;
       o.receiveShadow = true;
