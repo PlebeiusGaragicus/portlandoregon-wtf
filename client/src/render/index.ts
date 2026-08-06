@@ -128,6 +128,8 @@ export class Renderer {
   private fadeEl: HTMLDivElement;
   private fpvHintTimer = 0;
   private fpvDisposers: (() => void)[] = [];
+  /** Drag-to-look state, used whenever pointer lock is not in effect. */
+  private fpvDrag: { id: number; x: number; y: number; moved: boolean } | null = null;
 
   private lastFrame = 0;
   private disposed = false;
@@ -338,6 +340,7 @@ export class Renderer {
         this.rig.clampToMap(this.map);
       }
       if (document.pointerLockElement === this.canvas) document.exitPointerLock();
+      this.fpvDrag = null;
       this.controls.active = true;
       this.minimap.el.style.display = "";
       this.hudScale.style.display = "";
@@ -400,7 +403,7 @@ export class Renderer {
     this.minimap.el.style.display = "none";
     this.hudScale.style.display = "none";
     this.lockPointer();
-    this.hint("WASD move · Shift sprint · Space jump · double-Space fly (Space up, C down) · click PUNCH · V exit", 6000);
+    this.hint("WASD move · Shift sprint · Space jump · double-Space fly (Space up, C down) · drag look · click PUNCH · V exit", 6000);
   }
 
   /** Anti-hero mode: a punch cracks (and sometimes torches) what's in front
@@ -507,7 +510,10 @@ export class Renderer {
   }
 
   /** Chrome returns a promise that rejects when lock is unavailable
-   * (headless, iframe policies) — FPV still works, just without capture. */
+   * (headless, unfocused document, iframe policies). Swallowing that is fine
+   * BECAUSE there is a fallback: drag-to-look in wireFpvInput covers every
+   * case where the lock does not engage, including touch, where it does not
+   * exist at all. */
   private lockPointer(): void {
     try {
       const p = this.canvas.requestPointerLock() as unknown;
@@ -558,13 +564,44 @@ export class Renderer {
         this.fpv.look(e.movementX, e.movementY);
       }
     });
-    on(this.canvas, "pointerdown", (e: MouseEvent) => {
+    on(this.canvas, "pointermove", (e: PointerEvent) => {
+      const d = this.fpvDrag;
+      if (!this.fpvOn || !this.fpv || !d || e.pointerId !== d.id) return;
+      // Once the lock engages, movementX/Y take over and the drag would
+      // double-count.
+      if (document.pointerLockElement === this.canvas) return;
+      const dx = e.clientX - d.x;
+      const dy = e.clientY - d.y;
+      d.x = e.clientX;
+      d.y = e.clientY;
+      if (dx || dy) d.moved = true;
+      this.fpv.look(dx, dy);
+    });
+    const endDrag = (e: PointerEvent): void => {
+      const d = this.fpvDrag;
+      if (!d || e.pointerId !== d.id) return;
+      this.fpvDrag = null;
+      // A tap that never moved is a punch — the click-to-punch gesture, for
+      // the path where there is no lock to click into.
+      if (!d.moved && this.fpvOn && document.pointerLockElement !== this.canvas) this.punch();
+    };
+    on(this.canvas, "pointerup", endDrag);
+    on(this.canvas, "pointercancel", endDrag);
+    on(this.canvas, "pointerdown", (e: PointerEvent) => {
       if (this.fpvOn) {
-        if (document.pointerLockElement !== this.canvas) {
-          this.lockPointer();
+        if (document.pointerLockElement === this.canvas) {
+          if (e.button === 0) this.punch();
           return;
         }
-        if (e.button === 0) this.punch();
+        // Not locked: look by dragging instead. Pointer lock is the nicer
+        // input when it is available, but it is not always — the request can
+        // be refused (unfocused document, embedded frames, and it resolves
+        // asynchronously so a refusal is invisible), and on touch it does not
+        // exist at all. Without this, FPV had exactly one way to look around
+        // and no fallback when it failed.
+        this.fpvDrag = { id: e.pointerId, x: e.clientX, y: e.clientY, moved: false };
+        this.canvas.setPointerCapture(e.pointerId);
+        if (e.pointerType !== "touch") this.lockPointer();
         return;
       }
       // Disaster director: shift+click torches the nearest building.
@@ -580,7 +617,7 @@ export class Renderer {
       if (!this.fpvOn) return;
       if (document.pointerLockElement !== this.canvas) {
         this.fpv?.releaseKeys();
-        this.hint("Click to look around · V to exit", 0);
+        this.hint("Drag to look · tap to punch · V to exit", 0);
       } else {
         this.hint("", 0);
       }
