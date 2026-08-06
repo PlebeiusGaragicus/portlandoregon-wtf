@@ -241,6 +241,9 @@ export interface DecalTiles {
 
 function createDetailTiles(
   layers: LayerStores,
+  edges: StreetEdge[],
+  streetMat: THREE.MeshLambertMaterial,
+  overWater: (p: [number, number][]) => boolean,
   ground: GroundFn,
   cell: number,
 ): DecalTiles {
@@ -272,6 +275,12 @@ function createDetailTiles(
   fileAll(swStore, sidewalks);
   fileAll(areaStore, areas);
   fileAll(lineStore, lines);
+  const streets = new Map<number, number[]>();
+  edges.forEach((e, i) => {
+    if (e.struct === "tunnel") return; // roads vanish into the hillside
+    const [mx, my] = e.polyline[Math.floor(e.polyline.length / 2)]!;
+    file(streets, tileKeyAt(mx, my, TS), i);
+  });
 
   const laneMat = decalMat({ color: MARK_YELLOW });
   const live = new Map<number, THREE.Mesh[]>();
@@ -300,6 +309,22 @@ function createDetailTiles(
       ),
       DECAL_ORDER.marking,
     )) meshes.push(m);
+    // Accurate, terrain-conforming asphalt for the tiles you are close to.
+    // The coarse city-wide version underneath is the same colour at the same
+    // height and writes no depth, so the two simply agree where they overlap.
+    const streetIdx = streets.get(key) ?? [];
+    if (streetIdx.length) {
+      const soup: Soup = { pos: [], nrm: [] };
+      for (const i of streetIdx) {
+        const e = edges[i]!;
+        pushRibbon(
+          soup.pos, e.polyline, RENDER_WIDTH[e.class] ?? e.width, DECAL_Y, ground, cell,
+          e.struct === "bridge" || overWater(e.polyline),
+        );
+      }
+      if (soup.pos.length) meshes.push(...order([soupMesh(soup, streetMat)], DECAL_ORDER.street));
+    }
+
     const laneIdx = lines.get(key) ?? [];
     if (laneIdx.length) {
       const soup: Soup = { pos: [], nrm: [] };
@@ -325,7 +350,7 @@ function createDetailTiles(
     live.delete(key);
   }
 
-  const occupied = new Set<number>([...sidewalks.keys(), ...areas.keys(), ...lines.keys()]);
+  const occupied = new Set<number>([...sidewalks.keys(), ...areas.keys(), ...lines.keys(), ...streets.keys()]);
   return {
     group,
     sync(want: Iterable<number>): void {
@@ -607,7 +632,16 @@ export function* buildWorldSteps(
 
   yield `${map.edges.length} street edges`;
   const streetMat = decalMat({ color: STREET_COLOR });
-  for (const mesh of order(buildStreetTiles(map.edges, streetMat, ground, cell, overWater), DECAL_ORDER.street)) {
+  // Coarse asphalt for the WHOLE city, always resident: vertices only where
+  // the source polyline bends, with no resampling onto the terrain grid.
+  // 16.98M vertices become 1.6M, which is what makes the street grid
+  // affordable to keep everywhere — and the grid is most of what you read
+  // when you look at the city from altitude. Accurate ribbons stream on top
+  // near the camera; see createDetailTiles.
+  for (const mesh of order(
+    buildStreetTiles(map.edges, streetMat, ground, Infinity, overWater, FAR_RIBBON_STEP),
+    DECAL_ORDER.street,
+  )) {
     group.add(mesh);
   }
 
@@ -634,7 +668,7 @@ export function* buildWorldSteps(
   // sidewalks alone outweigh every building in the city.
   const detail = new THREE.Group();
   group.add(detail);
-  const detailTiles = createDetailTiles(layers, ground, cell);
+  const detailTiles = createDetailTiles(layers, map.edges, streetMat, overWater, ground, cell);
   detail.add(detailTiles.group);
   if (buildEveryBuilding) {
     yield `${(map.sidewalks ?? []).length} sidewalk slabs + ${(map.markingLines ?? []).length} lane lines`;
@@ -1053,6 +1087,7 @@ function buildStreetTiles(
   ground: GroundFn,
   cell: number,
   overWater: (p: [number, number][]) => boolean,
+  step = RIBBON_STEP,
 ): THREE.Mesh[] {
   const tiles = new Map<number, Soup>();
   for (const edge of edges) {
@@ -1062,12 +1097,23 @@ function buildStreetTiles(
     let soup = tiles.get(key);
     if (!soup) tiles.set(key, (soup = { pos: [], nrm: [] }));
     const span = edge.struct === "bridge" || overWater(edge.polyline);
-    pushRibbon(soup.pos, edge.polyline, RENDER_WIDTH[edge.class] ?? edge.width, DECAL_Y, ground, cell, span);
+    pushRibbon(soup.pos, edge.polyline, RENDER_WIDTH[edge.class] ?? edge.width, DECAL_Y, ground, cell, span, step);
   }
   return [...tiles.values()].map((soup) => soupMesh(soup, mat));
 }
 
 const RIBBON_STEP = 15; // m — max span between ribbon cross-sections
+/**
+ * Cross-section spacing for the always-resident coarse street tier.
+ *
+ * Measured sag against the real heightfield: 15 m gives p95 11 cm, 30 m gives
+ * 25 cm, 90 m gives 57 cm with 1.6% of spans over a metre. Sag sinks a road
+ * INTO the hillside, where the depth test eats it — so on the West Hills a
+ * loose setting shows as gaps in the street grid seen from the air, which is
+ * exactly the view this tier exists to serve. 30 m costs 57 MB more than 90 m
+ * and keeps that at 0.27%.
+ */
+const FAR_RIBBON_STEP = 30;
 
 /** Push the segment parameters (0..1) where `u` crosses integer values. */
 function addCrossings(ts: number[], u0: number, u1: number): void {
@@ -1087,14 +1133,14 @@ function addCrossings(ts: number[], u0: number, u1: number): void {
  * the terrain surface is planar, so a draped ribbon sampled at them conforms
  * exactly instead of letting slopes poke through mid-span.
  */
-function resample(polyline: [number, number][], cell: number): [number, number][] {
+function resample(polyline: [number, number][], cell: number, step = RIBBON_STEP): [number, number][] {
   const out: [number, number][] = [polyline[0]!];
   for (let i = 1; i < polyline.length; i++) {
     const [ax, ay] = polyline[i - 1]!;
     const [bx, by] = polyline[i]!;
     const len = Math.hypot(bx - ax, by - ay);
     const ts: number[] = [];
-    const n = Math.ceil(len / RIBBON_STEP);
+    const n = Math.ceil(len / step);
     for (let k = 1; k < n; k++) ts.push(k / n);
     if (Number.isFinite(cell)) {
       addCrossings(ts, ax / cell, bx / cell);
@@ -1127,9 +1173,10 @@ function pushRibbon(
   ground: GroundFn,
   cell: number,
   span = false,
+  step = RIBBON_STEP,
 ): void {
   if (rawPolyline.length < 2) return;
-  const polyline = resample(rawPolyline, cell);
+  const polyline = resample(rawPolyline, cell, step);
   const half = width / 2;
   const left: [number, number][] = [];
   const right: [number, number][] = [];

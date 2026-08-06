@@ -19,6 +19,11 @@ const TWIST_TRIGGER_RAD = 0.14; // change in finger-pair angle
 const TAP_SLOP_PX = 12;
 const LONG_PRESS_MS = 450;
 
+/** Fold an angle difference into (-pi, pi] so it can cross the branch cut. */
+function wrapPi(a: number): number {
+  return a - 2 * Math.PI * Math.round(a / (2 * Math.PI));
+}
+
 /** What the renderer exposes to input handling. */
 export interface ControlDelegate {
   /** Tactical selection/dispatch is inhibited when zoomed to strategic view. */
@@ -295,20 +300,23 @@ export class Controls {
     if (this.tap) this.tap.timer = 0;
   }
 
-  /** Snapshot the finger pair so the next move is measured against it. */
-  private beginGesture(): void {
+  /** Current pose of the two live fingers, or null if there aren't two. */
+  private pose(): Pose | null {
     const [a, b] = [...this.touches.values()];
-    if (!a || !b) return;
-    this.gesture = {
+    if (!a || !b) return null;
+    return {
       dist: Math.hypot(b.x - a.x, b.y - a.y),
       ang: Math.atan2(b.y - a.y, b.x - a.x),
       mx: (a.x + b.x) / 2,
       my: (a.y + b.y) / 2,
-      spreadTotal: 0,
-      twistTotal: 0,
-      tiltTotal: 0,
-      mode: "undecided",
     };
+  }
+
+  /** Snapshot the finger pair so the next move is measured against it. */
+  private beginGesture(): void {
+    const p = this.pose();
+    if (!p) return;
+    this.gesture = { start: p, last: { ...p }, mode: "undecided" };
   }
 
   private updateGesture(): void {
@@ -317,39 +325,35 @@ export class Controls {
       this.beginGesture();
       return;
     }
-    const [a, b] = [...this.touches.values()];
-    if (!a || !b) return;
-    const dist = Math.hypot(b.x - a.x, b.y - a.y);
-    const ang = Math.atan2(b.y - a.y, b.x - a.x);
-    const mx = (a.x + b.x) / 2;
-    const my = (a.y + b.y) / 2;
-
-    const dSpread = dist - g.dist;
-    // Wrap the twist into (-pi, pi] so the pair angle can cross the branch cut.
-    let dAng = ang - g.ang;
-    dAng -= 2 * Math.PI * Math.round(dAng / (2 * Math.PI));
-    const dmx = mx - g.mx;
-    const dmy = my - g.my;
-
-    g.dist = dist;
-    g.ang = ang;
-    g.mx = mx;
-    g.my = my;
-    g.spreadTotal += Math.abs(dSpread);
-    g.twistTotal += Math.abs(dAng);
-    g.tiltTotal += dmy;
+    const cur = this.pose();
+    if (!cur) return;
 
     if (g.mode === "undecided") {
-      // Tilt wins only if the fingers travelled vertically together without
-      // spreading or twisting; anything else is a pinch/twist.
-      if (Math.abs(g.tiltTotal) > TILT_TRIGGER_PX && g.spreadTotal < SPREAD_TRIGGER_PX && g.twistTotal < TWIST_TRIGGER_RAD) {
+      // Arbitrate on displacement since the gesture began, never on a sum of
+      // per-event deltas: touch moves arrive one finger at a time, so a pure
+      // tilt drag momentarily spreads and twists the pair on every other
+      // event. Summing that noise would let pinch win every time.
+      const spread = Math.abs(cur.dist - g.start.dist);
+      const twist = Math.abs(wrapPi(cur.ang - g.start.ang));
+      const mdx = cur.mx - g.start.mx;
+      const mdy = cur.my - g.start.my;
+      if (Math.abs(mdy) > TILT_TRIGGER_PX && Math.abs(mdy) > 2 * Math.abs(mdx) && spread < SPREAD_TRIGGER_PX && twist < TWIST_TRIGGER_RAD) {
         g.mode = "tilt";
-      } else if (g.spreadTotal > SPREAD_TRIGGER_PX || g.twistTotal > TWIST_TRIGGER_RAD) {
+      } else if (spread > SPREAD_TRIGGER_PX || twist > TWIST_TRIGGER_RAD || Math.hypot(mdx, mdy) > TILT_TRIGGER_PX) {
         g.mode = "zoomrotate";
       } else {
         return; // still ambiguous — hold still rather than drift
       }
+      // Recognition costs a threshold's worth of travel. Replay it from the
+      // gesture's start so the whole drag ends up tracking the fingers 1:1.
+      g.last = g.start;
     }
+
+    const dSpread = cur.dist - g.last.dist;
+    const dAng = wrapPi(cur.ang - g.last.ang);
+    const dmx = cur.mx - g.last.mx;
+    const dmy = cur.my - g.last.my;
+    g.last = cur;
 
     if (g.mode === "tilt") {
       this.rig.tiltBy(dmy * TILT_PER_PX);
@@ -357,7 +361,7 @@ export class Controls {
     }
     // Zoom about the midpoint, twist the map with the fingers, and let the
     // midpoint itself drag the map (all three run together, as on a map app).
-    if (dist > 1 && dist - dSpread > 1) this.delegate.zoomAt(mx, my, (dist - dSpread) / dist);
+    if (cur.dist > 1 && cur.dist - dSpread > 1) this.delegate.zoomAt(cur.mx, cur.my, (cur.dist - dSpread) / cur.dist);
     this.rotateBy(dAng);
     this.rig.panScreen(dmx, dmy, this.canvas.clientHeight);
     this.rig.clampToMap(this.map);
