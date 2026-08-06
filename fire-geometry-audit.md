@@ -149,11 +149,22 @@ scars — and only the third has no other home.
 
 Recommended order, unchanged from before but now with specifics:
 
-1. Move `baseZ` and the existence test off `BuildingShells` **now**, as a
-   standalone change against today's code. Small, independently verifiable, and
-   it closes the fireproof-building trap before it can exist.
-2. Add the scar record (ignition point + final burn time) to the sim's state,
-   and make `applyChar` a function of it. Also standalone: today it changes
-   nothing observable, because nothing evicts a mesh yet.
+1. ~~Move `baseZ` and the existence test off `BuildingShells`~~ — **done**,
+   `client/src/city.ts`. Verified against the full Portland extract with zero
+   mismatches; `scripts/test-city.ts` guards the formula.
+2. ~~Add the scar record and make `applyChar` a function of it~~ — **done**,
+   `client/src/scars.ts`, exposed as `FireSim.restoreAppearance(bi)`.
+
+   Landed differently from the sketch above. Storing the ignition point and
+   final burn time would have meant re-deriving cell positions *and* replaying
+   the burn clock, and it silently dropped per-cell hose work. Storing the
+   cells themselves — positions fixed at ignition, one byte of monotonic char
+   each — is smaller in code, exact including dousing and stoking, and reduces
+   blasts to the same shape. ~170 bytes per damaged building.
+
+   It also fixed a live bug: because `charLocal` rebuilds pristine colours on
+   every call, painting a new fire's sources erased an older fire's scars, and
+   a blast wiped the soot off a previously-burnt building. Damage now
+   accumulates.
 3. Then freeze the binary format, with `baseZ`, `valid`, `cx`/`cy`, the CSR
    grid and the scar table designed in from the start.

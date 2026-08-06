@@ -4,6 +4,7 @@ import { toScene } from "./camera.js";
 import { radialGlowTexture } from "./props.js";
 import type { PropLayers } from "./props.js";
 import type { CityModel } from "../city.js";
+import { ScarField } from "../scars.js";
 import type { BuildingShells } from "./world.js";
 import { CYCLES_PER_DAY } from "./daynight.js";
 
@@ -397,6 +398,9 @@ export class FireSim {
   private treeColor = new THREE.Color();
   /** Everything that has pancaked — FPV consumes this to open collision. */
   readonly collapsed: number[] = [];
+  /** Every burn and blast this city has taken, by building. Outlives the
+   * meshes it is painted onto — see restoreAppearance. */
+  readonly scars = new ScarField();
   /** Emission clocks for the merged neighborhood sky plumes. */
   private plumeClocks = new Map<number, number>();
   /** Hose crews by apparatus unit id; one crew works ONE building. */
@@ -626,6 +630,7 @@ export class FireSim {
     const ox = ix ?? this.cx[bi]! + (Math.random() - 0.5) * 6;
     const oy = iy ?? this.cy[bi]! + (Math.random() - 0.5) * 6;
     const { cells, cellR } = this.makeCells(bi, dur, ox, oy);
+    this.scars.beginBurn(bi, cells, cellR);
     const burn: Burn = {
       bi,
       t: 0,
@@ -731,12 +736,10 @@ export class FireSim {
     }
     this.hp.set(bi, hp);
     const scar = 1 - hp / this.maxHp(bi);
-    if (this.status[bi] === 0) {
-      const ix = px ?? this.cx[bi]!;
-      const iy = py ?? this.cy[bi]!;
-      // Blast/punch scarring stays where it landed.
-      this.shells.charLocal(bi, [{ x: ix, y: iy, f: Math.min(0.8, 0.25 + scar * 0.7), r: 7 + dmg * 1.5 }]);
-    }
+    // Blast/punch scarring stays where it landed — and now persists there,
+    // rather than being erased by the next fire that repaints the building.
+    this.scars.addBlast(bi, px ?? this.cx[bi]!, py ?? this.cy[bi]!, Math.min(0.8, 0.25 + scar * 0.7), 7 + dmg * 1.5);
+    this.restoreAppearance(bi);
     if (Math.random() < igniteChance) this.igniteBuilding(bi, px, py);
   }
 
@@ -904,18 +907,40 @@ export class FireSim {
       return;
     }
     this.status[burn.bi] = 2;
-    this.shells.char(burn.bi, 1);
+    this.scars.setWhole(burn.bi);
+    this.restoreAppearance(burn.bi);
     // Unextinguished shells smoke for about a game day.
     this.addSmolder(burn.x, burn.y, burn.z + 1, 18 + Math.random() * 12, 0.32, 3);
   }
 
-  /** Push current per-cell burn damage into the building's vertex colors. */
+  /** Fold the live burn's damage into the scar record, then repaint from the
+   * record — so what is on screen is always a function of stored state, never
+   * of what happened to be painted there before. */
   private applyChar(burn: Burn): void {
-    const srcs: { x: number; y: number; f: number; r: number }[] = [];
-    for (const c of burn.cells) {
-      if (c.char > 0.02) srcs.push({ x: c.x, y: c.y, f: c.char, r: burn.cellR });
+    this.scars.recordBurn(burn.bi, burn.cells);
+    this.restoreAppearance(burn.bi);
+  }
+
+  /**
+   * Repaint a building from its scar record alone.
+   *
+   * The seam tile streaming needs: a mesh rebuilt from scratch calls this and
+   * comes back exactly as burned, blasted or collapsed as the one it
+   * replaced, without knowing anything about the old mesh. Today it is simply
+   * how damage gets drawn.
+   */
+  restoreAppearance(bi: number): void {
+    if (this.status[bi] === 3) {
+      this.shells.collapse(bi);
+      return;
     }
-    if (srcs.length) this.shells.charLocal(burn.bi, srcs);
+    if (!this.scars.has(bi)) return;
+    if (this.scars.isWhole(bi)) {
+      this.shells.char(bi, 1);
+      return;
+    }
+    const srcs = this.scars.sources(bi);
+    if (srcs.length) this.shells.charLocal(bi, srcs);
   }
 
   private igniteTree(ti: number): void {
