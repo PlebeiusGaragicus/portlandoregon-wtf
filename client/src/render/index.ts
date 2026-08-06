@@ -17,6 +17,7 @@ import { Actors } from "./actors.js";
 import { CameraRig, toScene, toWorldXY } from "./camera.js";
 import { Controls, type ControlDelegate } from "./controls.js";
 import { DayNight } from "./daynight.js";
+import { HANDHELD as DEVICE_HANDHELD } from "../device.js";
 import { FireSim } from "./fire.js";
 import { buildCityModel, type CityModel } from "../city.js";
 import { FpvMode } from "./fpv.js";
@@ -84,6 +85,7 @@ const SHADOW_MAX_VIEW = 8000;
  */
 const PRISM_NEAR_VIEW = 1200; // below: 5x5 km of full prisms
 const PRISM_FAR_VIEW = 3000; // below: 3x3. above: boxes alone read fine
+const HANDHELD = DEVICE_HANDHELD;
 /**
  * How much city to keep built, and how fast to build it.
  *
@@ -100,18 +102,6 @@ const PRISM_FAR_VIEW = 3000; // below: 3x3. above: boxes alone read fine
  * blocks for seconds on a phone, so it arrives over a second or two instead,
  * nearest first.
  */
-const navCaps =
-  (typeof navigator === "undefined" ? { maxTouchPoints: 0, hardwareConcurrency: 8 } : navigator) as
-    Navigator & { deviceMemory?: number };
-const HANDHELD =
-  (typeof screen === "undefined" ? Infinity : Math.min(screen.width, screen.height)) < 900 &&
-  navCaps.maxTouchPoints > 0 &&
-  (
-    (typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches) ||
-    (navCaps.deviceMemory !== undefined && navCaps.deviceMemory <= 6) ||
-    navCaps.hardwareConcurrency <= 6
-  );
-
 const DETAIL = HANDHELD
   ? {
       prism: 1,
@@ -1343,7 +1333,8 @@ export class Renderer {
     const vh = this.rig.viewHeight;
     this.world.setBlend((vh - BLEND_START) / (BLEND_END - BLEND_START));
     this.syncImpostor(vh, now);
-    this.world.setViewHeight(vh, DETAIL.farTextureView);
+    // The ground map takes over exactly where the dressing window gives up.
+    this.world.setViewHeight(vh, DETAIL.farTextureView, DETAIL.propsView);
     this.props.group.visible = vh < DETAIL.propsView;
     this.props.near.visible = vh < DETAIL.nearPropsView;
     this.world.detail.visible = vh < DETAIL.propsView;

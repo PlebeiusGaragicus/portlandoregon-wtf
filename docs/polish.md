@@ -47,6 +47,16 @@ roughly ordered by visible payoff. Deployment/gameplay backlogs live in
   headers; tanks bombard; FPV punch (Hulk mode); dispatch integration both
   ways. Future: bullet holes/scars as decals, debris piles, water arcs from
   engines, fire audio (crackle).
+- **Wide-zoom city restored** (2026-08-06): the box far tier stays visible at
+  every zoom, and past ~11 km a runtime-baked overhead photograph of those
+  boxes takes over (rebaked as the light and the damage change). Water,
+  parks, rail yards and the full street grid past the dressing window come
+  from a baked ground map (`client/src/render/groundmap.ts`): the real
+  vector layers stroked into one full-map texture at 2x and downscaled
+  (4096 wide desktop / 2048 handheld), draped on the heightfield, lit by
+  the day/night lights. `texSize` is the knob if wide zoom should resolve
+  finer street detail. Remaining gap: in the band just below the dressing
+  gate (~1.4–3 km), streets still end at the dressing window's edge.
 - **Fire realism v2** (2026-08-05): fire is a localized actor — per-building
   fire CELLS creep from the ignition point, flames render on the walls/roof
   where it's burning; per-vertex localized char (extinguished buildings keep

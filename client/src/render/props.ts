@@ -262,6 +262,10 @@ export function buildProps(map: GameMap, store: PropStore, hf?: Heightfield | nu
       }
       mesh.computeBoundingSphere();
       mesh.visible = false; // setNight turns it on
+      // Additive light paints last, after every ground decal — including the
+      // baked ground map, which would otherwise stroke its streets over the
+      // pools and put the night city out again.
+      mesh.renderOrder = 20;
       pools.push(mesh);
       glow.add(mesh);
     }

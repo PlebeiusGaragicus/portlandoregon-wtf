@@ -25,6 +25,8 @@ import {
   type WaterBody,
 } from "@battle-juice/shared";
 import { buildCityModel, type CityModel } from "../city.js";
+import { HANDHELD } from "../device.js";
+import { buildGroundMap } from "./groundmap.js";
 import { streetsFrom, type StreetAccess } from "../streets.js";
 import { geometryBytes } from "./bytes.js";
 import { TileScheduler, type TileTicket } from "./tile-scheduler.js";
@@ -229,14 +231,20 @@ export interface WorldLayers {
   /** Zoom-driven cosmetics (street tint brightens from altitude). */
   setBlend(f: number): void;
   /**
-   * Switch between the box far tier and the flat far texture.
+   * Switch the zoom tiers.
    *
-   * The texture tier engages only above `textureAbove` AND once a runtime
-   * bake has been installed via {@link WorldLayers.setFarTexture} — until
-   * then the boxes stay on at every zoom, because the shipped city-lod
-   * texture is a density underlay, not a substitute for the city.
+   * Above `textureAbove` the box far tier gives way to the flat far texture
+   * — but only once a runtime bake has been installed via
+   * {@link WorldLayers.setFarTexture}; until then the boxes stay on at every
+   * zoom, because the shipped city-lod texture is a density underlay, not a
+   * substitute for the city.
+   *
+   * Above `groundAbove` the baked ground map (water, parks, streets for the
+   * whole map) fades in — it exists to carry exactly what the streamed
+   * dressing window stops providing there, so callers pass the same gate
+   * that hides the dressing.
    */
-  setViewHeight(height: number, textureAbove?: number): void;
+  setViewHeight(height: number, textureAbove?: number, groundAbove?: number): void;
   /** Install the runtime-baked overhead city photograph on the far drape. */
   setFarTexture(texture: THREE.Texture): void;
   /** Keep a bounded high-resolution terrain window around the camera. */
@@ -1196,6 +1204,33 @@ export function beginWorld(
    * density texture — see setViewHeight. */
   let farTextureReady = false;
 
+  // The whole map's flat features as one baked texture, for every view the
+  // dressing window does not reach. Null in headless tools (no canvas).
+  const groundMap = buildGroundMap({
+    width: map.meta.width,
+    height: map.meta.height,
+    hf: hf ?? null,
+    texSize: HANDHELD ? 2048 : 4096,
+    colors: {
+      water: WATER_COLOR,
+      park: PARK_COLOR,
+      yard: YARD_COLOR,
+      // The altitude street tint (streetFar below): the ground map only
+      // shows from altitude, where the ribbons would have blended to this.
+      street: 0x5a6478,
+    },
+    water: waterRings,
+    parks: featurePolys(layers.parks),
+    yards: featurePolys(layers.railYards),
+    streets,
+    streetWidth: (i) => {
+      const edge = streets.edge(i);
+      return RENDER_WIDTH[edge.class] ?? edge.width;
+    },
+    skipEdge: (i) => streets.edge(i).struct === "tunnel",
+  });
+  if (groundMap) groundMap.mesh.visible = false;
+
   // Street-level dressing, in its own zoom-gated group — streamed, because
   // sidewalks alone outweigh every building in the city.
   const detail = new THREE.Group();
@@ -1224,10 +1259,11 @@ export function beginWorld(
       const t = Math.min(1, Math.max(0, f));
       streetMat.color.lerpColors(streetNear, streetFar, t);
     },
-    setViewHeight(height: number, textureAbove = Infinity): void {
+    setViewHeight(height: number, textureAbove = Infinity, groundAbove = Infinity): void {
       const textureTier = Boolean(lod2) && farTextureReady && height >= textureAbove;
       tiles.far.visible = !textureTier;
       if (lod2) lod2.visible = textureTier;
+      if (groundMap) groundMap.mesh.visible = height >= groundAbove;
     },
     setFarTexture(texture: THREE.Texture): void {
       if (!lod2) return;
@@ -1247,6 +1283,7 @@ export function beginWorld(
       tiles.dispose();
       detailTiles.dispose();
       terrain?.dispose();
+      groundMap?.dispose();
       if (lod2) {
         lod2.removeFromParent();
         lod2.geometry.dispose();
@@ -1301,6 +1338,14 @@ export function beginWorld(
     // half of what the opening view is made of.
     for (const _ of tiles.fillFar()) yield "buildings";
 
+    // Third: the flat features for everywhere the dressing window is not.
+    // (setViewHeight owns its visibility; the texture is transparent until
+    // the fill finishes, so placing it early shows nothing.)
+    if (groundMap) {
+      place(groundMap.mesh, DECAL_ORDER.street);
+      for (const _ of groundMap.fill()) yield "ground map";
+    }
+
     // Ribbon legs that cross water are bridges: their deck spans between the
     // bank heights instead of sagging onto the riverbed. (Land overpasses
     // still drape — the ZLEV rule is phase 2.)
@@ -1308,9 +1353,10 @@ export function beginWorld(
     const water = overWater;
     yield "water mask";
 
-    // Streets, trails and rail ribbons now share the camera-window cache in
+    // Streets, trails and rail ribbons share the camera-window cache in
     // createDetailTiles. Keeping a second city-wide coarse copy consumed GPU
-    // memory and still submitted off-screen tiles; wide zoom uses LOD2.
+    // memory and still submitted off-screen tiles; past the window, the
+    // baked ground map carries the streets instead.
     const stops = buildRailStops(map.railStops ?? [], ground);
     if (stops) place(stops, DECAL_ORDER.railStop);
     yield "rails";
