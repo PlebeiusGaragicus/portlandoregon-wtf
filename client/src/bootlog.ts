@@ -129,6 +129,23 @@ export class BootLog {
  * printed before we touch the network. On a phone this is the only way to
  * learn what we are actually running on.
  */
+/**
+ * Can anything render at all?
+ *
+ * iOS Lockdown Mode switches WebGL off entirely, and a browser with no WebGL
+ * cannot show this game in any form — no amount of streaming or memory work
+ * changes that. Worth knowing BEFORE downloading a map and spending half a
+ * minute building a city that will never reach a screen.
+ */
+export function webglAvailable(): boolean {
+  try {
+    const cv = document.createElement("canvas");
+    return (cv.getContext("webgl2") ?? cv.getContext("webgl")) !== null;
+  } catch {
+    return false;
+  }
+}
+
 export function probeDevice(log: BootLog): void {
   const nav = navigator as Navigator & { deviceMemory?: number };
   log.line(`ua: ${navigator.userAgent}`);

@@ -4,7 +4,7 @@
 // later phase; net.ts and the server's join path are kept for that.)
 import * as THREE from "three";
 import type { BuildingStore, Heightfield, LayerStores, PropStore } from "@battle-juice/shared";
-import { BootLog, CRASH_LIMIT, fmtBytes, probeDevice } from "./bootlog.js";
+import { BootLog, CRASH_LIMIT, fmtBytes, probeDevice, webglAvailable } from "./bootlog.js";
 import { buildCityModel } from "./city.js";
 import { loadBuildings, loadHeightfield, loadLayers, loadMap, loadProps, MapUnavailableError } from "./mapdata.js";
 import { Renderer } from "./render/index.js";
@@ -23,6 +23,10 @@ const crashLineEl = document.getElementById("bootcrash-line") as HTMLElement;
 const copyBtn = document.getElementById("copylog") as HTMLButtonElement;
 
 const log = new BootLog(bootlogEl);
+
+/** Thrown when the browser cannot render at all — handled separately from a
+ * failed download, because retrying will not help. */
+class NoWebGLError extends Error {}
 
 /** Paint a status line, then yield two frames so it actually shows before
  * the next main-thread-blocking build step.
@@ -73,6 +77,15 @@ async function boot(): Promise<void> {
 
   log.line("boot console online");
   probeDevice(log);
+
+  // Nothing below this point can produce a frame without WebGL, and a device
+  // without it took 29 seconds to reach the renderer and fail. Stop here
+  // instead, with something the player can act on.
+  if (!webglAvailable()) {
+    log.line("stopping: WebGL is required and this browser has none", "fail");
+    log.finish();
+    throw new NoWebGLError();
+  }
 
   let done = log.step("download map-lite.json.gz");
   let lastLogged = 0;
@@ -199,6 +212,17 @@ function attempt(): void {
   statusEl.textContent = "loading the city…";
 
   boot().catch((err) => {
+    if (err instanceof NoWebGLError) {
+      statusEl.textContent = "this browser can't draw 3D";
+      loadingEl.classList.add("offline");
+      offlineDetailEl.innerHTML =
+        "Battle Juice needs WebGL, and this browser has it switched off.<br><br>" +
+        "On iPhone and iPad this is usually <strong>Lockdown Mode</strong>: " +
+        "Settings &rsaquo; Privacy &amp; Security &rsaquo; Lockdown Mode. You can leave it on " +
+        "everywhere else and add an exception for this site.";
+      retryBtn.textContent = "Try again";
+      return;
+    }
     log.line(String(err), "fail");
     if (err instanceof MapUnavailableError) {
       showOffline(
