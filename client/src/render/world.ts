@@ -1253,6 +1253,18 @@ function resample(polyline: [number, number][], cell: number, step = RIBBON_STEP
  * endpoint bank heights — never below approach terrain — so bridges span
  * instead of sagging into the river.
  */
+/**
+ * A draped ribbon: two triangle strips sharing a centre row.
+ *
+ * Written flat on purpose. The obvious version — arrays of [x, y] points, a
+ * `quad` of four [x, y, z] tuples per quad, a fresh [0,1,2,0,2,3] index
+ * literal allocated per quad — makes several million short-lived arrays to
+ * build a city, and ribbons were 16 of the 20 seconds a phone spent inside
+ * buildWorld. Heights were sampled about four times per point too, once for
+ * every quad corner landing on it.
+ *
+ * Same geometry, same winding, same vertex order.
+ */
 function pushRibbon(
   pos: number[],
   rawPolyline: [number, number][],
@@ -1265,20 +1277,26 @@ function pushRibbon(
 ): void {
   if (rawPolyline.length < 2) return;
   const polyline = resample(rawPolyline, cell, step);
+  const n = polyline.length;
+  if (n < 2) return;
   const half = width / 2;
-  const left: [number, number][] = [];
-  const right: [number, number][] = [];
-  const along: number[] = [0];
 
-  for (let i = 0; i < polyline.length; i++) {
-    const [px, py] = polyline[i]!;
+  // Three parallel rows of plain numbers: left offset, centre, right offset.
+  const X = [new Float64Array(n), new Float64Array(n), new Float64Array(n)];
+  const Y = [new Float64Array(n), new Float64Array(n), new Float64Array(n)];
+  const H = [new Float64Array(n), new Float64Array(n), new Float64Array(n)];
+  const along = new Float64Array(n);
+
+  for (let i = 0; i < n; i++) {
+    const px = polyline[i]![0];
+    const py = polyline[i]![1];
     if (i > 0) {
-      const [qx, qy] = polyline[i - 1]!;
-      along.push(along[i - 1]! + Math.hypot(px - qx, py - qy));
+      along[i] = along[i - 1]! + Math.hypot(px - polyline[i - 1]![0], py - polyline[i - 1]![1]);
     }
+    // Average the normals of the segments meeting here, so corners mitre.
     let nx = 0;
     let ny = 0;
-    for (const j of [i - 1, i]) {
+    for (let j = i - 1; j <= i; j++) {
       const a = polyline[j];
       const b = polyline[j + 1];
       if (!a || !b) continue;
@@ -1289,43 +1307,48 @@ function pushRibbon(
       ny += dx / len;
     }
     const nlen = Math.hypot(nx, ny) || 1;
-    left.push([px + (nx / nlen) * half, py + (ny / nlen) * half]);
-    right.push([px - (nx / nlen) * half, py - (ny / nlen) * half]);
+    X[0]![i] = px + (nx / nlen) * half;
+    Y[0]![i] = py + (ny / nlen) * half;
+    X[1]![i] = px;
+    Y[1]![i] = py;
+    X[2]![i] = px - (nx / nlen) * half;
+    Y[2]![i] = py - (ny / nlen) * half;
   }
 
-  const total = along[along.length - 1]! || 1;
+  // One height sample per row point, not one per quad corner.
+  const total = along[n - 1]! || 1;
   const hA = ground(polyline[0]![0], polyline[0]![1]);
-  const hB = ground(polyline[polyline.length - 1]![0], polyline[polyline.length - 1]![1]);
-  const heightOf = (i: number, wx: number, wy: number): number => {
-    const g = ground(wx, wy);
-    if (!span) return g;
-    const lerp = hA + (hB - hA) * (along[i]! / total);
-    return Math.max(g, lerp);
-  };
+  const hB = ground(polyline[n - 1]![0], polyline[n - 1]![1]);
+  for (let r = 0; r < 3; r++) {
+    const xs = X[r]!;
+    const ys = Y[r]!;
+    const hs = H[r]!;
+    for (let i = 0; i < n; i++) {
+      const g = ground(xs[i]!, ys[i]!);
+      hs[i] = span ? Math.max(g, hA + (hB - hA) * (along[i]! / total)) : g;
+    }
+  }
 
   // Two strips with a shared center row: sampling the centerline height too
   // lets wide roads fold across a terrain crease instead of planking over it
   // (or being sliced by it).
-  const rows = [left, polyline, right];
-  for (let i = 0; i < polyline.length - 1; i++) {
-    for (let s = 0; s < 2; s++) {
-      const A = rows[s]!;
-      const B = rows[s + 1]!;
-      const quad: [number, number, number][] = [
-        [...A[i]!, heightOf(i, A[i]![0], A[i]![1])],
-        [...B[i]!, heightOf(i, B[i]![0], B[i]![1])],
-        [...B[i + 1]!, heightOf(i + 1, B[i + 1]![0], B[i + 1]![1])],
-        [...A[i + 1]!, heightOf(i + 1, A[i + 1]![0], A[i + 1]![1])],
-      ];
-      for (const idx of [0, 1, 2, 0, 2, 3]) {
-        const [wx, wy, wh] = quad[idx]!;
-        pos.push(wx, atY + wh, -wy);
-      }
+  for (let i = 0; i < n - 1; i++) {
+    for (let r = 0; r < 2; r++) {
+      const ax = X[r]!;
+      const ay = Y[r]!;
+      const ah = H[r]!;
+      const bx = X[r + 1]!;
+      const by = Y[r + 1]!;
+      const bh = H[r + 1]!;
+      const a0x = ax[i]!, a0y = ay[i]!, a0h = atY + ah[i]!;
+      const b0x = bx[i]!, b0y = by[i]!, b0h = atY + bh[i]!;
+      const b1x = bx[i + 1]!, b1y = by[i + 1]!, b1h = atY + bh[i + 1]!;
+      const a1x = ax[i + 1]!, a1y = ay[i + 1]!, a1h = atY + ah[i + 1]!;
+      pos.push(a0x, a0h, -a0y, b0x, b0h, -b0y, b1x, b1h, -b1y);
+      pos.push(a0x, a0h, -a0y, b1x, b1h, -b1y, a1x, a1h, -a1y);
     }
   }
 }
-
-/** One mesh per rail kind: ribbon polylines in that kind's color. */
 function buildRails(
   rails: { polyline: [number, number][]; kind: RailLine["kind"] }[],
   ground: GroundFn,
