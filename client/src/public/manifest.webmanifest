@@ -1,6 +1,6 @@
 {
   "name": "portlandoregon.wtf",
-  "short_name": "pdx.wtf",
+  "short_name": "Portland, OR",
   "description": "Portland, Oregon, rendered in a browser.",
   "start_url": "./",
   "scope": "./",

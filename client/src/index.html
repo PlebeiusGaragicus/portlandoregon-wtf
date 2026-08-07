@@ -16,7 +16,7 @@
     <meta name="theme-color" content="#0d1014" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="pdx.wtf" />
+    <meta name="apple-mobile-web-app-title" content="Portland, OR" />
     <meta name="description" content="Portland, Oregon, rendered in a browser." />
     <style>
       :root { color-scheme: dark; }
@@ -267,6 +267,11 @@
         -webkit-backdrop-filter: blur(6px);
       }
       #bootbar button:hover { background: rgba(30, 38, 50, 0.75); }
+      /* The log is a bug report, and a bug report is only worth offering when
+         there is a bug. A healthy boot shows nothing but the city. */
+      #copylog { display: none; }
+      #loading.offline #copylog,
+      #loading.crashed #copylog { display: inline-block; }
       /* A boot that died and came back needs the verdict up top, not buried
          in the scrollback. */
       #bootcrash {
@@ -324,7 +329,6 @@
       #offline button:hover { background: rgba(46, 56, 72, 0.9); }
       #offline button:disabled { opacity: 0.5; cursor: default; }
       #offline button:focus-visible { outline: 2px solid #ffd84f; outline-offset: 2px; }
-      #retry-note { font-variant-numeric: tabular-nums; min-height: 1.2em; }
       #loading .spin {
         width: 1.15rem;
         height: 1.15rem;
@@ -422,7 +426,6 @@
       <div id="offline">
         <p id="offline-detail"></p>
         <button id="retry" type="button">Try again</button>
-        <p id="retry-note"></p>
       </div>
     </div>
     <div id="install">

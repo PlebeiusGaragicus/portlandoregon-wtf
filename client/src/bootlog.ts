@@ -12,11 +12,6 @@
 export type Level = "info" | "ok" | "warn" | "fail";
 
 const STORE_KEY = "pdx:bootlog";
-const CRASH_KEY = "pdx:bootcrashes";
-/** Consecutive unfinished boots before we stop auto-retrying. Two deaths at
- * the same step is a verdict, not a fluke — looping a third time just burns
- * battery and hides the reason. */
-export const CRASH_LIMIT = 2;
 
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -47,8 +42,6 @@ function readStored(): Stored | null {
 export class BootLog {
   private lines: string[] = [];
   private readonly t0 = performance.now();
-  /** How many boots in a row died before reaching `finish()`. */
-  readonly crashes: number;
   /** Last line of the previous boot, when that boot never finished. */
   readonly diedAt: string | null;
 
@@ -56,15 +49,6 @@ export class BootLog {
     const prev = readStored();
     const crashed = prev !== null && !prev.finished && prev.lines.length > 0;
     this.diedAt = crashed ? (prev.lines[prev.lines.length - 1] ?? null) : null;
-
-    let n = 0;
-    try {
-      n = Number(sessionStorage.getItem(CRASH_KEY) ?? "0");
-      sessionStorage.setItem(CRASH_KEY, String(crashed ? n + 1 : 0));
-    } catch {
-      /* storage unavailable — crash counting degrades to "never" */
-    }
-    this.crashes = crashed ? n + 1 : 0;
 
     this.el.textContent = "";
     this.persist();
@@ -88,11 +72,6 @@ export class BootLog {
    * report it as a crash. */
   finish(): void {
     this.finished = true;
-    try {
-      sessionStorage.setItem(CRASH_KEY, "0");
-    } catch {
-      /* see persist() */
-    }
     this.persist();
   }
 

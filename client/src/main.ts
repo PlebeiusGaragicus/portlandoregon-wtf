@@ -4,7 +4,7 @@
 // later phase; net.ts and the server's join path are kept for that.)
 import * as THREE from "three";
 import type { BuildingStore, CityLod, Heightfield, LayerStores, PropStore, StreetStore } from "@portlandoregon/shared";
-import { BootLog, CRASH_LIMIT, fmtBytes, probeDevice, webglAvailable } from "./bootlog.js";
+import { BootLog, fmtBytes, probeDevice, webglAvailable } from "./bootlog.js";
 import { buildCityModel } from "./city.js";
 import { CityCache } from "./mapcache.js";
 import { loadBuildings, loadCityLod, loadHeightfield, loadLayers, loadMap, loadOverviewAtlas, loadProps, loadStreets, MAP_BASE_URL, setCityCache, MapUnavailableError } from "./mapdata.js";
@@ -28,6 +28,12 @@ const log = new BootLog(bootlogEl);
 /** Thrown when the browser cannot render at all — handled separately from a
  * failed download, because retrying will not help. */
 class NoWebGLError extends Error {}
+
+/** WebGL is missing *and* so is WebAssembly. Lockdown Mode turns both off
+ * together (along with the JIT, Web Audio, and the Gamepad API); nothing else
+ * plausibly removes exactly that pair. Worth separating from a plain missing
+ * WebGL, because it has a fix the user can actually apply. */
+class LockdownError extends NoWebGLError {}
 
 /** Paint a status line, then yield two frames so it actually shows before
  * the next main-thread-blocking build step.
@@ -90,9 +96,15 @@ async function boot(): Promise<void> {
   // without it took 29 seconds to reach the renderer and fail. Stop here
   // instead, with something the player can act on.
   if (!webglAvailable()) {
-    log.line("stopping: WebGL is required and this browser has none", "fail");
+    const lockdown = typeof WebAssembly === "undefined";
+    log.line(
+      lockdown
+        ? "stopping: no WebGL and no WebAssembly — Lockdown Mode is on"
+        : "stopping: WebGL is required and this browser has none",
+      "fail",
+    );
     log.finish();
-    throw new NoWebGLError();
+    throw lockdown ? new LockdownError() : new NoWebGLError();
   }
 
   // Reconcile the stored city against what is published before anything is
@@ -246,72 +258,63 @@ async function boot(): Promise<void> {
 
 const offlineDetailEl = document.getElementById("offline-detail") as HTMLParagraphElement;
 const retryBtn = document.getElementById("retry") as HTMLButtonElement;
-const retryNoteEl = document.getElementById("retry-note") as HTMLParagraphElement;
 
-let retryTimer = 0;
-let countdownTimer = 0;
-/** Back off 5s, 10s, 20s, 40s, capped at a minute. The map is a static asset,
- * so a failure here is a flaky connection or a CDN hiccup — both worth a few
- * quiet retries rather than one and a dead end. */
-let retryDelayMs = 5_000;
-
-function showOffline(detail: string): void {
+/**
+ * Stop, and say why.
+ *
+ * A failed boot used to schedule its own retry on a 5s/10s/20s/40s backoff.
+ * That made every failure look like a page that loads forever: the same
+ * screen, the same spinner, over and over, with no way to tell "still working"
+ * from "never going to work". Retrying is the user's call now — that is what
+ * the button is for.
+ */
+function fail(status: string, detail: string, html = false): void {
   loadingEl.classList.add("offline");
-  statusEl.textContent = "couldn't load the city";
-  offlineDetailEl.textContent = detail;
+  statusEl.textContent = status;
+  if (html) offlineDetailEl.innerHTML = detail;
+  else offlineDetailEl.textContent = detail;
   retryBtn.disabled = false;
-
-  let secondsLeft = Math.round(retryDelayMs / 1000);
-  const tick = (): void => {
-    retryNoteEl.textContent = `retrying in ${secondsLeft}s`;
-    secondsLeft -= 1;
-  };
-  tick();
-  countdownTimer = window.setInterval(tick, 1000);
-  retryTimer = window.setTimeout(attempt, retryDelayMs);
-  retryDelayMs = Math.min(retryDelayMs * 2, 60_000);
 }
 
 function attempt(): void {
-  window.clearTimeout(retryTimer);
-  window.clearInterval(countdownTimer);
   loadingEl.classList.remove("offline");
   retryBtn.disabled = true;
-  retryNoteEl.textContent = "";
   statusEl.textContent = "loading the city…";
 
   boot().catch((err) => {
+    if (err instanceof LockdownError) {
+      // Lockdown Mode switches off WebGL and WebAssembly together, so there is
+      // no partial version of this page to offer — naming the setting is the
+      // only useful thing we can do.
+      fail(
+        "Lockdown Mode is blocking this page",
+        "iOS <strong>Lockdown Mode</strong> switches off WebGL, and without it there is " +
+          "no way to draw the city.<br><br>You can leave Lockdown Mode on everywhere else " +
+          "and allow it just here: in Safari, tap the page settings button at the left of " +
+          "the address bar, choose <strong>Website Settings</strong>, and turn Lockdown Mode " +
+          "off for this site.",
+        true,
+      );
+      return;
+    }
     if (err instanceof NoWebGLError) {
-      statusEl.textContent = "this browser can't draw 3D";
-      loadingEl.classList.add("offline");
-      offlineDetailEl.innerHTML =
-        "This city needs WebGL, and this browser has it switched off.<br><br>" +
-        "On iPhone and iPad this is usually <strong>Lockdown Mode</strong>: " +
-        "Settings &rsaquo; Privacy &amp; Security &rsaquo; Lockdown Mode. You can leave it on " +
-        "everywhere else and add an exception for this site.";
-      retryBtn.textContent = "Try again";
+      fail(
+        "this browser can't draw 3D",
+        "This city needs WebGL, and this browser has it switched off or unavailable.",
+      );
       return;
     }
     log.line(String(err), "fail");
     if (err instanceof MapUnavailableError) {
-      showOffline(
-        "The map couldn't be downloaded. Check your connection — this page will keep trying.",
-      );
+      fail("couldn't load the city", "The map couldn't be downloaded. Check your connection and try again.");
       return;
     }
     // A real bug — surface it rather than blaming the network.
-    loadingEl.classList.add("offline");
-    statusEl.textContent = "something went wrong";
-    offlineDetailEl.textContent = String(err);
-    retryBtn.disabled = false;
-    retryNoteEl.textContent = "";
+    fail("something went wrong", String(err));
   });
 }
 
-retryBtn.addEventListener("click", () => {
-  retryDelayMs = 5_000;
-  attempt();
-});
+retryBtn.addEventListener("click", attempt);
 
 copyBtn.addEventListener("click", () => {
   void navigator.clipboard?.writeText(log.text()).then(
@@ -392,30 +395,22 @@ addEventListener("error", (e) => log.line(`uncaught: ${e.message} @ ${e.filename
 addEventListener("unhandledrejection", (e) => log.line(`unhandled rejection: ${String(e.reason)}`, "fail"));
 
 /**
- * An out-of-memory kill on iOS is not an error — Safari discards the tab and
- * silently reloads it, so the page appears to restart its own loading screen
- * forever. The log survives in sessionStorage, so a boot that never reached
- * `finish()` is visible from here: report where it died, and after two of
- * them stop feeding the loop and let the user decide.
+ * An out-of-memory kill on iOS is not an error we ever see — Safari discards
+ * the tab and silently reloads it. The log survives in sessionStorage, so a
+ * boot that never reached `finish()` is visible from the next one: report
+ * where it died, and offer the log.
+ *
+ * There used to be a consecutive-crash counter here that stopped the retry
+ * loop after two. There is no retry loop any more, so there is nothing for it
+ * to stop — a boot that dies now simply stays dead until someone reloads.
  */
 if (log.diedAt) {
+  loadingEl.classList.add("crashed");
   crashEl.classList.add("show");
-  crashTitleEl.textContent = `Previous boot died (attempt ${log.crashes}). `;
+  crashTitleEl.textContent = "The previous attempt didn't finish. ";
   crashDetailEl.textContent =
-    "The tab was killed mid-load — on iOS that means it ran out of memory, and Safari reloaded it. Last step reached:";
+    "The tab was killed mid-load — on iOS that usually means it ran out of memory, and Safari reloaded it. Last step reached:";
   crashLineEl.textContent = log.diedAt;
 }
 
-if (log.crashes >= CRASH_LIMIT) {
-  statusEl.textContent = "stopped after repeated crashes";
-  crashDetailEl.textContent =
-    `This device has failed to load the city ${log.crashes} times in a row, so the retry loop is ` +
-    "stopped. This device still exceeded its browser memory limit while streaming the compact city. " +
-    "Last step reached:";
-  retryBtn.disabled = false;
-  loadingEl.classList.add("offline");
-  offlineDetailEl.textContent = "Press Try again to attempt the load anyway.";
-  log.line(`auto-retry stopped after ${log.crashes} consecutive crashes`, "fail");
-} else {
-  attempt();
-}
+attempt();
