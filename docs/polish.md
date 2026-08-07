@@ -55,8 +55,15 @@ roughly ordered by visible payoff. Deployment/gameplay backlogs live in
   vector layers stroked into one full-map texture at 2x and downscaled
   (4096 wide desktop / 2048 handheld), draped on the heightfield, lit by
   the day/night lights. `texSize` is the knob if wide zoom should resolve
-  finer street detail. Remaining gap: in the band just below the dressing
-  gate (~1.4–3 km), streets still end at the dressing window's edge.
+  finer street detail. This runtime-baked tier is now the fallback beneath
+  the dedicated strategic overview described next.
+- **Coherent full-city overview** (2026-08-06): continuous coverage now
+  transitions into an aspect-aware, fit-city orthographic camera backed by
+  deterministic offline ground/urban atlases. Screen-space civic, fire,
+  collapse, unit, and objective symbols retain live gameplay context while
+  one ownership decision retires tactical detail without a blank frame.
+  Architecture, generation, tests, and measured budgets are documented in
+  `docs/full-city-overview.md`.
 - **Fire realism v2** (2026-08-05): fire is a localized actor — per-building
   fire CELLS creep from the ignition point, flames render on the walls/roof
   where it's burning; per-vertex localized char (extinguished buildings keep

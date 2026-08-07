@@ -85,12 +85,13 @@ const delegate: ControlDelegate = {
 };
 
 let controls: Controls;
-function reset(): void {
+function reset(theta = 0): void {
   controls?.dispose();
   handlers.clear();
   calls.length = 0;
   rig = new CameraRig(map);
   rig.viewHeight = 2000;
+  rig.theta = theta;
   controls = new Controls(canvas, rig, map, delegate);
 }
 
@@ -243,6 +244,10 @@ console.log("\ntwo fingers to one");
 console.log("\nkeyboard");
 {
   const key = (k: string): void => fire("keydown", { key: k, repeat: false });
+  reset(0.63);
+  for (let i = 0; i < 30; i++) controls.update(1 / 60);
+  check("restored heading is not tweened to north", Math.abs(rig.theta - 0.63) < 1e-6, `theta=${rig.theta.toFixed(3)}`);
+
   reset();
   key("q");
   for (let i = 0; i < 200; i++) controls.update(1 / 60);

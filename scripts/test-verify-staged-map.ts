@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -12,6 +13,14 @@ import {
   type GameMap,
 } from "@battle-juice/shared";
 import { verifyStagedMap } from "./verify-staged-map.js";
+import {
+  OVERVIEW_ATLAS_MANIFEST,
+  OVERVIEW_ATLAS_VERSION,
+  OVERVIEW_ATLAS_WIDTHS,
+  overviewAtlasFile,
+  overviewAtlasHeight,
+  type OverviewAtlasManifest,
+} from "./overview-atlas-manifest.js";
 
 let failed = 0;
 function check(name: string, condition: boolean): void {
@@ -73,6 +82,50 @@ function heightfieldFixture(): Buffer {
   return bytes;
 }
 
+function pngFixture(width: number, height: number, salt: number): Buffer {
+  // The gate deliberately reads only PNG's fixed signature and IHDR before
+  // hashing the whole file; a tiny fixture keeps these tests dependency-free.
+  const bytes = Buffer.alloc(25);
+  Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(bytes);
+  bytes.writeUInt32BE(13, 8);
+  bytes.write("IHDR", 12, "ascii");
+  bytes.writeUInt32BE(width, 16);
+  bytes.writeUInt32BE(height, 20);
+  bytes[24] = salt;
+  return bytes;
+}
+
+function writeAtlas(dir: string, map: GameMap): OverviewAtlasManifest {
+  const levels: OverviewAtlasManifest["levels"] = OVERVIEW_ATLAS_WIDTHS.map((width) => {
+    const height = overviewAtlasHeight(width, map.meta.width, map.meta.height);
+    const images = (["ground", "urban"] as const).map((kind, index) => {
+      const file = overviewAtlasFile(kind, width);
+      const png = pngFixture(width, height, width / 1024 + index);
+      writeFileSync(join(dir, file), png);
+      return { file, sha256: createHash("sha256").update(png).digest("hex") };
+    });
+    return { width, height, ground: images[0]!, urban: images[1]! };
+  });
+  const manifest: OverviewAtlasManifest = {
+    version: OVERVIEW_ATLAS_VERSION,
+    generator: "battle-juice-overview-atlas",
+    map: { name: map.meta.name, sourceDate: map.meta.sourceDate },
+    extent: {
+      minX: 0,
+      minY: 0,
+      maxX: map.meta.width,
+      maxY: map.meta.height,
+      width: map.meta.width,
+      height: map.meta.height,
+      units: "meters",
+    },
+    hillshade: true,
+    levels,
+  };
+  writeFileSync(join(dir, OVERVIEW_ATLAS_MANIFEST), `${JSON.stringify(manifest, null, 2)}\n`);
+  return manifest;
+}
+
 const dir = mkdtempSync(join(tmpdir(), "battle-juice-map-gate-"));
 try {
   writeFileSync(join(dir, "buildings.bin.gz"), gz(encodeBuildings(map)));
@@ -82,6 +135,7 @@ try {
   writeFileSync(join(dir, "city-lod.bin.gz"), gz(encodeCityLod(map)));
   writeFileSync(join(dir, "map-lite.json.gz"), gz(JSON.stringify({ meta: map.meta, entries: map.entries })));
   writeFileSync(join(dir, "heightmap.bin.gz"), gz(heightfieldFixture()));
+  let atlas = writeAtlas(dir, map);
 
   let results = verifyStagedMap(dir);
   check("complete staged map passes", results.every((result) => result.status === "ok"));
@@ -93,6 +147,53 @@ try {
     results.find((result) => result.name === "heightmap.bin.gz")?.status === "missing-optional" &&
       results.every((result) => result.status !== "failed"),
   );
+
+  writeFileSync(join(dir, OVERVIEW_ATLAS_MANIFEST), JSON.stringify({ ...atlas, version: 999 }));
+  results = verifyStagedMap(dir);
+  check(
+    "wrong overview manifest version fails",
+    results.find((result) => result.name === OVERVIEW_ATLAS_MANIFEST)?.status === "failed",
+  );
+  atlas = writeAtlas(dir, map);
+
+  const wrongSizeFile = overviewAtlasFile("ground", 1024);
+  const wrongSizePng = pngFixture(1000, overviewAtlasHeight(1024, map.meta.width, map.meta.height), 9);
+  writeFileSync(join(dir, wrongSizeFile), wrongSizePng);
+  atlas.levels[0]!.ground.sha256 = createHash("sha256").update(wrongSizePng).digest("hex");
+  writeFileSync(join(dir, OVERVIEW_ATLAS_MANIFEST), JSON.stringify(atlas));
+  results = verifyStagedMap(dir);
+  check(
+    "wrong overview PNG dimensions fail",
+    results.find((result) => result.name === OVERVIEW_ATLAS_MANIFEST)?.status === "failed",
+  );
+  atlas = writeAtlas(dir, map);
+
+  atlas.extent.maxX++;
+  writeFileSync(join(dir, OVERVIEW_ATLAS_MANIFEST), JSON.stringify(atlas));
+  results = verifyStagedMap(dir);
+  check(
+    "wrong overview extent fails",
+    results.find((result) => result.name === OVERVIEW_ATLAS_MANIFEST)?.status === "failed",
+  );
+  atlas = writeAtlas(dir, map);
+
+  atlas.levels[0]!.urban.sha256 = "0".repeat(64);
+  writeFileSync(join(dir, OVERVIEW_ATLAS_MANIFEST), JSON.stringify(atlas));
+  results = verifyStagedMap(dir);
+  check(
+    "wrong overview PNG hash fails",
+    results.find((result) => result.name === OVERVIEW_ATLAS_MANIFEST)?.status === "failed",
+  );
+  atlas = writeAtlas(dir, map);
+
+  atlas.levels.pop();
+  writeFileSync(join(dir, OVERVIEW_ATLAS_MANIFEST), JSON.stringify(atlas));
+  results = verifyStagedMap(dir);
+  check(
+    "missing required overview level fails",
+    results.find((result) => result.name === OVERVIEW_ATLAS_MANIFEST)?.status === "failed",
+  );
+  writeAtlas(dir, map);
 
   rmSync(join(dir, "props.bin.gz"));
   results = verifyStagedMap(dir);

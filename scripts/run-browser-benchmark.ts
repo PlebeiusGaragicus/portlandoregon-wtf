@@ -6,14 +6,15 @@
 //
 // Override BJ_BENCHMARK_URL or CHROME_BIN when needed.
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const url = process.env["BJ_BENCHMARK_URL"] ?? "http://127.0.0.1:5555/?benchmark=1";
 const port = Number(process.env["BJ_BENCHMARK_PORT"] ?? 9223);
 const emulateMobile = process.env["BJ_BENCHMARK_MOBILE"] === "1";
 const timeoutMs = Number(process.env["BJ_BENCHMARK_TIMEOUT_MS"] ?? 600_000);
+const screenshotPath = process.env["BJ_BENCHMARK_SCREENSHOT"];
 const chrome =
   process.env["CHROME_BIN"] ??
   (process.platform === "darwin"
@@ -99,6 +100,35 @@ async function main(): Promise<void> {
     });
   }
   await call("Page.navigate", { url });
+  const screenshot = screenshotPath
+    ? (async () => {
+        const prepared = (await call("Runtime.evaluate", {
+          expression: `new Promise((resolve, reject) => {
+            const until = Date.now() + ${timeoutMs};
+            const poll = () => {
+              if (window.__bjBenchmarkError) return reject(new Error(window.__bjBenchmarkError));
+              const renderer = window.__bj?.renderer;
+              const ready =
+                window.__bjBenchmarkStage === "night-wide" &&
+                renderer?.debugStats().overview.complete;
+              if (ready) return requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
+              if (Date.now() > until) return reject(new Error("overview screenshot timed out"));
+              requestAnimationFrame(poll);
+            };
+            poll();
+          })`,
+          awaitPromise: true,
+          returnByValue: true,
+        })) as { exceptionDetails?: unknown };
+        if (prepared.exceptionDetails) throw new Error(JSON.stringify(prepared.exceptionDetails));
+        const captured = (await call("Page.captureScreenshot", { format: "png", fromSurface: true })) as {
+          data?: string;
+        };
+        if (!captured.data) throw new Error("DevTools returned no screenshot data");
+        mkdirSync(dirname(screenshotPath), { recursive: true });
+        writeFileSync(screenshotPath, Buffer.from(captured.data, "base64"));
+      })()
+    : Promise.resolve();
   const response = (await call("Runtime.evaluate", {
     expression: `new Promise((resolve, reject) => {
       const until = Date.now() + ${timeoutMs};
@@ -120,6 +150,7 @@ async function main(): Promise<void> {
   })) as { result?: { value?: unknown }; exceptionDetails?: unknown };
   if (response.exceptionDetails) throw new Error(JSON.stringify(response.exceptionDetails));
   console.log(JSON.stringify(response.result?.value, null, 2));
+  await screenshot;
 }
 
 main()

@@ -89,6 +89,9 @@ export class Controls {
     private map: GameMap,
     private delegate: ControlDelegate,
   ) {
+    // A restored view (and FPV return) may start at any continuous heading.
+    // Never let the tween's default zero silently overwrite it.
+    this.thetaGoal = rig.theta;
     this.marqueeEl = document.createElement("div");
     this.marqueeEl.id = "marquee";
     this.marqueeEl.style.display = "none";
@@ -189,6 +192,11 @@ export class Controls {
   faceNorth(): void {
     // Tween to the nearest full turn (theta = 0 mod 2pi).
     this.thetaGoal = Math.round(this.rig.theta / (2 * Math.PI)) * 2 * Math.PI;
+  }
+
+  /** Accept an externally changed heading without tweening back to stale input. */
+  syncRotation(): void {
+    this.thetaGoal = this.rig.theta;
   }
 
   /** Advance tweens, held-key panning and tilting. dt in seconds. */

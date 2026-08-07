@@ -13,13 +13,14 @@
 // migrate one consumer at a time instead of in a single unreviewable jump.
 //
 // Run by stage-map.sh after staging. Safe to re-run.
-import { readFileSync, writeFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
 import {
   decodeBuildings,
   decodeCityLod,
+  decodeHeightfield,
   decodeLayers,
   decodeProps,
   decodeStreets,
@@ -36,6 +37,8 @@ import {
   storeBytes,
   type GameMap,
 } from "@battle-juice/shared";
+import { bakeOverviewAtlas } from "./bake-overview-atlas.js";
+import { OVERVIEW_ATLAS_MANIFEST } from "./overview-atlas-manifest.js";
 
 const MAP_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "../client/src/public/map");
 const SRC = join(MAP_DIR, "map.json.gz");
@@ -44,6 +47,12 @@ const mb = (n: number): string => `${(n / 1e6).toFixed(1)} MB`;
 const t0 = performance.now();
 const map = JSON.parse(gunzipSync(readFileSync(SRC)).toString("utf8")) as GameMap;
 console.log(`read ${SRC} (${mb(statSync(SRC).size)} gzipped) in ${((performance.now() - t0) / 1000).toFixed(1)}s`);
+
+const heightmapPath = join(MAP_DIR, "heightmap.bin.gz");
+const heightfield = existsSync(heightmapPath)
+  ? decodeHeightfield(Uint8Array.from(gunzipSync(readFileSync(heightmapPath))).buffer)
+  : null;
+const atlas = bakeOverviewAtlas(map, MAP_DIR, heightfield);
 
 const bin = encodeBuildings(map);
 const binGz = gzipSync(bin, { level: 9 });
@@ -101,7 +110,13 @@ if (checkStreets.edgeCount !== map.edges.length || checkStreets.nodeCount !== ma
 const checkCityLod = decodeCityLod(gunzipSync(cityLodGz));
 
 const before = statSync(SRC).size;
-const after = binGz.length + propGz.length + streetGz.length + cityLodGz.length + layerGz.length + liteGz.length;
+const atlasBytes =
+  statSync(join(MAP_DIR, OVERVIEW_ATLAS_MANIFEST)).size +
+  atlas.levels.reduce(
+    (sum, level) => sum + statSync(join(MAP_DIR, level.ground.file)).size + statSync(join(MAP_DIR, level.urban.file)).size,
+    0,
+  );
+const after = binGz.length + propGz.length + streetGz.length + cityLodGz.length + layerGz.length + liteGz.length + atlasBytes;
 console.log(`
   buildings.bin.gz   ${mb(binGz.length).padStart(8)}   ${check.count} buildings, ${mb(storeBytes(check))} resident
   props.bin.gz       ${mb(propGz.length).padStart(8)}   ${checkProps.count} props, ${mb(propStoreBytes(checkProps))} resident
@@ -110,5 +125,6 @@ console.log(`
   layers.bin.gz      ${mb(layerGz.length).padStart(8)}   ${LAYER_NAMES.map((n) => `${checkLayers[n].count} ${n}`).join(", ")}
                                   ${mb(LAYER_NAMES.reduce((a, n) => a + featureStoreBytes(checkLayers[n]), 0))} resident
   map-lite.json.gz   ${mb(liteGz.length).padStart(8)}   ${mb(liteJson.length)} of text
+  overview atlas     ${mb(atlasBytes).padStart(8)}   ${atlas.levels.map((level) => `${level.width}x${level.height}`).join(", ")}${atlas.hillshade ? ", DEM hillshade" : ""}
   ----
   download           ${mb(after).padStart(8)}   was ${mb(before)} (${(((after - before) / before) * 100).toFixed(0)}%)`);

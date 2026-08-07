@@ -9,7 +9,7 @@
 // means nothing there.
 
 import { latLonToWorld, withinMap, worldToLatLon, type GameMap, type LatLon } from "@battle-juice/shared";
-import { MAX_VIEW_HEIGHT, MIN_VIEW_HEIGHT, type CameraRig } from "./render/camera.js";
+import { MIN_VIEW_HEIGHT, type CameraRig } from "./render/camera.js";
 
 const STORAGE_KEY = "bj.view.v1";
 
@@ -53,7 +53,9 @@ function parse(raw: string, map: GameMap): SavedView | null {
     map: map.meta.name,
     lat: s["lat"],
     lon: s["lon"],
-    viewHeight: Math.min(MAX_VIEW_HEIGHT, Math.max(MIN_VIEW_HEIGHT, s["viewHeight"])),
+    // The upper bound is aspect- and rotation-dependent and belongs to the
+    // rig. Keeping the v1 field unversioned preserves old 12 km saves.
+    viewHeight: Math.max(MIN_VIEW_HEIGHT, s["viewHeight"]),
     theta: s["theta"],
     tilt: s["tilt"],
   };

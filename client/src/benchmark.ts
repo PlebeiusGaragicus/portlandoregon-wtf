@@ -96,6 +96,14 @@ async function waitForFill(renderer: Renderer, timeoutMs = 120_000): Promise<num
   return performance.now() - started;
 }
 
+async function waitForOverview(renderer: Renderer, timeoutMs = 30_000): Promise<void> {
+  const started = performance.now();
+  while (!renderer.debugStats().overview.complete) {
+    if (performance.now() - started > timeoutMs) throw new Error("benchmark timed out waiting for overview atlas");
+    await waitFrames(2);
+  }
+}
+
 export function percentile(sorted: number[], p: number): number {
   if (!sorted.length) return 0;
   return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * p))]!;
@@ -292,8 +300,10 @@ export async function runBrowserBenchmark(renderer: Renderer, map: GameMap): Pro
 
   renderer.debugSetNight(true);
   window.__bjBenchmarkStage = "night-wide";
-  renderer.debugSetView(cx, cy, 8000);
-  await waitFrames(20);
+  // A deliberately excessive request is clamped to the current rotated,
+  // aspect-aware full-city fit. This exercises the real strategic tier.
+  renderer.debugSetView(cx, cy, Number.MAX_SAFE_INTEGER);
+  await waitForOverview(renderer);
   const nightWide = await sampleFrames(renderer, 120);
   const nightWideSettled = await sampleSettledScenario(renderer);
 

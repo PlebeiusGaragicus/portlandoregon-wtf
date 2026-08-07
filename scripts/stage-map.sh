@@ -15,6 +15,8 @@ set -euo pipefail
 #   client/src/public/map/city-lod.bin.gz    far-zoom urban mass
 #   client/src/public/map/map-lite.json.gz   map metadata and remaining data
 #   client/src/public/map/heightmap.bin.gz   terrain (optional; flat if absent)
+#   client/src/public/map/overview-*.png     versioned ground/urban atlas levels
+#   client/src/public/map/overview-atlas-v1.json  atlas dimensions, extents, hashes
 #
 # The release asset stays map.json.gz — the split is a local bake step, so a
 # re-bake never needs a new upload. Before returning, this script rereads and
@@ -93,7 +95,10 @@ rm -f \
     "$DEST_DIR/streets.bin.gz" \
     "$DEST_DIR/layers.bin.gz" \
     "$DEST_DIR/city-lod.bin.gz" \
-    "$DEST_DIR/map-lite.json.gz"
+    "$DEST_DIR/map-lite.json.gz" \
+    "$DEST_DIR/overview-atlas-v1.json" \
+    "$DEST_DIR"/overview-ground-v*.png \
+    "$DEST_DIR"/overview-urban-v*.png
 note "Baking client map artifacts"
 ( cd "$REPO_ROOT" && node --max-old-space-size=10240 --import tsx scripts/bake-map.ts ) \
     || fail "bake failed — map.json.gz left in place so you can retry"

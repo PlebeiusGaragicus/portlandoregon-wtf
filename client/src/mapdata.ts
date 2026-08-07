@@ -19,6 +19,10 @@ import {
   type StreetStore,
   type Heightfield,
 } from "@battle-juice/shared";
+import {
+  parseOverviewAtlasManifest,
+  type OverviewAtlasSource,
+} from "./overview-atlas.js";
 
 // Baked by scripts/bake-map.ts: buildings split out of the JSON into a binary
 // store, everything else left as map-lite.
@@ -29,6 +33,7 @@ const STREETS_URL = new URL("./map/streets.bin.gz", document.baseURI).href;
 const LAYERS_URL = new URL("./map/layers.bin.gz", document.baseURI).href;
 const HEIGHTMAP_URL = new URL("./map/heightmap.bin.gz", document.baseURI).href;
 const CITY_LOD_URL = new URL("./map/city-lod.bin.gz", document.baseURI).href;
+const OVERVIEW_ATLAS_URL = new URL("./map/overview-atlas-v1.json", document.baseURI);
 
 /** Thrown when the map asset itself is missing or unreadable — without it
  * there is no city to render, so this is fatal rather than retryable. */
@@ -109,6 +114,20 @@ export async function loadMap(onProgress?: Progress): Promise<GameMap> {
     // Network-level failure: offline, or the asset never got deployed.
     throw new MapUnavailableError(`couldn't download the map (${String(err)})`);
   }
+}
+
+/**
+ * Optional full-city overview assets. Unlike loadMap, failure is deliberately
+ * not promoted to MapUnavailableError: the tactical renderer has its own
+ * ground map and building tiers and remains fully usable without this atlas.
+ */
+export async function loadOverviewAtlas(): Promise<OverviewAtlasSource> {
+  const response = await fetch(OVERVIEW_ATLAS_URL);
+  if (!response.ok) throw new Error(`${OVERVIEW_ATLAS_URL.href} → ${response.status}`);
+  return {
+    manifest: parseOverviewAtlasManifest(await response.json()),
+    baseUrl: new URL(".", OVERVIEW_ATLAS_URL).href,
+  };
 }
 
 /**

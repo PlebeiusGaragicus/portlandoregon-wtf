@@ -21,6 +21,23 @@ import { ScarField } from "../scars.js";
 import type { BuildingShells } from "./world.js";
 import { CYCLES_PER_DAY } from "./daynight.js";
 
+export interface OverviewFireMarker {
+  readonly x: number;
+  readonly y: number;
+  readonly intensity: number;
+}
+
+export interface OverviewCollapsedMarker {
+  readonly x: number;
+  readonly y: number;
+  readonly count: number;
+}
+
+export interface FireOverviewSnapshot {
+  readonly active: readonly OverviewFireMarker[];
+  readonly collapsed: readonly OverviewCollapsedMarker[];
+}
+
 // Disaster sim. A fire is a localized actor attached to its fuel: each burning
 // building carries a set of fire CELLS sampled over its walls and roof; the
 // flame front creeps cell-to-cell from the ignition point, so the fire visibly
@@ -418,6 +435,8 @@ export class FireSim {
   private treeColor = new THREE.Color();
   /** Everything that has pancaked — FPV consumes this to open collision. */
   readonly collapsed: number[] = [];
+  private overviewCollapsedVersion = -1;
+  private overviewCollapsed: FireOverviewSnapshot["collapsed"] = Object.freeze([]);
   /** Every burn and blast this city has taken, by building. Outlives the
    * meshes it is painted onto — see restoreAppearance. */
   readonly scars = new ScarField();
@@ -856,6 +875,67 @@ export class FireSim {
 
   get activeFires(): number {
     return this.burns.size;
+  }
+
+  /**
+   * Cartographic, read-only fire state. The overview consumes aggregates,
+   * never the private simulation maps, so rendering cannot become authority.
+   */
+  overviewSnapshot(): FireOverviewSnapshot {
+    const activeBuckets = new Map<number, { x: number; y: number; weight: number; peak: number; count: number }>();
+    const activeCell = 750;
+    const activeCols = Math.max(1, Math.ceil(this.map.meta.width / activeCell));
+    for (const burn of this.burns.values()) {
+      const key = Math.floor(burn.y / activeCell) * activeCols + Math.floor(burn.x / activeCell);
+      const weight = Math.max(0.05, burn.intensity);
+      const bucket = activeBuckets.get(key);
+      if (bucket) {
+        bucket.x += burn.x * weight;
+        bucket.y += burn.y * weight;
+        bucket.weight += weight;
+        bucket.peak = Math.max(bucket.peak, burn.intensity);
+        bucket.count++;
+      } else {
+        activeBuckets.set(key, {
+          x: burn.x * weight,
+          y: burn.y * weight,
+          weight,
+          peak: burn.intensity,
+          count: 1,
+        });
+      }
+    }
+    const active = Object.freeze([...activeBuckets.values()].map((bucket) => Object.freeze({
+      x: bucket.x / bucket.weight,
+      y: bucket.y / bucket.weight,
+      intensity: Math.min(1, bucket.peak + Math.log2(bucket.count) * 0.12),
+    })));
+
+    if (this.overviewCollapsedVersion !== this.collapsed.length) {
+      const cell = 1000;
+      const cols = Math.max(1, Math.ceil(this.map.meta.width / cell));
+      const buckets = new Map<number, { x: number; y: number; count: number }>();
+      for (const bi of this.collapsed) {
+        const x = this.cx[bi]!;
+        const y = this.cy[bi]!;
+        const key = Math.floor(y / cell) * cols + Math.floor(x / cell);
+        const bucket = buckets.get(key);
+        if (bucket) {
+          bucket.x += x;
+          bucket.y += y;
+          bucket.count++;
+        } else {
+          buckets.set(key, { x, y, count: 1 });
+        }
+      }
+      this.overviewCollapsed = Object.freeze([...buckets.values()].map((bucket) => Object.freeze({
+        x: bucket.x / bucket.count,
+        y: bucket.y / bucket.count,
+        count: bucket.count,
+      })));
+      this.overviewCollapsedVersion = this.collapsed.length;
+    }
+    return Object.freeze({ active, collapsed: this.overviewCollapsed });
   }
 
   /** Any building actively burning within r of (x, y) — keeps crews and

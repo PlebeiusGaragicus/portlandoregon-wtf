@@ -14,7 +14,14 @@ import {
   type Heightfield,
 } from "@battle-juice/shared";
 import { Actors } from "./actors.js";
-import { CameraRig, toScene, toWorldXY } from "./camera.js";
+import {
+  CameraRig,
+  OVERVIEW_ORTHO_START,
+  OVERVIEW_TRANSITION_START,
+  toScene,
+  toWorldXY,
+  type CameraCoverage,
+} from "./camera.js";
 import { Controls, type ControlDelegate } from "./controls.js";
 import { DayNight } from "./daynight.js";
 import { HANDHELD as DEVICE_HANDHELD } from "../device.js";
@@ -32,6 +39,14 @@ import {
   type WorldLayers,
 } from "./world.js";
 import { createViewSaver, restoreView } from "../view.js";
+import type { OverviewAtlasSource } from "../overview-atlas.js";
+import {
+  buildOverview,
+  resolveZoomTierVisibility,
+  type OverviewGameplayMarker,
+  type OverviewLayer,
+  type ZoomTierVisibility,
+} from "./overview.js";
 
 /** Release every currently attached Three.js resource exactly once. Detached
  * streaming caches expose their own dispose methods. */
@@ -63,8 +78,10 @@ function disposeTree(root: THREE.Object3D): void {
 // Zoom thresholds (meters of vertical view).
 const BLEND_START = 2200; // street tint starts brightening
 const BLEND_END = 3200;
-
-
+/** Atlas ground is fully established before urban massing starts to fade in. */
+const OVERVIEW_GROUND_START = OVERVIEW_TRANSITION_START * 0.65;
+/** Also prevents a late async atlas load from appearing in one frame. */
+const OVERVIEW_READY_FADE_SECONDS = 0.6;
 
 const SKY_R = 20000; // FPV sky dome radius, inside the FPV far plane
 /** Desktop shadow cutoff: above this the shadows are subpixel, so skip the
@@ -142,9 +159,8 @@ const DETAIL = HANDHELD
       perFrame: { buildings: 2, dressing: 2, props: 4 },
       shadowMap: 2048,
       shadowView: SHADOW_MAX_VIEW,
-      // Near max zoom-out (12 km cap): the rig is essentially top-down there,
-      // and a 4096-texel bake (~10.6 m/texel) matches what the screen resolves
-      // (~8 m/px), so the swap to the flat photograph is invisible.
+      // Minimum span where a 4096-texel fallback has enough resolution. The
+      // actual swap is delayed to the dynamic top-down handoff.
       farTextureView: 11000,
       farTextureSize: 4096,
       frameGapMs: 0,
@@ -223,6 +239,11 @@ export interface RendererOpts {
   /** Prebuilt city model. Must be the same one `prebuilt.world` was built
    * from — the sim and the geometry have to agree on where the ground is. */
   city?: CityModel;
+  /**
+   * Optional atlas request started by main before tactical construction.
+   * The renderer never awaits it; failure leaves the existing fallback tiers.
+   */
+  overview?: Promise<OverviewAtlasSource | null>;
 }
 
 export interface RendererDebugStats {
@@ -230,6 +251,7 @@ export interface RendererDebugStats {
   paused: boolean;
   fpv: boolean;
   view: { x: number; y: number; height: number };
+  overview: { ready: boolean; coverage: number; transition: number; orthographic: boolean; complete: boolean };
   render: { frame: number; calls: number; triangles: number; points: number; lines: number };
   memory: { geometries: number; textures: number };
   buildings: BuildingTileStats;
@@ -275,14 +297,15 @@ export interface DebugFireScenario {
 }
 
 /**
- * Three.js renderer: perspective tilted camera over the baked map. Currently
- * spectator-only — navigation, no unit command (units return in a later
- * phase; the selection/dispatch delegate hooks stay no-ops until then).
+ * Three.js renderer: a tilted perspective tactical camera that continuously
+ * becomes a fit-city top-down orthographic overview.
  */
 export class Renderer {
   private webgl: THREE.WebGLRenderer;
   private scene = new THREE.Scene();
-  private camera = new THREE.PerspectiveCamera();
+  private perspectiveCamera = new THREE.PerspectiveCamera();
+  private overviewCamera = new THREE.OrthographicCamera();
+  private camera: THREE.PerspectiveCamera | THREE.OrthographicCamera = this.perspectiveCamera;
   private rig: CameraRig;
   private saveView: () => void;
   /** Wall-clock of the last camera-position write; throttled, see frame(). */
@@ -301,6 +324,13 @@ export class Renderer {
   private resizeObserver: ResizeObserver;
   private raycaster = new THREE.Raycaster();
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  /** Full-city raster layers; optional, with tactical rendering as fallback. */
+  readonly overview: OverviewLayer;
+  private overviewReady = false;
+  private overviewReveal = 0;
+  private cameraMetrics: CameraCoverage | null = null;
+  private overviewComplete = false;
+  private nextOverviewMarkerUpdate = 0;
 
   private hemi!: THREE.HemisphereLight;
   private sun!: THREE.DirectionalLight;
@@ -410,6 +440,24 @@ export class Renderer {
     this.webgl = new THREE.WebGLRenderer({ canvas, antialias: true, logarithmicDepthBuffer: true });
     this.webgl.setPixelRatio(pixelRatio() * this.qualityScale);
     this.scene.background = new THREE.Color(0x14171c);
+    this.overview = buildOverview({
+      source: opts.overview ?? Promise.resolve(null),
+      map: {
+        name: map.meta.name,
+        sourceDate: map.meta.sourceDate,
+        width: map.meta.width,
+        height: map.meta.height,
+      },
+      handheld: HANDHELD,
+      maxTextureSize: this.webgl.capabilities.maxTextureSize,
+      maxAnisotropy: this.webgl.capabilities.getMaxAnisotropy(),
+      landmarks: map.landmarks ?? [],
+    });
+    this.overview.group.visible = false;
+    this.scene.add(this.overview.group);
+    void this.overview.ready.then((ready) => {
+      if (!this.disposed) this.overviewReady = ready;
+    });
 
     this.hemi = new THREE.HemisphereLight(0xbfd0e8, 0x33302a, 0.9);
     this.sun = new THREE.DirectionalLight(0xfff2dd, 1.4);
@@ -597,11 +645,23 @@ export class Renderer {
         { x: o.x, y: -o.z, z: o.y },
         { x: d.x, y: -d.z, z: d.y },
       );
-      return hit ? { x: hit.x, y: hit.y } : null;
+      if (hit) return { x: hit.x, y: hit.y };
+      // A padded fit-city view deliberately has screen corners outside the
+      // heightfield. Fall through to the sea-level plane so the minimap quad
+      // and cursor anchor remain defined there.
     }
     const hit = new THREE.Vector3();
     if (!this.raycaster.ray.intersectPlane(this.groundPlane, hit)) return null;
     return toWorldXY(hit);
+  }
+
+  /**
+   * Generic strategic marker seam for authoritative gameplay state. Callers
+   * provide only state they actually own; the renderer does not synthesize
+   * units or objectives from ambient actors.
+   */
+  setOverviewMarkers(markers: readonly OverviewGameplayMarker[]): void {
+    this.overview.setGameplayMarkers(markers);
   }
 
   /** Cut to dark, then fade the new mode in — covers the camera jump (and
@@ -628,6 +688,7 @@ export class Renderer {
         this.rig.theta = this.fpv.yaw;
         this.rig.viewHeight = 450;
         this.rig.clampToMap(this.map);
+        this.controls.syncRotation();
       }
       if (document.pointerLockElement === this.canvas) document.exitPointerLock();
       this.fpvDrag = null;
@@ -918,6 +979,7 @@ export class Renderer {
     this.props.dispose();
     this.fpvProps?.dispose();
     this.impostor?.target.dispose();
+    this.overview.dispose();
     disposeTree(this.scene);
     this.scene.clear();
     this.boot?.return();
@@ -1050,9 +1112,10 @@ export class Renderer {
    * tiles, or fire chars/collapses a building. Rebakes are throttled so a
    * city-wide blaze costs at most one extra render every few seconds.
    */
-  private syncImpostor(vh: number, now: number): void {
+  private syncImpostor(vh: number, textureView: number, now: number): void {
+    if (this.overviewReady) return;
     // 0.8: bake before the swap altitude, so crossing it never shows a gap.
-    if (vh < DETAIL.farTextureView * 0.8) return;
+    if (vh < textureView * 0.8) return;
     const version = this.world.buildings.farVersion();
     const stale =
       version !== this.impostorBakedVersion ||
@@ -1217,9 +1280,39 @@ export class Renderer {
     if (phase !== this.bootPhase) this.onBootProgress?.((this.bootPhase = phase));
   }
 
-  private applyCamera(): void {
+  private applyCamera(): CameraCoverage {
     const aspect = (this.canvas.clientWidth || 1) / (this.canvas.clientHeight || 1);
+    const metrics = this.rig.updateViewport(aspect);
+    this.camera = metrics.orthographic ? this.overviewCamera : this.perspectiveCamera;
     this.rig.apply(this.camera, aspect, this.ground(this.rig.target.x, this.rig.target.y));
+    this.cameraMetrics = metrics;
+    return metrics;
+  }
+
+  private updateOverview(metrics: CameraCoverage, dt: number): ZoomTierVisibility {
+    if (this.overviewReady) {
+      this.overviewReveal = Math.min(1, this.overviewReveal + dt / OVERVIEW_READY_FADE_SECONDS);
+    } else {
+      this.overviewReveal = 0;
+    }
+    const groundCamera = THREE.MathUtils.smoothstep(
+      metrics.coverage,
+      OVERVIEW_GROUND_START,
+      OVERVIEW_TRANSITION_START,
+    );
+    const ground = groundCamera * this.overviewReveal;
+    const urban = metrics.transition * this.overviewReveal;
+    const visibility = resolveZoomTierVisibility({
+      transition: metrics.transition,
+      atlasReady: this.overviewReady,
+      groundOpacity: ground,
+      urbanOpacity: urban,
+    });
+    this.overview.setOpacity({ ground, urban, symbols: visibility.symbolOpacity });
+    this.overview.group.visible = visibility.atlas || visibility.symbols;
+    this.overview.symbols.visible = visibility.symbols;
+    this.overviewComplete = urban >= 1 - 1e-4;
+    return visibility;
   }
 
   private frame(): void {
@@ -1267,6 +1360,10 @@ export class Renderer {
 
     if (this.fpvOn && this.fpv) {
       this.fpv.update(dt);
+      this.overview.group.visible = false;
+      this.world.group.visible = true;
+      this.actors.group.visible = true;
+      this.fire.group.visible = true;
       // Street level: full detail, street-scale tint, gradient sky + distance
       // haze in the sky's horizon color. Landmark plates are billboards sized
       // for the map view — at eye height they wallpaper the horizon, so off.
@@ -1297,7 +1394,8 @@ export class Renderer {
       // air. Fog density is tied to the far plane so the cutoff hides in haze.
       const altAbove = this.fpv.z - this.ground(this.fpv.x, this.fpv.y);
       const far = Math.min(30000, Math.max(5500, 5500 + altAbove * 55));
-      this.fpv.apply(this.camera, aspect, far);
+      this.camera = this.perspectiveCamera;
+      this.fpv.apply(this.perspectiveCamera, aspect, far);
       if (this.shake > 0.002) {
         this.camera.position.x += (Math.random() - 0.5) * this.shake * 0.3;
         this.camera.position.y += (Math.random() - 0.5) * this.shake * 0.3;
@@ -1322,25 +1420,47 @@ export class Renderer {
     if (this.scene.fog) this.scene.fog = null;
     if (this.sky) this.sky.visible = false;
     if (this.skyBody) this.skyBody.visible = false;
-    this.props.glow.visible = true;
     if (this.fpvProps) {
       this.fpvProps.group.visible = false;
       this.fpvProps.glow.visible = false;
     }
-    this.landmarks.group.visible = true;
     this.controls.update(dt);
 
+    const metrics = this.applyCamera();
     const vh = this.rig.viewHeight;
     this.world.setBlend((vh - BLEND_START) / (BLEND_END - BLEND_START));
-    this.syncImpostor(vh, now);
+    // A flat fallback replaces boxes only once camera perspective is gone.
+    // `DETAIL` is a texture-resolution floor; fitSpan makes the gate map,
+    // aspect and rotation aware.
+    const fallbackTextureView = Math.max(
+      DETAIL.farTextureView,
+      metrics.fitSpan * OVERVIEW_ORTHO_START,
+    );
+    this.syncImpostor(vh, fallbackTextureView, now);
     // The ground map takes over exactly where the dressing window gives up.
-    this.world.setViewHeight(vh, DETAIL.farTextureView, DETAIL.propsView);
-    this.props.group.visible = vh < DETAIL.propsView;
-    this.props.near.visible = vh < DETAIL.nearPropsView;
-    this.world.detail.visible = vh < DETAIL.propsView;
+    this.world.setViewHeight(vh, fallbackTextureView, DETAIL.propsView);
+    const visibility = this.updateOverview(metrics, dt);
+    // Every zoom-owned layer consumes the same decision. This leaves no frame
+    // where tactical and overview landmarks both claim the city, and the live
+    // city remains a complete fallback when the optional atlas is unavailable.
+    this.world.group.visible = visibility.tacticalWorld;
+    this.props.group.visible = visibility.tacticalDetails && vh < DETAIL.propsView;
+    this.props.near.visible = visibility.tacticalDetails && vh < DETAIL.nearPropsView;
+    this.props.glow.visible = visibility.tacticalEffects;
+    this.world.detail.visible = visibility.tacticalDetails && vh < DETAIL.propsView;
+    this.landmarks.group.visible = visibility.tacticalLandmarks;
+    this.actors.group.visible = visibility.tacticalEffects;
+    this.fire.group.visible = visibility.tacticalEffects;
+    // Once the whole city is the primary canvas, the inset repeats the same
+    // information and obscures a quarter of portrait/compact viewports.
+    this.minimap.el.style.display = visibility.owner === "overview" ? "none" : "";
     this.landmarks.setViewScale(vh);
-
-    this.applyCamera();
+    if (visibility.symbols) {
+      this.overview.updateView(this.camera, {
+        width: this.canvas.clientWidth || 1,
+        height: this.canvas.clientHeight || 1,
+      });
+    }
 
     // HUD: compass needle tracks where world north points on screen.
     this.compass.style.setProperty("--rot", `${this.rig.theta}rad`);
@@ -1359,6 +1479,10 @@ export class Renderer {
     this.debugTiming.actorsMs += performance.now() - actorsStarted;
     const fireStarted = performance.now();
     this.fire.update(dt, this.rig.target, this.actors.fireUnitsOnScene());
+    if (visibility.symbols && now >= this.nextOverviewMarkerUpdate) {
+      this.overview.setFireMarkers(this.fire.overviewSnapshot());
+      this.nextOverviewMarkerUpdate = now + 200;
+    }
     this.debugTiming.fireMs += performance.now() - fireStarted;
     this.applyDayNight(this.rig.target.x, this.rig.target.y, this.ground(this.rig.target.x, this.rig.target.y), vh < DETAIL.shadowView);
     this.updateScaleBar(vh);
@@ -1440,6 +1564,7 @@ export class Renderer {
       this.lastNight = dn.night;
       this.props.setNight(dn.night);
       this.fpvProps?.setNight(dn.night);
+      this.overview.setDayNightTint(dn.night);
     }
 
     const alt = this.fpvOn ? ` · ▲${Math.round(fz)} m` : "";
@@ -1460,6 +1585,13 @@ export class Renderer {
       paused: this.paused,
       fpv: this.fpvOn,
       view: { x: this.rig.target.x, y: this.rig.target.y, height: this.rig.viewHeight },
+      overview: {
+        ready: this.overviewReady,
+        coverage: this.cameraMetrics?.coverage ?? 0,
+        transition: this.cameraMetrics?.transition ?? 0,
+        orthographic: this.cameraMetrics?.orthographic ?? false,
+        complete: this.overviewComplete,
+      },
       render: { frame: r.frame, calls: r.calls, triangles: r.triangles, points: r.points, lines: r.lines },
       memory: { geometries: m.geometries, textures: m.textures },
       buildings: this.world.buildings.stats(),
@@ -1476,7 +1608,7 @@ export class Renderer {
   /** Deterministic camera/time controls used only by the local benchmark. */
   debugSetView(x: number, y: number, height: number): void {
     this.rig.target = { x, y };
-    this.rig.viewHeight = Math.max(70, Math.min(12000, height));
+    this.rig.viewHeight = Math.max(70, height);
     this.rig.clampToMap(this.map);
   }
 

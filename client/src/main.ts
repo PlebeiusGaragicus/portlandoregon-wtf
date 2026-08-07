@@ -6,7 +6,7 @@ import * as THREE from "three";
 import type { BuildingStore, CityLod, Heightfield, LayerStores, PropStore, StreetStore } from "@battle-juice/shared";
 import { BootLog, CRASH_LIMIT, fmtBytes, probeDevice, webglAvailable } from "./bootlog.js";
 import { buildCityModel } from "./city.js";
-import { loadBuildings, loadCityLod, loadHeightfield, loadLayers, loadMap, loadProps, loadStreets, MapUnavailableError } from "./mapdata.js";
+import { loadBuildings, loadCityLod, loadHeightfield, loadLayers, loadMap, loadOverviewAtlas, loadProps, loadStreets, MapUnavailableError } from "./mapdata.js";
 import { Renderer } from "./render/index.js";
 import { buildLandmarks } from "./render/landmarks.js";
 import { buildProps } from "./render/props.js";
@@ -102,6 +102,12 @@ async function boot(): Promise<void> {
   const streetPromise: Promise<StreetStore> = loadStreets();
   const cityLodPromise: Promise<CityLod> = loadCityLod();
   const layerPromise: Promise<LayerStores> = loadLayers();
+  // Optional and never awaited by tactical boot. The overview object receives
+  // this promise after the first frame is already free to become interactive.
+  const overviewPromise = loadOverviewAtlas().catch((err: unknown) => {
+    log.line(`overview atlas unavailable — tactical fallback retained (${String(err)})`, "warn");
+    return null;
+  });
   const map = await loadMap((received, total) => {
     // One line per ~4 MB: enough to see the transfer move, not so much that
     // the log becomes a progress bar made of text.
@@ -196,6 +202,7 @@ async function boot(): Promise<void> {
     },
     heightfield: hf,
     city,
+    overview: overviewPromise,
   });
   done();
 

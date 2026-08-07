@@ -101,13 +101,26 @@ const near = (a: number, b: number, tol: number): boolean => Math.abs(a - b) <= 
   );
 }
 
-// 4. Absurd zoom is clamped rather than trusted.
+// 4. Absurd zoom is clamped to the dynamic city fit rather than trusted.
 {
   store.clear();
   store.set(KEY, '{"map":"portland","lat":45.5,"lon":-122.6,"viewHeight":1e9,"theta":0,"tilt":1}');
   const rig = new CameraRig(map);
   restoreView(rig, map);
-  check("clamps an out-of-range zoom", rig.viewHeight <= 12000, `viewHeight=${rig.viewHeight}`);
+  check(
+    "clamps an out-of-range zoom to city fit",
+    near(rig.viewHeight, rig.metrics().fitSpan, 0.1) && rig.viewHeight > 12000,
+    `viewHeight=${rig.viewHeight}`,
+  );
+}
+
+// Existing v1 records written under the old 12 km cap need no migration.
+{
+  store.clear();
+  store.set(KEY, '{"map":"portland","lat":45.5,"lon":-122.6,"viewHeight":12000,"theta":0,"tilt":1}');
+  const rig = new CameraRig(map);
+  const restored = restoreView(rig, map);
+  check("restores legacy 12 km v1 view", restored && near(rig.viewHeight, 12000, 0.1), `viewHeight=${rig.viewHeight}`);
 }
 
 // 5. Unchanged view doesn't rewrite storage.
