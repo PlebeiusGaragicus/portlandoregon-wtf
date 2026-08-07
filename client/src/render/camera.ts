@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { GameMap } from "@battle-juice/shared";
+import type { GameMap } from "@portlandoregon/shared";
 
 // World frame is meters, x east, y north. Scene frame is three.js y-up:
 // world (x, y) at height h -> scene (x, h, -y).

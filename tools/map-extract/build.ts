@@ -4,7 +4,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { gzipSync } from "node:zlib";
-import type { GameMap } from "@battle-juice/shared";
+import type { GameMap } from "@portlandoregon/shared";
 import { MANIFEST_FILE, MAP_NAME, MAP_OUT_FILE, MAPS_ASSET_DIR, processedDir } from "./config.js";
 import { bakeLandmarks } from "./landmarks.js";
 

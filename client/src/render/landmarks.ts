@@ -8,7 +8,7 @@ import {
   type GameMap,
   type Heightfield,
   type Landmark,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import { toScene } from "./camera.js";
 import { LANDMARK_THEMES } from "./world.js";
 

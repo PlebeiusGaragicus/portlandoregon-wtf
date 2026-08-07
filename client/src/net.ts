@@ -1,4 +1,4 @@
-import type { ClientMsg, ServerMsg } from "@battle-juice/shared";
+import type { ClientMsg, ServerMsg } from "@portlandoregon/shared";
 import { wsUrl } from "./server.js";
 
 export interface NetHandlers {

@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
-import { decodeBuildings, decodeHeightfield, type GameMap, type Heightfield } from "@battle-juice/shared";
+import { decodeBuildings, decodeHeightfield, type GameMap, type Heightfield } from "@portlandoregon/shared";
 import { buildCityModel } from "../client/src/city.js";
 import { CellGrid } from "../client/src/grid.js";
 

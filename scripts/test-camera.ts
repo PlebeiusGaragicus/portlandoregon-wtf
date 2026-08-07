@@ -2,7 +2,7 @@
 //
 //   npm run test:camera
 import * as THREE from "three";
-import type { GameMap } from "@battle-juice/shared";
+import type { GameMap } from "@portlandoregon/shared";
 import {
   CameraRig,
   CITY_FIT_PADDING,

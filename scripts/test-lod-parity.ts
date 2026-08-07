@@ -5,7 +5,7 @@ import {
   layersFromMap,
   storeFromBuildings,
   type GameMap,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import { buildWorld } from "../client/src/render/world.js";
 
 let failed = 0;

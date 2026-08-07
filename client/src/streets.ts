@@ -6,7 +6,7 @@ import {
   type StreetEdge,
   type StreetNode,
   type StreetStore,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 
 /** One access shape for compact production stores and tiny object-form tests. */
 export interface StreetAccess {

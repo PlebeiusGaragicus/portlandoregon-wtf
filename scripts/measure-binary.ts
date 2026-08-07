@@ -23,7 +23,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { brotliCompressSync, constants, gunzipSync, gzipSync } from "node:zlib";
-import type { GameMap } from "@battle-juice/shared";
+import type { GameMap } from "@portlandoregon/shared";
 
 const MAP_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "../client/src/public/map");
 

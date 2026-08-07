@@ -1,4 +1,4 @@
-import type { BuildingStore, Heightfield } from "@battle-juice/shared";
+import type { BuildingStore, Heightfield } from "@portlandoregon/shared";
 
 /**
  * The city model: compact, whole-city, always resident.

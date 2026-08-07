@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { heightAt, type GameMap, type Heightfield, type StreetStore } from "@battle-juice/shared";
+import { heightAt, type GameMap, type Heightfield, type StreetStore } from "@portlandoregon/shared";
 import { toScene } from "./camera.js";
 import { streetsFrom, type StreetAccess } from "../streets.js";
 import { Dispatch } from "./dispatch.js";

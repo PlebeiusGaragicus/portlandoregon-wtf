@@ -1,4 +1,4 @@
-# Battle Juice — Game Design
+# portlandoregon.wtf — Game Design
 
 ## Concept
 

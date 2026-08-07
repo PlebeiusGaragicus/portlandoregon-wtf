@@ -23,7 +23,7 @@ import {
   type RoadClass,
   type StreetStore,
   type WaterBody,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import { buildCityModel, type CityModel } from "../city.js";
 import { HANDHELD } from "../device.js";
 import { buildGroundMap } from "./groundmap.js";

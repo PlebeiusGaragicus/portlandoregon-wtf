@@ -11,7 +11,7 @@ import {
   type GameMap,
   type Heightfield,
   type PropStore,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import { toScene } from "./camera.js";
 import { radialGlowTexture } from "./props.js";
 import type { PropLayers } from "./props.js";

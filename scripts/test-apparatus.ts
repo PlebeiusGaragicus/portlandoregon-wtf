@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { createCanvas } from "@napi-rs/canvas";
-import type { GameMap, Landmark, StreetEdge, StreetNode } from "@battle-juice/shared";
+import type { GameMap, Landmark, StreetEdge, StreetNode } from "@portlandoregon/shared";
 import * as THREE from "three";
 import { Actors, buildFireRoster } from "../client/src/render/actors.js";
 import {

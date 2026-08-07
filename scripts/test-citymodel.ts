@@ -20,7 +20,7 @@ import {
   ringLength,
   type BuildingStore,
   type Heightfield,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import { buildCityModel, type CityModel } from "../client/src/city.js";
 
 const MAP_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "../client/src/public/map");

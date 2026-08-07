@@ -1,4 +1,4 @@
-# battle-juice
+# portlandoregon.wtf
 
 A browser-based multiplayer real-time strategy game about urban combat, hosted
 on a deployment (see `AGENTS.md` for infrastructure, `docs/design.md` for the

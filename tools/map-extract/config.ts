@@ -23,7 +23,7 @@ export const BUFFER_DEG = 0.002; // ≈ 160–220 m
 // Etiquette (MAP-PLAN §3): sequential requests, ~3 req/s, honest UA.
 export const RATE = { minDelayMs: 350 };
 export const USER_AGENT =
-  "battle-juice-map-extract/0.1 (personal game project; mayor@portlandoregon.wtf)";
+  "portlandoregon-wtf-map-extract/0.1 (personal game project; mayor@portlandoregon.wtf)";
 
 // Sign codes to keep, mapped to game sign kinds — the deliberate human step
 // after VERIFY prints the histograms (recorded in the manifest). Portland's

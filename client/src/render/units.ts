@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
-import { ENTITY_RADIUS, MOVE_SPEED, SQUAD_POP, type Entity, type Snapshot } from "@battle-juice/shared";
+import { ENTITY_RADIUS, MOVE_SPEED, SQUAD_POP, type Entity, type Snapshot } from "@portlandoregon/shared";
 import { toScene } from "./camera.js";
 
 const PLAYER_COLORS = ["#4f7cff", "#ff5f4f", "#3ecf6a", "#e6b93e", "#b45fff", "#3ec9cf"];

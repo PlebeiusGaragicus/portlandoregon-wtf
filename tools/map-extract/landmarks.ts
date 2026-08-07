@@ -3,7 +3,7 @@
 // time rather than TRANSFORM — landmarks come from a different source than
 // the ArcGIS core layers and are cheap enough to re-attach on every bake.
 import { existsSync, readFileSync } from "node:fs";
-import type { Building, Landmark } from "@battle-juice/shared";
+import type { Building, Landmark } from "@portlandoregon/shared";
 import { LANDMARKS_FILE } from "./config.js";
 import { toLocal } from "./lib/proj.js";
 

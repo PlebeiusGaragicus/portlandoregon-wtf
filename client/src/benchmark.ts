@@ -1,4 +1,4 @@
-import type { GameMap } from "@battle-juice/shared";
+import type { GameMap } from "@portlandoregon/shared";
 import type { DebugFireScenario, Renderer, RendererDebugStats } from "./render/index.js";
 
 interface MemorySample {
@@ -75,9 +75,9 @@ export interface BrowserBenchmarkResult {
 
 declare global {
   interface Window {
-    __bjBenchmark?: BrowserBenchmarkResult | { running: true };
-    __bjBenchmarkError?: string;
-    __bjBenchmarkStage?: string;
+    __pdxBenchmark?: BrowserBenchmarkResult | { running: true };
+    __pdxBenchmarkError?: string;
+    __pdxBenchmarkStage?: string;
   }
 }
 
@@ -243,14 +243,14 @@ async function sampleSettledScenario(renderer: Renderer): Promise<SettledScenari
  * Reproducible in-browser performance scenario.
  *
  * Run the normal client with `?benchmark=1`. The final JSON is printed and
- * retained at `window.__bjBenchmark` for copying from desktop or phone
+ * retained at `window.__pdxBenchmark` for copying from desktop or phone
  * remote-devtools. It intentionally uses public renderer debug controls
  * rather than reaching into private state.
  */
 export async function runBrowserBenchmark(renderer: Renderer, map: GameMap): Promise<BrowserBenchmarkResult> {
-  if (window.__bjBenchmark) throw new Error("benchmark already started");
-  window.__bjBenchmark = { running: true };
-  window.__bjBenchmarkStage = "boot";
+  if (window.__pdxBenchmark) throw new Error("benchmark already started");
+  window.__pdxBenchmark = { running: true };
+  window.__pdxBenchmarkStage = "boot";
   renderer.debugPrepareBenchmark();
 
   const longTasks: number[] = [];
@@ -265,7 +265,7 @@ export async function runBrowserBenchmark(renderer: Renderer, map: GameMap): Pro
 
   const startedAt = new Date().toISOString();
   const timeToFullFillMs = await waitForFill(renderer);
-  window.__bjBenchmarkStage = "cold-boot-settle";
+  window.__pdxBenchmarkStage = "cold-boot-settle";
   renderer.debugSetNight(false);
   renderer.debugSetView(map.meta.width / 2, map.meta.height / 2, 900);
   const coldBoot = await sampleSettledScenario(renderer);
@@ -273,7 +273,7 @@ export async function runBrowserBenchmark(renderer: Renderer, map: GameMap): Pro
   const before = coldBoot.resources;
   const memoryBefore = coldBoot.memory;
   const idle = await sampleFrames(renderer, 120);
-  window.__bjBenchmarkStage = "idle-settle";
+  window.__pdxBenchmarkStage = "idle-settle";
   const idleSettled = await sampleSettledScenario(renderer);
 
   // Cross and revisit 100 tile boundaries. Revisit is what exposes cache
@@ -288,18 +288,18 @@ export async function runBrowserBenchmark(renderer: Renderer, map: GameMap): Pro
     }
   };
   await panRevisit();
-  window.__bjBenchmarkStage = "pan-settle";
+  window.__pdxBenchmarkStage = "pan-settle";
   const panSettled = await sampleSettledScenario(renderer);
   const afterPan = panSettled.resources;
   const memoryAfterPan = panSettled.memory;
   await panRevisit();
-  window.__bjBenchmarkStage = "revisit-settle";
+  window.__pdxBenchmarkStage = "revisit-settle";
   const revisitSettled = await sampleSettledScenario(renderer);
   const afterRevisit = revisitSettled.resources;
   const memoryAfterRevisit = revisitSettled.memory;
 
   renderer.debugSetNight(true);
-  window.__bjBenchmarkStage = "night-wide";
+  window.__pdxBenchmarkStage = "night-wide";
   // A deliberately excessive request is clamped to the current rotated,
   // aspect-aware full-city fit. This exercises the real strategic tier.
   renderer.debugSetView(cx, cy, Number.MAX_SAFE_INTEGER);
@@ -308,7 +308,7 @@ export async function runBrowserBenchmark(renderer: Renderer, map: GameMap): Pro
   const nightWideSettled = await sampleSettledScenario(renderer);
 
   renderer.debugSetView(cx, cy, 450);
-  window.__bjBenchmarkStage = "fpv";
+  window.__pdxBenchmarkStage = "fpv";
   renderer.debugSetFpv(true);
   await waitFrames(20);
   const fpv = await sampleFrames(renderer, 120);
@@ -319,13 +319,13 @@ export async function runBrowserBenchmark(renderer: Renderer, map: GameMap): Pro
   renderer.debugSetView(cx, cy, 900);
   await sampleSettledScenario(renderer);
   const activeFireSetup = renderer.debugStartActiveFireScenario();
-  window.__bjBenchmarkStage = "active-fire";
+  window.__pdxBenchmarkStage = "active-fire";
   await waitFrames(20);
   const activeFire = await sampleFrames(renderer, 120);
   const activeFireSettled = await sampleSettledScenario(renderer);
 
   const frameBeforeHide = renderer.debugStats().render.frame;
-  window.__bjBenchmarkStage = "lifecycle";
+  window.__pdxBenchmarkStage = "lifecycle";
   window.dispatchEvent(new PageTransitionEvent("pagehide"));
   await new Promise((resolve) => setTimeout(resolve, 25));
   const pageHidePaused = renderer.debugStats().paused;
@@ -383,10 +383,10 @@ export async function runBrowserBenchmark(renderer: Renderer, map: GameMap): Pro
       lifecycle: lifecycleSettled,
     },
   };
-  window.__bjBenchmark = result;
-  window.__bjBenchmarkStage = "complete";
+  window.__pdxBenchmark = result;
+  window.__pdxBenchmarkStage = "complete";
   const json = JSON.stringify(result, null, 2);
-  console.info("Battle Juice browser benchmark\n" + json);
+  console.info("portlandoregon.wtf browser benchmark\n" + json);
   // Physical phones often have no attached devtools. Leave a selectable
   // on-screen report so the result can be copied directly from the device.
   const report = document.createElement("pre");

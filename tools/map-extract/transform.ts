@@ -17,7 +17,7 @@ import type {
   StreetNode,
   Trail,
   WaterBody,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import { extractDate, HEIGHT_PER_STORY_M, MANIFEST_FILE, MAP_NAME, processedDir, rawDir, SIGN_KEEP } from "./config.js";
 import type { GeoJsonCollection, GeoJsonFeature } from "./lib/arcgis.js";
 import { clipPolylineAtExit, clipRingToRect, ensureWinding, inRect, round1, simplify, type Pt, type Rect } from "./lib/geo.js";

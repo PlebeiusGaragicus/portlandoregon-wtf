@@ -12,7 +12,7 @@
 // in a single paint, and diffs every vertex colour in the scene.
 import * as THREE from "three";
 import { storeFromBuildings,
-  layersFromMap, type GameMap } from "@battle-juice/shared";
+  layersFromMap, type GameMap } from "@portlandoregon/shared";
 import { ScarField } from "../client/src/scars.js";
 import { buildWorld, type WorldLayers } from "../client/src/render/world.js";
 

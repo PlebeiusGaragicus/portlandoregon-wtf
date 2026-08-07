@@ -20,7 +20,7 @@ const chrome =
   (process.platform === "darwin"
     ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     : "google-chrome");
-const profile = mkdtempSync(join(tmpdir(), "battle-juice-benchmark-"));
+const profile = mkdtempSync(join(tmpdir(), "portlandoregon-benchmark-"));
 
 let browser: ChildProcess | null = null;
 let socket: WebSocket | null = null;
@@ -106,10 +106,10 @@ async function main(): Promise<void> {
           expression: `new Promise((resolve, reject) => {
             const until = Date.now() + ${timeoutMs};
             const poll = () => {
-              if (window.__bjBenchmarkError) return reject(new Error(window.__bjBenchmarkError));
-              const renderer = window.__bj?.renderer;
+              if (window.__pdxBenchmarkError) return reject(new Error(window.__pdxBenchmarkError));
+              const renderer = window.__pdx?.renderer;
               const ready =
-                window.__bjBenchmarkStage === "night-wide" &&
+                window.__pdxBenchmarkStage === "night-wide" &&
                 renderer?.debugStats().overview.complete;
               if (ready) return requestAnimationFrame(() => requestAnimationFrame(() => resolve(true)));
               if (Date.now() > until) return reject(new Error("overview screenshot timed out"));
@@ -133,13 +133,13 @@ async function main(): Promise<void> {
     expression: `new Promise((resolve, reject) => {
       const until = Date.now() + ${timeoutMs};
       const poll = () => {
-        if (window.__bjBenchmarkError) return reject(new Error(
-          window.__bjBenchmarkError + " (stage: " + (window.__bjBenchmarkStage || "unknown") + ")"
+        if (window.__pdxBenchmarkError) return reject(new Error(
+          window.__pdxBenchmarkError + " (stage: " + (window.__pdxBenchmarkStage || "unknown") + ")"
         ));
-        const value = window.__bjBenchmark;
+        const value = window.__pdxBenchmark;
         if (value && value.running !== true) return resolve(value);
         if (Date.now() > until) return reject(new Error(
-          "benchmark timed out at stage " + (window.__bjBenchmarkStage || "unknown")
+          "benchmark timed out at stage " + (window.__pdxBenchmarkStage || "unknown")
         ));
         setTimeout(poll, 250);
       };

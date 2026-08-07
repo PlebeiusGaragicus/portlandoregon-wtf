@@ -1,4 +1,4 @@
-import type { GameMap } from "@battle-juice/shared";
+import type { GameMap } from "@portlandoregon/shared";
 import { CameraRig } from "./camera.js";
 
 const DRAG_THRESHOLD_PX = 4;

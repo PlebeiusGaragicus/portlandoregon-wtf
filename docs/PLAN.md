@@ -1,4 +1,4 @@
-# Battle Juice — Development Plan
+# portlandoregon.wtf — Development Plan
 
 Phases are named, not numbered: they are not strictly linear, and new phases
 get added as the project evolves. Each phase is a vertical slice — when it

@@ -8,7 +8,7 @@
 // different map falls back to the default instead of restoring a position that
 // means nothing there.
 
-import { latLonToWorld, withinMap, worldToLatLon, type GameMap, type LatLon } from "@battle-juice/shared";
+import { latLonToWorld, withinMap, worldToLatLon, type GameMap, type LatLon } from "@portlandoregon/shared";
 import { MIN_VIEW_HEIGHT, type CameraRig } from "./render/camera.js";
 
 const STORAGE_KEY = "bj.view.v1";

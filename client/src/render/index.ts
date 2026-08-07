@@ -12,7 +12,7 @@ import {
   type StreetStore,
   type GameMap,
   type Heightfield,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import { Actors } from "./actors.js";
 import {
   CameraRig,

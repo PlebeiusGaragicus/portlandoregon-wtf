@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { heightAt, type Heightfield } from "@battle-juice/shared";
+import { heightAt, type Heightfield } from "@portlandoregon/shared";
 import type { StreetAccess } from "../streets.js";
 
 /**

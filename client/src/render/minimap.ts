@@ -1,4 +1,4 @@
-import type { GameMap, StreetStore } from "@battle-juice/shared";
+import type { GameMap, StreetStore } from "@portlandoregon/shared";
 import { streetsFrom, type StreetAccess } from "../streets.js";
 
 // Translucent minimap overlay: prerendered streets + water base, live view

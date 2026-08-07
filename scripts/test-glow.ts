@@ -32,7 +32,7 @@ import {
   tileKeyAt,
   type GameMap,
   type Heightfield,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import { buildProps } from "../client/src/render/props.js";
 
 const MAP_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "../client/src/public/map");

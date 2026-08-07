@@ -1,4 +1,4 @@
-# Battle Juice optimization record
+# portlandoregon.wtf optimization record
 
 Status: implementation in progress. The original 2026-08-05 proposal is
 retained below as the design history; this section records what actually
@@ -23,7 +23,7 @@ shipped and keeps browser measurements distinct from Node component profiles.
 Run the client with `?benchmark=1`, or start Vite on port 5555 and execute
 `node --import tsx scripts/run-browser-benchmark.ts`. The harness covers cold
 fill, idle, a 100-boundary pan/revisit, night-wide view, FPV, and loop
-pause/resume. Results remain available at `window.__bjBenchmark`.
+pause/resume. Results remain available at `window.__pdxBenchmark`.
 
 Reference environment: headless Chrome 151 on Apple silicon, 756×469 at DPR 1.
 `performance.memory` is the Chrome JS-heap signal, not a claim about total tab
@@ -102,7 +102,7 @@ and nodes, and 7.5 MB vector layers. `map-lite.json.gz` is metadata-only.
 
 ---
 
-# Original proposal — getting Battle Juice under 1 GB
+# Original proposal — getting the city under 1 GB
 
 The goal is one code path that works on a phone and on a desktop, with a
 resident footprint around 300 MB and a hard ceiling of 1 GB. Today the desktop

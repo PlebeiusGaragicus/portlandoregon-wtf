@@ -22,7 +22,7 @@ import {
   findTile,
   tileKeyAt,
   type Heightfield,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import { buildCityModel } from "../client/src/city.js";
 import { createBuildingTiles } from "../client/src/render/world.js";
 

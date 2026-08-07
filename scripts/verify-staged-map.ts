@@ -19,7 +19,7 @@ import {
   decodeProps,
   decodeStreets,
   LAYER_NAMES,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import {
   OVERVIEW_ATLAS_MANIFEST,
   OVERVIEW_ATLAS_VERSION,

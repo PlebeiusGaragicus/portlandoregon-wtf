@@ -3,7 +3,7 @@
 // standalone on GitHub Pages. (Units and the multiplayer join flow return in a
 // later phase; net.ts and the server's join path are kept for that.)
 import * as THREE from "three";
-import type { BuildingStore, CityLod, Heightfield, LayerStores, PropStore, StreetStore } from "@battle-juice/shared";
+import type { BuildingStore, CityLod, Heightfield, LayerStores, PropStore, StreetStore } from "@portlandoregon/shared";
 import { BootLog, CRASH_LIMIT, fmtBytes, probeDevice, webglAvailable } from "./bootlog.js";
 import { buildCityModel } from "./city.js";
 import { loadBuildings, loadCityLod, loadHeightfield, loadLayers, loadMap, loadOverviewAtlas, loadProps, loadStreets, MapUnavailableError } from "./mapdata.js";
@@ -209,16 +209,16 @@ async function boot(): Promise<void> {
   log.line(`interactive — total ${((performance.now() - bootStart) / 1000).toFixed(2)}s`, "ok");
   log.finish();
   // Dev/debug handle (headless smoke tests steer the camera through this).
-  (window as unknown as Record<string, unknown>)["__bj"] = { renderer, THREE };
+  (window as unknown as Record<string, unknown>)["__pdx"] = { renderer, THREE };
   loadingEl.classList.add("done");
   if (new URLSearchParams(window.location.search).has("benchmark")) {
     log.line("browser benchmark scheduled");
     void import("./benchmark.js")
       .then(({ runBrowserBenchmark }) => runBrowserBenchmark(renderer, map))
-      .then(() => log.line("browser benchmark complete — see window.__bjBenchmark", "ok"))
+      .then(() => log.line("browser benchmark complete — see window.__pdxBenchmark", "ok"))
       .catch((err) => {
         const message = String(err);
-        window.__bjBenchmarkError = message;
+        window.__pdxBenchmarkError = message;
         log.line(`browser benchmark failed: ${message}`, "fail");
       });
   }
@@ -265,7 +265,7 @@ function attempt(): void {
       statusEl.textContent = "this browser can't draw 3D";
       loadingEl.classList.add("offline");
       offlineDetailEl.innerHTML =
-        "Battle Juice needs WebGL, and this browser has it switched off.<br><br>" +
+        "This city needs WebGL, and this browser has it switched off.<br><br>" +
         "On iPhone and iPad this is usually <strong>Lockdown Mode</strong>: " +
         "Settings &rsaquo; Privacy &amp; Security &rsaquo; Lockdown Mode. You can leave it on " +
         "everywhere else and add an exception for this site.";

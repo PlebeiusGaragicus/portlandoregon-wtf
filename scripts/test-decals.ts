@@ -18,7 +18,7 @@ import {
   storeFromBuildings,
   type GameMap,
   type Heightfield,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import { buildWorld } from "../client/src/render/world.js";
 
 let failed = 0;

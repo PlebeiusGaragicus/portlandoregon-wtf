@@ -10,7 +10,7 @@ import {
   type GameMap,
   type PlayerInput,
   type ServerMsg,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 
 interface Player {
   id: string;

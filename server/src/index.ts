@@ -4,7 +4,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
-import { parseClientMsg, type ServerMsg } from "@battle-juice/shared";
+import { parseClientMsg, type ServerMsg } from "@portlandoregon/shared";
 import { checkPassword, issueToken, passwordConfigured } from "./auth.js";
 import { loadActiveMap } from "./map.js";
 import { Room } from "./room.js";
@@ -161,5 +161,5 @@ if (!passwordConfigured()) {
 }
 
 httpServer.listen(PORT, () => {
-  console.log(`battle-juice server on http://localhost:${PORT} (ws at /ws)`);
+  console.log(`portlandoregon.wtf server on http://localhost:${PORT} (ws at /ws)`);
 });

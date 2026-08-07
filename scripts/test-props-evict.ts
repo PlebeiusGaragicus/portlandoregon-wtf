@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import * as THREE from "three";
-import { decodeHeightfield, decodeProps, tileKeyAt, type Heightfield } from "@battle-juice/shared";
+import { decodeHeightfield, decodeProps, tileKeyAt, type Heightfield } from "@portlandoregon/shared";
 import { buildProps } from "../client/src/render/props.js";
 
 (globalThis as Record<string, unknown>)["document"] = {

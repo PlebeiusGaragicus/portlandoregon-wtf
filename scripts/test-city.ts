@@ -12,7 +12,7 @@
 //
 // Runs on a synthetic map in milliseconds; verified separately against the
 // real Portland extract (538,519 buildings, zero mismatches).
-import { heightAt, storeFromBuildings, type GameMap, type Heightfield } from "@battle-juice/shared";
+import { heightAt, storeFromBuildings, type GameMap, type Heightfield } from "@portlandoregon/shared";
 import { buildCityModel } from "../client/src/city.js";
 
 let failed = 0;

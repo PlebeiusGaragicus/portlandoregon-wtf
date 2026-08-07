@@ -2,7 +2,7 @@
 //
 // The map ships with the site (staged by scripts/stage-map.sh into
 // src/public/map/, which Vite publishes). Paths are relative so they resolve
-// whether the site is mounted at a domain root or at /battle-juice/.
+// whether the site is mounted at a domain root or at a sub-path.
 
 import {
   decodeBuildings,
@@ -18,7 +18,7 @@ import {
   type PropStore,
   type StreetStore,
   type Heightfield,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import {
   OVERVIEW_ATLAS_MANIFEST,
   parseOverviewAtlasManifest,

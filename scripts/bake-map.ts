@@ -36,7 +36,7 @@ import {
   streetStoreBytes,
   storeBytes,
   type GameMap,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import { bakeOverviewAtlas } from "./bake-overview-atlas.js";
 import { OVERVIEW_ATLAS_MANIFEST } from "./overview-atlas-manifest.js";
 

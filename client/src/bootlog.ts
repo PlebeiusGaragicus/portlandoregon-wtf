@@ -11,8 +11,8 @@
 
 export type Level = "info" | "ok" | "warn" | "fail";
 
-const STORE_KEY = "bj:bootlog";
-const CRASH_KEY = "bj:bootcrashes";
+const STORE_KEY = "pdx:bootlog";
+const CRASH_KEY = "pdx:bootcrashes";
 /** Consecutive unfinished boots before we stop auto-retrying. Two deaths at
  * the same step is a verdict, not a fluke — looping a third time just burns
  * battery and hides the reason. */

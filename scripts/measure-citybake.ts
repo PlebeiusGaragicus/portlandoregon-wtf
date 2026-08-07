@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { decodeBuildings, decodeHeightfield, type Heightfield } from "@battle-juice/shared";
+import { decodeBuildings, decodeHeightfield, type Heightfield } from "@portlandoregon/shared";
 import { buildCityModel } from "../client/src/city.js";
 
 const MAP_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "../client/src/public/map");

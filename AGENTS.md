@@ -1,6 +1,6 @@
-# Agent Guide — battle-juice
+# Agent Guide — portlandoregon.wtf
 
-Battle Juice is a multiplayer real-time strategy game about urban combat,
+portlandoregon.wtf is a multiplayer real-time strategy game about urban combat,
 hosted on a personal deployment. The deployment acts as the game "server"; remote
 clients (browsers) connect over the internet through the deployment's public VPS
 gateway. Gameplay, netcode, and stack decisions live in `docs/design.md` —

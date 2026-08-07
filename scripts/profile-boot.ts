@@ -17,7 +17,7 @@ import {
   decodeProps,
   type GameMap,
   type Heightfield,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import { buildCityModel } from "../client/src/city.js";
 import { beginWorld } from "../client/src/render/world.js";
 import { buildProps } from "../client/src/render/props.js";

@@ -9,7 +9,7 @@
 // are exactly the ones you cannot spot from reading the code. This drives the
 // gesture recogniser directly so the arbitration thresholds and every
 // direction stay pinned.
-import type { GameMap } from "@battle-juice/shared";
+import type { GameMap } from "@portlandoregon/shared";
 import { CameraRig } from "../client/src/render/camera.js";
 import { Controls, type ControlDelegate } from "../client/src/render/controls.js";
 

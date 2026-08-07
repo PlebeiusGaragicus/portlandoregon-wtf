@@ -44,7 +44,7 @@ import {
   storeBytes,
   type BuildingStore,
   type GameMap,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 
 let failed = 0;
 function check(name: string, ok: boolean, detail = ""): void {

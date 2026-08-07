@@ -30,7 +30,7 @@ import {
   type BuildingStore,
   type GameMap,
   type Heightfield,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import { buildCityModel } from "../client/src/city.js";
 import { buildWorld } from "../client/src/render/world.js";
 

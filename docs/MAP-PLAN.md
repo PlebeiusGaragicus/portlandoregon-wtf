@@ -1,4 +1,4 @@
-# Battle Juice — Portland Map Plan
+# portlandoregon.wtf — Portland Map Plan
 
 How we turn **real City of Portland GIS data** into the game's level: a street
 graph the sim runs on, plus extruded buildings rendered in a rotatable 2.5D
@@ -19,7 +19,7 @@ This plan feeds the **Streets** phase in `PLAN.md`.
 
 ## 1. What we need (and what we deliberately skip)
 
-Battle Juice needs far less than the fire-training project those docs were
+This game needs far less than the fire-training project those docs were
 written for. Two layers carry the whole game:
 
 | Layer | Endpoint | Records (citywide) | Why we need it |
@@ -45,7 +45,7 @@ Optional, later:
 
 **Skipped entirely:** the Fire MDT service (hydrants, gates, blocked streets).
 The study flags it as an undocumented internal operational tool with real
-takedown risk — and we don't need it. Everything Battle Juice uses comes from
+takedown risk — and we don't need it. Everything this game uses comes from
 the **published open-data portal**, which is the low-risk tier. Also skipped:
 speed limits (no traffic rules in an RTS) and street view (the study's
 conclusion applies doubly here — we synthesize our world from footprints +

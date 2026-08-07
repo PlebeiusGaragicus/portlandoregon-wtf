@@ -8,7 +8,7 @@ import {
   type Heightfield,
   type Prop,
   type PropStore,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import { toScene } from "./camera.js";
 import { geometryBytes } from "./bytes.js";
 

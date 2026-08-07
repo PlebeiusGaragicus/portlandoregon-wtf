@@ -19,7 +19,7 @@ import {
   layersFromMap,
   type GameMap,
   type Heightfield,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import { buildWorld } from "../client/src/render/world.js";
 
 const MAP_DIR = join(fileURLToPath(new URL(".", import.meta.url)), "../client/src/public/map");

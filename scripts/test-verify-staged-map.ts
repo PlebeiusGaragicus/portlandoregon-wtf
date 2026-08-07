@@ -11,7 +11,7 @@ import {
   encodeStreets,
   layerInputs,
   type GameMap,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import { verifyStagedMap } from "./verify-staged-map.js";
 import {
   OVERVIEW_ATLAS_MANIFEST,
@@ -127,7 +127,7 @@ function writeAtlas(dir: string, map: GameMap): OverviewAtlasManifest {
   return manifest;
 }
 
-const dir = mkdtempSync(join(tmpdir(), "battle-juice-map-gate-"));
+const dir = mkdtempSync(join(tmpdir(), "portlandoregon-map-gate-"));
 try {
   writeFileSync(join(dir, "buildings.bin.gz"), gz(encodeBuildings(map)));
   writeFileSync(join(dir, "props.bin.gz"), gz(encodeProps(map.props)));

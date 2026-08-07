@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { activeMap, type GameMap } from "@battle-juice/shared";
+import { activeMap, type GameMap } from "@portlandoregon/shared";
 
 const REPO_ROOT = join(fileURLToPath(new URL(".", import.meta.url)), "../..");
 

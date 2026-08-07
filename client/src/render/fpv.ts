@@ -7,7 +7,7 @@ import {
   type BuildingStore,
   type GameMap,
   type Heightfield,
-} from "@battle-juice/shared";
+} from "@portlandoregon/shared";
 import type { CityModel } from "../city.js";
 import { toScene } from "./camera.js";
 

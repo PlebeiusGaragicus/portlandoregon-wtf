@@ -7,7 +7,7 @@
 // and half a minute of geometry building before anything is visible, and the
 // interesting cases here (corrupt records, a view saved for another map) are
 // awkward to even set up by clicking.
-import { latLonToWorld, worldToLatLon, type GameMap } from "@battle-juice/shared";
+import { latLonToWorld, worldToLatLon, type GameMap } from "@portlandoregon/shared";
 import { CameraRig, MIN_VIEW_HEIGHT } from "../client/src/render/camera.js";
 import { createViewSaver, formatLatLon, restoreView } from "../client/src/view.js";
 
