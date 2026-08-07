@@ -22,7 +22,7 @@ jobs:
     # Publishing belongs to the abvstudio fork; this repo is where the game is
     # developed and has Pages disabled. Without this guard every push to main
     # here would fail on the deploy step and train us to ignore red builds.
-    if: github.repository == 'abvstudio-net/battle-juice'
+    if: github.repository == 'abvstudio-net/portlandoregon-wtf'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -39,15 +39,16 @@ jobs:
         # site deploys but has no map to load.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MAP_REPO: PlebeiusGaragicus/battle-juice
+          MAP_REPO: PlebeiusGaragicus/portlandoregon-wtf
         run: ./scripts/stage-map.sh --download
 
       - name: Build client
         # Only the WebSocket uses this — the map is a static asset, so the
         # published build needs no server. Baked in at build time; override with
-        # a VITE_SERVER_ORIGIN repo variable when the game server moves.
+        # a VITE_SERVER_ORIGIN repo variable when the game server moves. Unset
+        # means same-origin, which is correct for the spectator-only build.
         env:
-          VITE_SERVER_ORIGIN: ${{ vars.VITE_SERVER_ORIGIN || 'https://game.internal.invalid' }}
+          VITE_SERVER_ORIGIN: ${{ vars.VITE_SERVER_ORIGIN }}
         run: npm run build -w client
 
       - uses: actions/configure-pages@v6
@@ -58,7 +59,7 @@ jobs:
 
   deploy:
     needs: build
-    if: github.repository == 'abvstudio-net/battle-juice'
+    if: github.repository == 'abvstudio-net/portlandoregon-wtf'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

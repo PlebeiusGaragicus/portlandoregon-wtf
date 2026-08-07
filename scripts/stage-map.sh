@@ -35,7 +35,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SRC_DIR="$REPO_ROOT/data/maps"
 DEST_DIR="$REPO_ROOT/client/src/public/map"
 RELEASE_TAG="${MAP_RELEASE_TAG:-map-latest}"
-MAP_REPO="${MAP_REPO:-PlebeiusGaragicus/battle-juice}"
+MAP_REPO="${MAP_REPO:-PlebeiusGaragicus/portlandoregon-wtf}"
 
 force_download=false
 [ "${1:-}" = "--download" ] && force_download=true

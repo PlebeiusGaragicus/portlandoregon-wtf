@@ -14,7 +14,7 @@ Status legend: `done` · `next` · `planned` · `idea`
 | [Breadline](#breadline) | Airdrops + supply economy | next |
 | [Kettle](#kettle) | Encirclement mechanic | planned |
 | [Keymaster](#keymaster) | Nostr keypair auth (NIP-98) | planned |
-| [Go Live](#go-live) | Deploy to the deployment | planned |
+| [Go Live](#go-live) | Deploy the game server | planned |
 | [War Paint](#war-paint) | Visual + UX polish | idea |
 | [Fog](#fog) | Fog of war | idea |
 
@@ -130,8 +130,8 @@ direct assault, and players can see why.
   only the front door changes.
 - Identity comes free: display names/avatars can come from the player's
   Nostr profile (kind 0) instead of a typed name.
-- Deployment synergy: relay already runs on the app host
-  (`wss://relay.internal.invalid`) — usable for profile lookups.
+- A self-hosted relay is already available for profile lookups; its address is
+  supplied by configuration, not recorded here.
 - Update `AGENTS.md`'s auth model section when this lands; retire
   `GAME_PASSWORD`.
 
@@ -140,21 +140,20 @@ room, and a stranger with the URL gets nothing.
 
 ## Go Live
 
-**Deploy to the deployment.** Worth doing right after Firefight — a real match
+**Deploy the game server.** Worth doing right after Firefight — a real match
 with a friend over the internet is the best playtest, and the deploy is small.
 
-- Dockerfile here; Docker Compose service on the app host and a reverse proxy block
-  for `game.internal.invalid` in the **`infra` repo** (its conventions,
-  not this repo's).
-- Same pattern as relay: reverse proxy on the VPS → VPN → app host; game
-  clients never join the VPN.
-- rate limiting jail on the VPS for failed join attempts.
-- `/healthz` already exists for monitoring; wire it into whatever the deployment
-  uses.
-- No remote deploy commands against the live deployment unless explicitly asked.
+- Dockerfile here; the container definition and reverse-proxy route live in the
+  separate private infrastructure repo, following its conventions, not this
+  repo's.
+- Clients reach the server through a TLS reverse proxy only.
+- Rate-limit failed join attempts at the proxy.
+- `/healthz` already exists for monitoring; wire it into whatever the
+  deployment uses.
+- No remote deploy commands against live infrastructure unless explicitly
+  asked.
 
-Exit criteria: two people on different networks play a match at
-`https://game.internal.invalid`.
+Exit criteria: two people on different networks play a match over the internet.
 
 ## War Paint
 

@@ -5,7 +5,7 @@
 //
 // Empty (the default) means same-origin: in dev that's Vite proxying /ws to
 // localhost. The Pages build is the odd one out — it is served from
-// internal.invalid but any game server lives elsewhere — so CI bakes
+// portlandoregon.wtf but any game server lives elsewhere — so CI bakes
 // VITE_SERVER_ORIGIN in at build time.
 const ORIGIN = (import.meta.env.VITE_SERVER_ORIGIN ?? "").trim().replace(/\/+$/, "");
 

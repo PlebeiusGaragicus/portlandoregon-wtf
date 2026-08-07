@@ -23,8 +23,8 @@ const clientDist = join(fileURLToPath(new URL(".", import.meta.url)), "../../cli
 // change — which is how a future game host gets added.
 const ALLOWED_ORIGINS = new Set(
   [
-    "https://internal.invalid",
-    "https://game.internal.invalid",
+    "https://portlandoregon.wtf",
+    "https://www.portlandoregon.wtf",
     ...(process.env.ALLOWED_ORIGINS ?? "").split(",").map((o) => o.trim()),
   ].filter(Boolean),
 );

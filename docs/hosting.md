@@ -9,7 +9,7 @@ Pages' IPs, and the publishing fork claims it as its custom domain. GitHub
 doesn't own the domain; the DNS records delegate it.
 
 The claim lives in the fork's Pages settings — server-side, not in the build.
-`gh api repos/abvstudio-net/battle-juice/pages` reports it as `cname`, and that
+`gh api repos/abvstudio-net/portlandoregon-wtf/pages` reports it as `cname`, and that
 setting is what the Pages edge resolves an incoming `Host` header against.
 **There is deliberately no `CNAME` file in the build.** Under Actions-based
 publishing GitHub ignores one outright ("no `CNAME` file is created, and any
@@ -24,20 +24,17 @@ The client builds with `base: './'` (relative asset URLs), which works at a
 domain root and at a sub-path alike. An absolute base deploys green and then
 404s on its own JavaScript.
 
-### Previously: the inherited internal.invalid URL
+### Previously: an inherited URL
 
-Before the domain, the game published at `internal.invalid/battle-juice/`, inherited
-rather than configured: `internal.invalid`'s apex records point at Pages, the
-`abvstudio-net` account's *user-site* repo claims it, and every project site on
-that account with no custom domain of its own is published beneath it. Setting
-one here opted this repo out of that inheritance — and only this repo; sibling
-project sites on the account still publish under `internal.invalid/<repo>/`. The
-old URL still resolves: GitHub 301s `internal.invalid/battle-juice/` to the new
-domain rather than 404ing it.
+Before the domain, the game published under the publishing account's inherited
+user-site URL rather than a configured one: a GitHub project site with no custom
+domain of its own is published beneath its account's user-site domain. Setting a
+custom domain here opted this repo out of that inheritance — and only this repo;
+sibling project sites on the account are unaffected. The old URL still resolves;
+GitHub 301s it to the new domain rather than 404ing it.
 
-A dedicated subdomain (`play.internal.invalid`) was tried before that and dropped:
-it needed its own DNS record to beat the wildcard, to end up at a URL no better
-than the inherited one.
+A dedicated subdomain was tried before that and dropped: it needed its own DNS
+record to beat a wildcard, to end up at a URL no better than the inherited one.
 
 ## Keeping the city on the device
 
@@ -92,17 +89,17 @@ and deleting the icon deletes the city with it.
 
 ## Two repos: develop here, publish from the fork
 
-This repo (`PlebeiusGaragicus/battle-juice`) is where the game is developed and
-has **GitHub Pages disabled**. `abvstudio-net/battle-juice` is a fork with Pages
+This repo (`PlebeiusGaragicus/portlandoregon-wtf`) is where the game is developed and
+has **GitHub Pages disabled**. `abvstudio-net/portlandoregon-wtf` is a fork with Pages
 enabled; it is the copy that serves `portlandoregon.wtf`. The fork is only ever
 fast-forwarded — never commit to it directly.
 
 Why: a GitHub project site with no custom domain inherits its account's
-user-site domain, and this account's is `internal.invalid`. Publishing from the
-abvstudio fork kept the game off the the other project domain without a per-repo
-workaround. The custom domain now settles the URL either way, but the split
-stays: Pages is off here, so development pushes never publish. Full rationale in
-the deployment repo's `docs/github-publishing.md`.
+user-site domain, and the development account already has one in use for an
+unrelated project. Publishing from the separate fork kept the game off that
+domain without a per-repo workaround. The custom domain now settles the URL
+either way, but the split stays: Pages is off here, so development pushes never
+publish.
 
 ## Branch flow
 
@@ -115,10 +112,10 @@ the deployment repo's `docs/github-publishing.md`.
   in as the **abvstudio** account, open the fork and press **Sync fork → Update
   branch**. That fast-forwards the fork's `main` and the resulting push triggers
   `deploy-pages.yml` **there**. The workflow is guarded with
-  `if: github.repository == 'abvstudio-net/battle-juice'` so it never runs here.
+  `if: github.repository == 'abvstudio-net/portlandoregon-wtf'` so it never runs here.
 
   The equivalent from a terminal, if you ever want it, is
-  `gh repo sync abvstudio-net/battle-juice --branch main` — the button is the
+  `gh repo sync abvstudio-net/portlandoregon-wtf --branch main` — the button is the
   same fast-forward. Note that both publish whatever is on **`origin/main`**, so
   push here first or the release silently lags a commit behind.
 
@@ -126,12 +123,15 @@ the deployment repo's `docs/github-publishing.md`.
 
 `client/src/server.ts` reads `VITE_SERVER_ORIGIN` at build time.
 
-- **Unset** (local dev, deployment-served build): same-origin. Vite's dev proxy
-  forwards `/ws`, `/map` and `/heightmap` to the local game server; the
-  deployment build is served by that same server. Unchanged from before Pages.
-- **Set** (the Pages build): absolute URLs against that origin, with
-  `https:` → `wss:` for the socket. CI sets it to `https://game.internal.invalid`;
-  a `VITE_SERVER_ORIGIN` repo variable overrides it if the deployment moves.
+- **Unset** (local dev, and any build served by the game server itself):
+  same-origin. Vite's dev proxy forwards `/ws`, `/map` and `/heightmap` to the
+  local game server, which also serves its own build. Unchanged from before
+  Pages.
+- **Set**: absolute URLs against that origin, with `https:` → `wss:` for the
+  socket. It is unset by default — correct for the spectator-only Pages build,
+  which talks to no server. Set the `VITE_SERVER_ORIGIN` repo variable on the
+  publishing fork when a game server exists to point at. The address is
+  deliberately not recorded in this repo.
 
 Because Pages is HTTPS-only, the client always speaks `wss://` and
 cross-origin `https://`, so the server must be behind a valid cert with
@@ -141,10 +141,10 @@ is spectator-only and talks to no server at all.
 ## Cross-origin access
 
 Only relevant once multiplayer returns. `server/src/index.ts` keeps an origin
-allowlist (`internal.invalid`, `game.internal.invalid`, any localhost, plus a
-comma-separated `ALLOWED_ORIGINS` env var). **`portlandoregon.wtf` is not in it
-yet** — add it there, or via `ALLOWED_ORIGINS`, before the first multiplayer
-build, or every socket from the published game gets a 401:
+allowlist (`portlandoregon.wtf`, `www.portlandoregon.wtf`, any localhost, plus
+a comma-separated `ALLOWED_ORIGINS` env var). Any additional origin goes there,
+or via `ALLOWED_ORIGINS`, before the first multiplayer build — otherwise every
+socket from the published game gets a 401:
 
 - `/map` and `/heightmap` echo the caller's origin in
   `Access-Control-Allow-Origin` when it's trusted — never `*`, since the game
@@ -164,7 +164,7 @@ On github.com:
 
 1. On **this** repo: Pages disabled (done), `dev` branch created, `main` left as
    default. Protect `main`: require a pull request and the `ci / check` status.
-2. On the **fork** (`abvstudio-net/battle-juice`): enable Actions — forks have
+2. On the **fork** (`abvstudio-net/portlandoregon-wtf`): enable Actions — forks have
    them off by default and nothing deploys until you do — and set Pages →
    Source: **GitHub Actions**.
 3. Publishing is done signed in as the **abvstudio** account, which owns the

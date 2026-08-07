@@ -50,13 +50,13 @@ zones, then finishing them with superior movement and firepower.
 - Server: Node.js + `ws`, fixed-tick simulation, rooms/lobbies.
 - Client: browser, Three.js (orthographic low-poly 3D — tilted camera,
   extruded buildings, real depth occlusion); plain DOM/HTML for lobby and HUD.
-- Deploy: Docker Compose on the app host, reverse proxy route for
-  `game.internal.invalid` on the VPS (config lives in the `infra` repo).
+- Deploy: containerised, behind a TLS reverse proxy. Deployment configuration
+  lives outside this repo.
 
 ## Auth (decided)
 
-Shared password → short-lived session token on `/join`; rate limiting rate-limits
-bad attempts at the VPS. Invite links: `https://game.internal.invalid/?join=…`.
+Shared password → short-lived session token on `/join`; the reverse proxy
+rate-limits bad attempts. Invite links carry a `?join=…` parameter.
 
 ## MVP scope (v0.1)
 

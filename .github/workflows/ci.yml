@@ -45,5 +45,5 @@ jobs:
         # Same origin the deploy job bakes in, so CI exercises the real Pages
         # build rather than a same-origin variant that only works locally.
         env:
-          VITE_SERVER_ORIGIN: ${{ vars.VITE_SERVER_ORIGIN || 'https://game.internal.invalid' }}
+          VITE_SERVER_ORIGIN: ${{ vars.VITE_SERVER_ORIGIN }}
         run: npm run build -w client

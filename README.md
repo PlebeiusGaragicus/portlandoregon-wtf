@@ -1,8 +1,8 @@
 # portlandoregon.wtf
 
-A browser-based multiplayer real-time strategy game about urban combat, hosted
-on a deployment (see `AGENTS.md` for infrastructure, `docs/design.md` for the
-game design).
+A browser-based multiplayer real-time strategy game about urban combat. The
+spectator build is published at <https://portlandoregon.wtf/> (see
+`docs/hosting.md`; `docs/design.md` covers the game design).
 
 Current state: **walking skeleton** — password join, shared world, server-
 authoritative 12 Hz simulation over WebSockets, click-to-move dots with
@@ -66,9 +66,8 @@ npm start
 ```
 
 Single Node process on `PORT` (default 4000): serves the built client and the
-`/ws` WebSocket endpoint. Deployed behind reverse proxy at `game.internal.invalid`
-(reverse-proxy config lives in the `infra` repo). `GET /healthz` for
-monitoring.
+`/ws` WebSocket endpoint. Deployed privately behind a TLS reverse proxy;
+its configuration lives outside this repo. `GET /healthz` for monitoring.
 
 ## Layout
 

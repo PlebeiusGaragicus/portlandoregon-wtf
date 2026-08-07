@@ -315,7 +315,7 @@ for (const c of candidates) {
   );
   if (c.note) console.log(`  ${" ".repeat(18)} note: ${c.note}`);
 }
-console.log("\n(brotli is a fair comparison only if reverse proxy serves .br — it does by default\n for precompressed files, and every browser we care about accepts it.)");
+console.log("\n(brotli is a fair comparison only if the web server serves .br — most do by\n default for precompressed files, and every browser we care about accepts it.)");
 
 // --------------------------------------------------------- the other side
 //
