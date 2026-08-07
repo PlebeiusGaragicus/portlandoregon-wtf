@@ -59,16 +59,17 @@ the deployment repo's `docs/github-publishing.md`.
 - `dev` pushes and PRs into `main` run `.github/workflows/ci.yml` — typecheck
   every workspace, then build the client with the production server origin.
   Nothing is published.
-- `main` is the release branch. Publishing is a separate, deliberate step:
+- `main` is the release branch. Pushing to it publishes nothing on its own —
+  Pages is off in this repo. Publishing is a separate, deliberate step: signed
+  in as the **abvstudio** account, open the fork and press **Sync fork → Update
+  branch**. That fast-forwards the fork's `main` and the resulting push triggers
+  `deploy-pages.yml` **there**. The workflow is guarded with
+  `if: github.repository == 'abvstudio-net/battle-juice'` so it never runs here.
 
-  ```sh
-  ./scripts/release.sh --dry-run   # what would publish
-  ./scripts/release.sh --watch     # publish and follow the deploy
-  ```
-
-  which fast-forwards the fork and triggers `deploy-pages.yml` **there**. That
-  workflow is guarded with `if: github.repository == 'abvstudio-net/battle-juice'`
-  so it never runs in this repo, where Pages is off.
+  The equivalent from a terminal, if you ever want it, is
+  `gh repo sync abvstudio-net/battle-juice --branch main` — the button is the
+  same fast-forward. Note that both publish whatever is on **`origin/main`**, so
+  push here first or the release silently lags a commit behind.
 
 ## How the client finds the server
 
@@ -115,8 +116,9 @@ On github.com:
 2. On the **fork** (`abvstudio-net/battle-juice`): enable Actions — forks have
    them off by default and nothing deploys until you do — and set Pages →
    Source: **GitHub Actions**.
-3. Give whoever runs `release.sh` push access to the fork; the development
-   account has read-only access by default.
+3. Publishing is done signed in as the **abvstudio** account, which owns the
+   fork. The development account has read-only access to it, so it cannot
+   publish — that separation is deliberate, not an oversight to fix.
 4. On the **fork**: Pages → Custom domain → `portlandoregon.wtf`, then tick
    *Enforce HTTPS* once the certificate issues (minutes to an hour after DNS
    resolves).
