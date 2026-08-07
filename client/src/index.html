@@ -8,6 +8,16 @@
          image on the critical path — fetch it alongside the module script
          rather than after the CSS that references it. -->
     <link rel="preload" as="image" href="./loading-city-v1.webp" />
+    <!-- Installable, so the city survives WebKit's 7-day sweep of
+         script-writable storage: a Home Screen web app is outside Safari and
+         gets its own days-of-use counter. -->
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+    <meta name="theme-color" content="#0d1014" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="pdx.wtf" />
+    <meta name="description" content="Portland, Oregon, rendered in a browser." />
     <style>
       :root { color-scheme: dark; }
       body {
@@ -342,6 +352,50 @@
         min-height: 1.2em;
         text-shadow: 0 1px 8px rgba(0, 0, 0, 0.95);
       }
+      /* Add-to-Home-Screen hint. iOS offers no install prompt API, so the
+         only way anyone discovers that this can be installed is being told.
+         Shown once, to repeat visitors, on the one platform where installing
+         changes anything material. */
+      #install {
+        position: fixed;
+        left: 50%;
+        bottom: 1.4rem;
+        transform: translate(-50%, 1rem);
+        display: none;
+        align-items: center;
+        gap: 0.7rem;
+        max-width: min(92vw, 30rem);
+        padding: 0.7rem 0.75rem 0.7rem 0.95rem;
+        /* Not a pill: the text wraps to three or four lines on a narrow
+           phone, and a 999px radius turns that into an ellipse. */
+        border-radius: 0.85rem;
+        border: 1px solid rgba(230, 238, 250, 0.16);
+        background: rgba(13, 16, 20, 0.86);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        color: #cdd6e4;
+        font-size: 0.82rem;
+        line-height: 1.35;
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+        opacity: 0;
+        transition: opacity 0.35s ease, transform 0.35s ease;
+        z-index: 8;
+      }
+      #install.show { display: flex; opacity: 1; transform: translate(-50%, 0); }
+      #install b { color: #f2f5fa; font-weight: 600; }
+      #install button {
+        font: inherit;
+        flex: none;
+        width: 1.7rem;
+        height: 1.7rem;
+        padding: 0;
+        border-radius: 50%;
+        border: 1px solid rgba(230, 238, 250, 0.18);
+        background: transparent;
+        color: #9aa4b5;
+        cursor: pointer;
+      }
+      #install button:hover { color: #e6e6e6; }
       @media (prefers-reduced-motion: reduce) {
         #bootlog > div { animation: none; }
         #loading .spin { animation-duration: 2.4s; }
@@ -370,6 +424,10 @@
         <button id="retry" type="button">Try again</button>
         <p id="retry-note"></p>
       </div>
+    </div>
+    <div id="install">
+      <span>Keep the city downloaded — <b>Share</b> &rsaquo; <b>Add to Home Screen</b>.</span>
+      <button id="install-dismiss" type="button" aria-label="Dismiss">&times;</button>
     </div>
     <script type="module" src="./main.ts"></script>
   </body>

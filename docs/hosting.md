@@ -39,6 +39,57 @@ A dedicated subdomain (`play.internal.invalid`) was tried before that and droppe
 it needed its own DNS record to beat the wildcard, to end up at a URL no better
 than the inherited one.
 
+## Keeping the city on the device
+
+The map is ~46 MB across eleven files. GitHub Pages serves everything with
+`cache-control: max-age=600` and offers no way to configure it, so ten minutes
+after a visit the browser revalidates the lot — and only skips the bodies if
+its HTTP cache still holds 46 MB, which on a phone it usually does not. Left
+alone, that is a cold load nearly every visit.
+
+So the client keeps the city in **Cache Storage** (`client/src/mapcache.ts`)
+and invalidates it itself:
+
+- `scripts/stage-map.sh` writes `map/assets.json` — every artifact's size and
+  SHA-256 — after verification passes.
+- On boot the client fetches that file with `no-store` (~1 KB) and diffs it
+  against the copy it cached against. A digest that moved evicts exactly that
+  one entry, so re-baking one artifact costs one re-download, not a cold load.
+- Entries are `Response` objects, so a hit is still a stream and the gzip
+  inflation in `mapdata.ts` is unchanged. The overview atlas PNG — the single
+  biggest asset at 19.8 MB — goes through the same cache via a `blob:` URL,
+  keeping TextureLoader's `<img>` decode path exactly as it was.
+- Every failure falls through to a plain fetch. No Cache Storage (Safari
+  private browsing), a denied quota, a failed write: the game loads as it did
+  before any of this existed.
+- If `assets.json` is unreachable, the stored city is served **without**
+  reconciliation and the boot log says so. That is what offline looks like
+  from inside, and refusing to serve a cached city because freshness could not
+  be confirmed would fail exactly when the cache is the only thing that helps.
+
+Measured against a local copy of the production build: cold 2.9s, warm 1.5s,
+and a full boot to a rendered city with the network switched off.
+
+### PWA
+
+The site is installable — manifest, icons, and a small service worker
+(`client/src/public/sw.js`) that network-firsts the document and cache-firsts
+the hashed build assets. The service worker deliberately ignores `/map/`: the
+city has an owner already, and a second cache-first layer underneath it would
+serve geometry the page has decided is stale.
+
+Installing matters on iOS specifically. WebKit deletes script-writable storage
+after seven days of Safari use without interaction, but a Home Screen web app
+is outside Safari and keeps its own days-of-use counter, and WebKit grants
+`navigator.storage.persist()` to installed apps — which exempts the origin
+from eviction outright. The client asks for persistence on every boot and
+shows a one-time "Add to Home Screen" hint to returning iOS visitors, because
+iOS has no install prompt API to call.
+
+Two caveats worth remembering: a Home Screen app has its own storage, so
+installing costs one more cold load rather than inheriting the tab's cache;
+and deleting the icon deletes the city with it.
+
 ## Two repos: develop here, publish from the fork
 
 This repo (`PlebeiusGaragicus/battle-juice`) is where the game is developed and

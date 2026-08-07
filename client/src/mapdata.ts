@@ -19,11 +19,26 @@ import {
   type StreetStore,
   type Heightfield,
 } from "@portlandoregon/shared";
+import { NO_CACHE, type CityCache } from "./mapcache.js";
 import {
   OVERVIEW_ATLAS_MANIFEST,
   parseOverviewAtlasManifest,
   type OverviewAtlasSource,
 } from "./overview-atlas.js";
+
+/** Where map bytes come from. Module-level because every loader below wants
+ * it and none of them is called more than once per boot; main.ts installs the
+ * real cache before the first load and it is never swapped again. Left as
+ * NO_CACHE, everything here behaves exactly as it did before the cache. */
+let cityCache: Pick<CityCache, "fetch"> = NO_CACHE;
+
+export function setCityCache(cache: Pick<CityCache, "fetch">): void {
+  cityCache = cache;
+}
+
+/** The directory the map artifacts live in — also the base the cache keys on,
+ * so both sides agree on the URLs without either one building them twice. */
+export const MAP_BASE_URL = new URL("./map/", document.baseURI);
 
 // Baked by scripts/bake-map.ts: buildings split out of the JSON into a binary
 // store, everything else left as map-lite.
@@ -57,7 +72,7 @@ export class MapUnavailableError extends Error {}
 export type Progress = (received: number, total: number) => void;
 
 async function openGzipped(url: string, onProgress?: Progress): Promise<Response> {
-  const res = await fetch(url);
+  const res = await cityCache.fetch(url);
   if (!res.ok) throw new MapUnavailableError(`${url} → ${res.status}`);
   if (!res.body) throw new MapUnavailableError(`${url} → empty response`);
   const total = Number(res.headers.get("content-length") ?? 0);
@@ -123,11 +138,16 @@ export async function loadMap(onProgress?: Progress): Promise<GameMap> {
  * ground map and building tiers and remains fully usable without this atlas.
  */
 export async function loadOverviewAtlas(): Promise<OverviewAtlasSource> {
-  const response = await fetch(OVERVIEW_ATLAS_URL);
+  const response = await cityCache.fetch(OVERVIEW_ATLAS_URL.href);
   if (!response.ok) throw new Error(`${OVERVIEW_ATLAS_URL.href} → ${response.status}`);
   return {
     manifest: parseOverviewAtlasManifest(await response.json()),
     baseUrl: new URL(".", OVERVIEW_ATLAS_URL).href,
+    // The atlas PNG is the single biggest asset in the city (19.8 MB at the
+    // 4096 level), so it loads through the cache too. The renderer needs the
+    // fetcher rather than the bytes: which level it wants depends on the GPU
+    // limits it discovers later.
+    fetch: (url: string) => cityCache.fetch(url),
   };
 }
 

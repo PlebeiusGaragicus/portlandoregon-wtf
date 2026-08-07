@@ -6,7 +6,8 @@ import * as THREE from "three";
 import type { BuildingStore, CityLod, Heightfield, LayerStores, PropStore, StreetStore } from "@portlandoregon/shared";
 import { BootLog, CRASH_LIMIT, fmtBytes, probeDevice, webglAvailable } from "./bootlog.js";
 import { buildCityModel } from "./city.js";
-import { loadBuildings, loadCityLod, loadHeightfield, loadLayers, loadMap, loadOverviewAtlas, loadProps, loadStreets, MapUnavailableError } from "./mapdata.js";
+import { CityCache } from "./mapcache.js";
+import { loadBuildings, loadCityLod, loadHeightfield, loadLayers, loadMap, loadOverviewAtlas, loadProps, loadStreets, MAP_BASE_URL, setCityCache, MapUnavailableError } from "./mapdata.js";
 import { Renderer } from "./render/index.js";
 import { buildLandmarks } from "./render/landmarks.js";
 import { buildProps } from "./render/props.js";
@@ -94,7 +95,25 @@ async function boot(): Promise<void> {
     throw new NoWebGLError();
   }
 
-  let done = log.step("download map-lite.json.gz");
+  // Reconcile the stored city against what is published before anything is
+  // requested, so each load below is a hit or a miss rather than a race. It
+  // costs one small no-store fetch; on a warm boot it saves tens of MB.
+  let done = log.step("checking the stored city");
+  const cache = await CityCache.open(MAP_BASE_URL);
+  setCityCache(cache);
+  const { report } = cache;
+  if (report.enabled) {
+    done(
+      `${report.fresh}/${report.total} artifacts already stored ` +
+        `(${fmtBytes(report.freshBytes)})${report.persisted ? ", storage persisted" : ""}` +
+        `${report.stale ? " — offline, serving the stored city" : ""}`,
+    );
+    for (const name of report.evicted) log.line(`  ${name} changed — will re-download`);
+  } else {
+    done(`not caching: ${report.detail}`);
+  }
+
+  done = log.step("download map-lite.json.gz");
   let lastLogged = 0;
   const heightPromise: Promise<Heightfield | null> = loadHeightfield();
   const buildingPromise: Promise<BuildingStore> = loadBuildings();
@@ -211,6 +230,7 @@ async function boot(): Promise<void> {
   // Dev/debug handle (headless smoke tests steer the camera through this).
   (window as unknown as Record<string, unknown>)["__pdx"] = { renderer, THREE };
   loadingEl.classList.add("done");
+  maybeOfferInstall();
   if (new URLSearchParams(window.location.search).has("benchmark")) {
     log.line("browser benchmark scheduled");
     void import("./benchmark.js")
@@ -300,6 +320,71 @@ copyBtn.addEventListener("click", () => {
   );
   setTimeout(() => (copyBtn.textContent = "Copy log"), 2000);
 });
+
+/**
+ * Offer "Add to Home Screen", once, to people who keep coming back.
+ *
+ * Only on iOS, and only because iOS is where it matters: WebKit deletes
+ * script-writable storage after seven days of no interaction, and a Home
+ * Screen web app is outside Safari and exempt. Everywhere else the cache
+ * already survives on its own, so there is nothing to nag about.
+ *
+ * There is no install prompt API on iOS — no beforeinstallprompt, no button
+ * we can wire up — so telling the user where the control lives is the whole
+ * of what we can do.
+ */
+function maybeOfferInstall(): void {
+  const el = document.getElementById("install");
+  const dismiss = document.getElementById("install-dismiss");
+  if (!el || !dismiss) return;
+
+  const ua = navigator.userAgent;
+  // iPadOS reports itself as a Mac; the touch points give it away.
+  const iOS = /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  const installed =
+    (navigator as Navigator & { standalone?: boolean }).standalone === true ||
+    matchMedia("(display-mode: standalone)").matches;
+  if (!iOS || installed) return;
+
+  let visits = 0;
+  try {
+    if (localStorage.getItem("pdx:installhint") === "dismissed") return;
+    visits = Number(localStorage.getItem("pdx:visits") ?? "0") + 1;
+    localStorage.setItem("pdx:visits", String(visits));
+  } catch {
+    return; // no storage means no way to show this once rather than always
+  }
+  // First-time visitors have not yet decided they care. Second visit is the
+  // earliest point at which "keep this" is a useful offer rather than noise.
+  if (visits < 2) return;
+
+  const hide = (): void => {
+    el.classList.remove("show");
+    try {
+      localStorage.setItem("pdx:installhint", "dismissed");
+    } catch {
+      /* nothing to do */
+    }
+  };
+  dismiss.addEventListener("click", hide);
+  // Let the city arrive first; a hint over a loading screen is an interruption.
+  setTimeout(() => el.classList.add("show"), 4000);
+  setTimeout(hide, 20000);
+}
+
+// Installability, and an app shell that starts with no network. Production
+// only: in dev a service worker sits between Vite and the page and serves
+// yesterday's bundle back at you.
+//
+// Registered after boot rather than before it, so the install fetches never
+// compete with the map for connections on a cold load.
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  addEventListener("load", () => {
+    void navigator.serviceWorker.register("./sw.js").catch((err) => {
+      log.line(`service worker not registered: ${String(err)}`, "warn");
+    });
+  });
+}
 
 // An uncaught error during a blocking build never reaches boot()'s catch —
 // it lands here, and on a phone this is the only place it will ever be seen.

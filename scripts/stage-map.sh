@@ -17,6 +17,7 @@ set -euo pipefail
 #   client/src/public/map/heightmap.bin.gz   terrain (optional; flat if absent)
 #   client/src/public/map/overview-city-v2-*.png  composite city atlas levels
 #   client/src/public/map/overview-atlas-v2.json  dimensions, extents, hashes
+#   client/src/public/map/assets.json        digests the client caches against
 #
 # The release asset stays map.json.gz — the split is a local bake step, so a
 # re-bake never needs a new upload. Before returning, this script rereads and
@@ -106,6 +107,13 @@ rm -f "$DEST_DIR/map.json.gz"
 note "Verifying staged map artifacts"
 ( cd "$REPO_ROOT" && node --import tsx scripts/verify-staged-map.ts "$DEST_DIR" ) \
     || fail "staged map verification failed — refusing to continue to the client build"
+
+# The client caches the city across visits and diffs this manifest to decide
+# what to re-download. Written last, so it can only describe artifacts that
+# already verified.
+note "Writing asset manifest"
+( cd "$REPO_ROOT" && node --import tsx scripts/write-asset-manifest.ts "$DEST_DIR" ) \
+    || fail "could not write the asset manifest"
 
 du -h "$DEST_DIR"/* | sed 's/^/    /'
 note "Staged and verified in client/src/public/map/ — the build will publish these"

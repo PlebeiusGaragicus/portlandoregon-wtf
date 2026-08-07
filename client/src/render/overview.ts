@@ -118,6 +118,41 @@ function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+/**
+ * The atlas PNG, fetched through the city cache and then handed to
+ * TextureLoader as a blob: URL.
+ *
+ * The detour exists because TextureLoader is an `<img>` underneath, and an
+ * `<img>` can only see the HTTP cache — which on GitHub Pages expires after
+ * ten minutes and holds nothing this large for long. Fetching first puts the
+ * single biggest asset in the city (19.8 MB at the 4096 level) into the same
+ * persistent cache as everything else.
+ *
+ * Decoding stays on `<img>` deliberately. Handing three an ImageBitmap
+ * instead is the obvious version of this, and it changes how the texture
+ * reaches the GPU — `flipY` stops applying, so the flip has to move to decode
+ * time. That is a real behavioural change in the upload path, and it could
+ * not be verified here (headless SwiftShader renders the overview differently
+ * from a real GPU either way). A blob: URL keeps the upload path bit-for-bit
+ * what it already was and still gets the caching, so it is the version that
+ * ships.
+ */
+async function loadAtlasTexture(
+  url: string,
+  fetcher: ((url: string) => Promise<Response>) | undefined,
+): Promise<THREE.Texture> {
+  const response = await (fetcher ?? fetch)(url);
+  if (!response.ok) throw new Error(`${url} → ${response.status}`);
+  const objectUrl = URL.createObjectURL(await response.blob());
+  try {
+    return await new THREE.TextureLoader().loadAsync(objectUrl);
+  } finally {
+    // The decoded image is retained by the texture; the URL only pins the
+    // blob, and 19.8 MB is worth not pinning.
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 function prepareTexture(texture: THREE.Texture, anisotropy: number): void {
   texture.colorSpace = THREE.SRGBColorSpace;
   texture.minFilter = THREE.LinearFilter;
@@ -264,9 +299,8 @@ export function buildOverview(opts: OverviewOptions): OverviewLayer {
         handheld: opts.handheld,
         maxTextureSize: opts.maxTextureSize,
       });
-      const loader = new THREE.TextureLoader();
       const result = await Promise.allSettled([
-        loader.loadAsync(new URL(level.image.file, source.baseUrl).href),
+        loadAtlasTexture(new URL(level.image.file, source.baseUrl).href, source.fetch),
       ]);
       if (result[0].status !== "fulfilled" || disposed) {
         if (result[0].status === "fulfilled") result[0].value.dispose();

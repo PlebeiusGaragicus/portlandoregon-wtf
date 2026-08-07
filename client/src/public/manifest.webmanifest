@@ -1,0 +1,17 @@
+{
+  "name": "portlandoregon.wtf",
+  "short_name": "pdx.wtf",
+  "description": "Portland, Oregon, rendered in a browser.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0d1014",
+  "theme_color": "#0d1014",
+  "icons": [
+    { "src": "./icon-192.webp", "sizes": "192x192", "type": "image/webp" },
+    { "src": "./icon-512.webp", "sizes": "512x512", "type": "image/webp" },
+    { "src": "./icon-maskable-512.webp", "sizes": "512x512", "type": "image/webp", "purpose": "maskable" },
+    { "src": "./apple-touch-icon.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}

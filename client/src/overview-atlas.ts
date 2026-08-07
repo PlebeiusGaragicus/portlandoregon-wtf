@@ -39,6 +39,10 @@ export interface OverviewAtlasSource {
   manifest: OverviewAtlasManifest;
   /** Absolute directory URL ending in a slash. */
   baseUrl: string;
+  /** How to fetch a level's PNG. Supplied by mapdata.ts so the atlas goes
+   * through the same persistent cache as the rest of the city; defaults to a
+   * plain fetch for callers that construct a source by hand (tests). */
+  fetch?: (url: string) => Promise<Response>;
 }
 
 export interface OverviewAtlasLevelCaps {
