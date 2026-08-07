@@ -6,8 +6,7 @@ import {
 import type { FireOverviewSnapshot } from "./fire.js";
 
 export interface OverviewOpacity {
-  ground: number;
-  urban: number;
+  atlas: number;
   symbols: number;
 }
 
@@ -68,8 +67,7 @@ const VISIBLE_EPSILON = 1e-4;
 export function resolveZoomTierVisibility(input: {
   transition: number;
   atlasReady: boolean;
-  groundOpacity: number;
-  urbanOpacity: number;
+  atlasOpacity: number;
 }): ZoomTierVisibility {
   const transition = clamp01(input.transition);
   const owner: ZoomTierOwner =
@@ -80,12 +78,12 @@ export function resolveZoomTierVisibility(input: {
         : "transition";
   const atlas =
     input.atlasReady &&
-    (input.groundOpacity > VISIBLE_EPSILON || input.urbanOpacity > VISIBLE_EPSILON);
+    input.atlasOpacity > VISIBLE_EPSILON;
   return {
     owner,
     // Atlas absence keeps the complete tactical city as the cartographic
     // fallback, without returning landmark/effects ownership to that tier.
-    tacticalWorld: !(input.atlasReady && input.urbanOpacity >= 1 - VISIBLE_EPSILON),
+    tacticalWorld: !(input.atlasReady && input.atlasOpacity >= 1 - VISIBLE_EPSILON),
     tacticalDetails: owner === "tactical",
     tacticalLandmarks: owner === "tactical",
     tacticalEffects: owner !== "overview",
@@ -191,9 +189,9 @@ function disposeObjectResources(root: THREE.Object3D): void {
 }
 
 /**
- * Construct the scene nodes synchronously, then populate their maps when both
- * PNGs arrive. Loading and decode happen outside tactical boot; a failed pair
- * stays invisible and leaves the existing ground map/building boxes untouched.
+ * Construct the scene nodes synchronously, then populate the city map when its
+ * PNG arrives. Loading and decode happen outside tactical boot; failure leaves
+ * the existing ground map/building boxes untouched.
  */
 export function buildOverview(opts: OverviewOptions): OverviewLayer {
   const group = new THREE.Group();
@@ -204,24 +202,15 @@ export function buildOverview(opts: OverviewOptions): OverviewLayer {
 
   const geometry = new THREE.PlaneGeometry(1, 1);
   geometry.rotateX(-Math.PI / 2);
-  const groundMaterial = new THREE.MeshBasicMaterial({
+  const atlasMaterial = new THREE.MeshBasicMaterial({
     transparent: true,
-    // The atlas is a cartographic cross-fade, not world geometry. Terrain
-    // relief and building depth must not punch holes through it mid-transition.
+    // This is a cartographic cross-fade, not world geometry. Terrain relief
+    // and building depth must not punch holes through it mid-transition.
     depthTest: false,
     depthWrite: false,
-    opacity: clamp01(opts.opacity?.ground ?? 0),
+    opacity: clamp01(opts.opacity?.atlas ?? 0),
   });
-  const urbanMaterial = new THREE.MeshBasicMaterial({
-    transparent: true,
-    // Urban pixels cross-fade over the old box/impostor massing. Their PNG is
-    // transparent elsewhere, so the ground and live scene remain visible.
-    depthTest: false,
-    depthWrite: false,
-    opacity: clamp01(opts.opacity?.urban ?? 0),
-  });
-  groundMaterial.visible = false;
-  urbanMaterial.visible = false;
+  atlasMaterial.visible = false;
 
   const fireMaterial = pointMaterial(8);
   const firePoints = new THREE.Points(new THREE.BufferGeometry(), fireMaterial);
@@ -237,20 +226,16 @@ export function buildOverview(opts: OverviewOptions): OverviewLayer {
   gameplayPoints.renderOrder = 113;
   symbols.add(collapsedPoints, firePoints, gameplayPoints);
 
-  const ground = new THREE.Mesh(geometry, groundMaterial);
-  ground.name = "overview-ground";
-  ground.renderOrder = 100;
-  const urban = new THREE.Mesh(geometry, urbanMaterial);
-  urban.name = "overview-urban";
-  urban.renderOrder = 101;
-  group.add(ground, urban, symbols);
+  const atlas = new THREE.Mesh(geometry, atlasMaterial);
+  atlas.name = "overview-city";
+  atlas.renderOrder = 100;
+  group.add(atlas, symbols);
 
   let disposed = false;
   let tint = new THREE.Color(0xffffff);
 
   const setOpacity = (opacity: Partial<OverviewOpacity>): void => {
-    if (opacity.ground !== undefined) groundMaterial.opacity = clamp01(opacity.ground);
-    if (opacity.urban !== undefined) urbanMaterial.opacity = clamp01(opacity.urban);
+    if (opacity.atlas !== undefined) atlasMaterial.opacity = clamp01(opacity.atlas);
     if (opacity.symbols !== undefined) {
       const alpha = clamp01(opacity.symbols);
       fireMaterial.opacity = alpha;
@@ -260,8 +245,7 @@ export function buildOverview(opts: OverviewOptions): OverviewLayer {
   };
   const setTint = (color: THREE.ColorRepresentation): void => {
     tint = new THREE.Color(color);
-    groundMaterial.color.copy(tint);
-    urbanMaterial.color.copy(tint);
+    atlasMaterial.color.copy(tint);
   };
 
   const ready = opts.source
@@ -281,36 +265,27 @@ export function buildOverview(opts: OverviewOptions): OverviewLayer {
         maxTextureSize: opts.maxTextureSize,
       });
       const loader = new THREE.TextureLoader();
-      const results = await Promise.allSettled([
-        loader.loadAsync(new URL(level.ground.file, source.baseUrl).href),
-        loader.loadAsync(new URL(level.urban.file, source.baseUrl).href),
+      const result = await Promise.allSettled([
+        loader.loadAsync(new URL(level.image.file, source.baseUrl).href),
       ]);
-      if (results[0].status !== "fulfilled" || results[1].status !== "fulfilled" || disposed) {
-        for (const result of results) if (result.status === "fulfilled") result.value.dispose();
+      if (result[0].status !== "fulfilled" || disposed) {
+        if (result[0].status === "fulfilled") result[0].value.dispose();
         return false;
       }
 
-      const [groundTexture, urbanTexture] = [results[0].value, results[1].value];
+      const texture = result[0].value;
       const anisotropy = opts.maxAnisotropy ?? 1;
-      prepareTexture(groundTexture, anisotropy);
-      prepareTexture(urbanTexture, anisotropy);
-      groundMaterial.map = groundTexture;
-      urbanMaterial.map = urbanTexture;
-      groundMaterial.visible = true;
-      urbanMaterial.visible = true;
-      groundMaterial.needsUpdate = true;
-      urbanMaterial.needsUpdate = true;
+      prepareTexture(texture, anisotropy);
+      atlasMaterial.map = texture;
+      atlasMaterial.visible = true;
+      atlasMaterial.needsUpdate = true;
 
       const extent = source.manifest.extent;
-      const groundTransform = overviewPlaneTransform(extent, 0.8);
-      const urbanTransform = overviewPlaneTransform(extent, 1.0);
-      ground.scale.set(...groundTransform.scale);
-      urban.scale.set(...urbanTransform.scale);
+      const transform = overviewPlaneTransform(extent, 0.8);
+      atlas.scale.set(...transform.scale);
       // PlaneGeometry's +v edge becomes map north after the rotation.
-      ground.position.set(...groundTransform.position);
-      urban.position.set(...urbanTransform.position);
-      ground.updateMatrix();
-      urban.updateMatrix();
+      atlas.position.set(...transform.position);
+      atlas.updateMatrix();
       return true;
     })
     .catch(() => false);
@@ -323,8 +298,7 @@ export function buildOverview(opts: OverviewOptions): OverviewLayer {
     setTint,
     setDayNightTint(night: number): void {
       tint.copy(DAY_TINT).lerp(NIGHT_TINT, clamp01(night));
-      groundMaterial.color.copy(tint);
-      urbanMaterial.color.copy(tint);
+      atlasMaterial.color.copy(tint);
     },
     setFireMarkers(snapshot: FireOverviewSnapshot): void {
       replacePoints(

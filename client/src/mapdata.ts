@@ -20,6 +20,7 @@ import {
   type Heightfield,
 } from "@battle-juice/shared";
 import {
+  OVERVIEW_ATLAS_MANIFEST,
   parseOverviewAtlasManifest,
   type OverviewAtlasSource,
 } from "./overview-atlas.js";
@@ -33,7 +34,7 @@ const STREETS_URL = new URL("./map/streets.bin.gz", document.baseURI).href;
 const LAYERS_URL = new URL("./map/layers.bin.gz", document.baseURI).href;
 const HEIGHTMAP_URL = new URL("./map/heightmap.bin.gz", document.baseURI).href;
 const CITY_LOD_URL = new URL("./map/city-lod.bin.gz", document.baseURI).href;
-const OVERVIEW_ATLAS_URL = new URL("./map/overview-atlas-v1.json", document.baseURI);
+const OVERVIEW_ATLAS_URL = new URL(`./map/${OVERVIEW_ATLAS_MANIFEST}`, document.baseURI);
 
 /** Thrown when the map asset itself is missing or unreadable — without it
  * there is no city to render, so this is fatal rather than retryable. */

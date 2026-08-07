@@ -17,6 +17,11 @@ const STORAGE_KEY = "bj.view.v1";
 const DEFAULT_PLACE: LatLon = { lat: 45.50666, lon: -122.60496 };
 const DEFAULT_VIEW_HEIGHT = MIN_VIEW_HEIGHT;
 
+/** Compact WGS84 label shared by the HUD and its regression tests. */
+export function formatLatLon(lat: number, lon: number): string {
+  return `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+}
+
 interface SavedView {
   map: string;
   lat: number;

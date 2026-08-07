@@ -113,7 +113,7 @@ const before = statSync(SRC).size;
 const atlasBytes =
   statSync(join(MAP_DIR, OVERVIEW_ATLAS_MANIFEST)).size +
   atlas.levels.reduce(
-    (sum, level) => sum + statSync(join(MAP_DIR, level.ground.file)).size + statSync(join(MAP_DIR, level.urban.file)).size,
+    (sum, level) => sum + statSync(join(MAP_DIR, level.image.file)).size,
     0,
   );
 const after = binGz.length + propGz.length + streetGz.length + cityLodGz.length + layerGz.length + liteGz.length + atlasBytes;

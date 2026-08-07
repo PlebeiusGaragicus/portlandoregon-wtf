@@ -284,17 +284,15 @@ export function bakeOverviewAtlas(map: GameMap, mapDir: string, hf: Heightfield 
 
   for (const width of OVERVIEW_ATLAS_WIDTHS) {
     const height = overviewAtlasHeight(width, map.meta.width, map.meta.height);
-    const groundFile = overviewAtlasFile("ground", width);
-    const urbanFile = overviewAtlasFile("urban", width);
-    const ground = drawGround(map, paths, width, hfShade).encodeSync("png");
-    const urban = drawUrban(map, paths, width, density).encodeSync("png");
-    writeFileSync(join(mapDir, groundFile), ground);
-    writeFileSync(join(mapDir, urbanFile), urban);
+    const file = overviewAtlasFile(width);
+    const city = drawGround(map, paths, width, hfShade);
+    city.getContext("2d").drawImage(drawUrban(map, paths, width, density), 0, 0);
+    const image = city.encodeSync("png");
+    writeFileSync(join(mapDir, file), image);
     levels.push({
       width,
       height,
-      ground: { file: groundFile, sha256: sha256(ground) },
-      urban: { file: urbanFile, sha256: sha256(urban) },
+      image: { file, sha256: sha256(image) },
     });
   }
 

@@ -18,6 +18,7 @@
     "test:staged-map-gate": "node --import tsx scripts/test-verify-staged-map.ts",
     "test:overview-atlas": "node --import tsx scripts/test-overview-atlas.ts",
     "test:overview-symbols": "node --import tsx scripts/test-overview-symbols.ts",
+    "test:apparatus": "node --import tsx scripts/test-apparatus.ts",
     "test:camera": "node --import tsx scripts/test-camera.ts && node --import tsx scripts/test-controls.ts && node --import tsx scripts/test-view.ts",
     "test:performance-closure": "node --import tsx scripts/test-tile-scheduler.ts && node --import tsx scripts/test-detail-worker.ts && node --import tsx scripts/test-lod-parity.ts && node --max-old-space-size=10240 --import tsx scripts/test-tilekeys.ts"
   },

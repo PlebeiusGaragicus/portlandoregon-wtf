@@ -16,6 +16,7 @@ export type IncidentKind = "fire" | "medical" | "crime";
 
 /** What the dispatcher can see of a vehicle (actors.ts owns the rest). */
 export interface Unit {
+  uid: number;
   kind: string;
   mode: string;
   x: number;
@@ -23,9 +24,12 @@ export interface Unit {
   home: { x: number; y: number } | null;
   goal: { x: number; y: number } | null;
   respondT: number;
+  /** Open incident currently reserving this unit. */
+  incidentId: number | null;
 }
 
 export interface Incident {
+  id: number;
   kind: IncidentKind;
   x: number;
   y: number;
@@ -38,23 +42,98 @@ export interface Incident {
   glow: THREE.Sprite | null;
 }
 
-function rollNeeds(kind: IncidentKind): string[] {
+let nextIncidentId = 1;
+
+/** Fixed alarm policy, exported so station/dispatch invariants stay testable. */
+export function needsForIncident(kind: IncidentKind, random = Math.random): string[] {
   if (kind === "fire") {
-    const needs = ["fire", "fire"];
-    if (Math.random() < 0.4) needs.push("fire");
-    if (Math.random() < 0.6) needs.push("ambulance"); // fire + medical roll together
-    if (Math.random() < 0.3) needs.push("police");
+    const needs = ["fire", "fire", "fire", "fire"];
+    if (random() < 0.6) needs.push("ambulance"); // fire + medical roll together
+    if (random() < 0.3) needs.push("police");
     return needs;
   }
   if (kind === "medical") {
     const needs = ["ambulance"];
-    if (Math.random() < 0.35) needs.push("police");
-    if (Math.random() < 0.2) needs.push("fire"); // engine first-response
+    if (random() < 0.35) needs.push("police");
+    if (random() < 0.2) needs.push("fire"); // engine first-response
     return needs;
   }
   const needs = ["police"];
-  if (Math.random() < 0.5) needs.push("police");
+  if (random() < 0.5) needs.push("police");
   return needs;
+}
+
+function isFireUnit(unit: Unit): boolean {
+  return unit.kind === "engine" || unit.kind === "truck";
+}
+
+function needFor(unit: Unit): string {
+  return isFireUnit(unit) ? "fire" : unit.kind;
+}
+
+/** Drop failed/stale reservations and restore their alarm slots. */
+export function reconcileIncident(incident: Incident): void {
+  const active: Unit[] = [];
+  for (const unit of incident.assigned) {
+    const stillAssigned =
+      unit.incidentId === incident.id &&
+      (unit.mode === "respond" || unit.mode === "onscene");
+    if (stillAssigned) {
+      active.push(unit);
+      continue;
+    }
+    if (unit.incidentId === incident.id) unit.incidentId = null;
+    incident.needs.push(needFor(unit));
+  }
+  incident.assigned = active;
+}
+
+/** Reserve the nearest eligible unit for every currently open alarm slot. */
+export function fillIncident(incident: Incident, units: Unit[]): void {
+  for (let n = incident.needs.length - 1; n >= 0; n--) {
+    const need = incident.needs[n]!;
+    let best: Unit | null = null;
+    let bd = Infinity;
+    for (const unit of units) {
+      if (unit.incidentId !== null) continue;
+      const fire = isFireUnit(unit);
+      if (need === "fire") {
+        if (!fire || unit.mode !== "available") continue;
+      } else if (fire || unit.kind !== need || unit.mode !== "roam") {
+        continue;
+      }
+      const distance = Math.hypot(unit.x - incident.x, unit.y - incident.y);
+      if (distance < bd) {
+        bd = distance;
+        best = unit;
+      }
+    }
+    if (!best) continue;
+    // Reserve before changing mode so a later incident in this update cannot
+    // double-book the same apparatus.
+    best.incidentId = incident.id;
+    best.mode = "respond";
+    best.goal = { x: incident.x, y: incident.y };
+    best.respondT = 60 + bd / 15;
+    incident.assigned.push(best);
+    incident.needs.splice(n, 1);
+  }
+}
+
+/** Release all reservations when a call closes. Fire rigs return home. */
+export function releaseIncident(incident: Incident): void {
+  for (const unit of incident.assigned) {
+    if (unit.incidentId !== incident.id) continue;
+    unit.incidentId = null;
+    if (isFireUnit(unit)) {
+      unit.mode = "return";
+      unit.goal = unit.home ? { x: unit.home.x, y: unit.home.y } : null;
+    } else if (unit.mode === "respond") {
+      unit.mode = "roam";
+      unit.goal = null;
+    }
+  }
+  incident.assigned = [];
 }
 
 export class Dispatch {
@@ -81,11 +160,12 @@ export class Dispatch {
     }
     if (this.incidents.length >= MAX_INCIDENTS + 3) return;
     this.incidents.push({
+      id: nextIncidentId++,
       kind: "fire",
       x,
       y,
       z,
-      needs: rollNeeds("fire"),
+      needs: needsForIncident("fire"),
       assigned: [],
       t: 150 + Math.random() * 90,
       glow: null, // the fire sim renders the flames themselves
@@ -99,11 +179,12 @@ export class Dispatch {
       if (p) {
         const kind: IncidentKind = Math.random() < 0.28 ? "fire" : Math.random() < 0.52 ? "medical" : "crime";
         const inc: Incident = {
+          id: nextIncidentId++,
           kind,
           x: p.x,
           y: p.y,
           z: p.z,
-          needs: rollNeeds(kind),
+          needs: needsForIncident(kind),
           assigned: [],
           t: 50 + Math.random() * 70,
           glow: null,
@@ -134,50 +215,29 @@ export class Dispatch {
       inc.t -= dt;
       // A fire call is not over until the fire is: top the clock up while
       // buildings still burn near the scene.
-      if (inc.kind === "fire" && this.hasFireNear?.(inc.x, inc.y, 300)) inc.t = Math.max(inc.t, 30);
+      if (inc.kind === "fire") {
+        if (this.hasFireNear?.(inc.x, inc.y, 300)) inc.t = Math.max(inc.t, 30);
+        else inc.t = Math.min(inc.t, 2);
+      }
       // Fire flicker.
       if (inc.glow) {
         const gm = inc.glow.material as THREE.SpriteMaterial;
         gm.opacity = 0.42 + 0.2 * Math.sin(timeSec * 13) + 0.12 * Math.sin(timeSec * 31 + inc.x);
       }
-      // Fill outstanding needs from the nearest idle unit of that service.
-      for (let n = inc.needs.length - 1; n >= 0; n--) {
-        const need = inc.needs[n]!;
-        let best: Unit | null = null;
-        let bd = Infinity;
-        for (const u of units) {
-          if (u.mode !== "roam") continue;
-          const isFire = u.kind === "engine" || u.kind === "truck";
-          if (need === "fire" ? !isFire : u.kind !== need) continue;
-          const d = Math.hypot(u.x - inc.x, u.y - inc.y);
-          if (d < bd) {
-            bd = d;
-            best = u;
-          }
-        }
-        if (best) {
-          best.mode = "respond";
-          best.goal = { x: inc.x, y: inc.y };
-          // Give-up clock scales with the actual run distance (grid driving
-          // nets well under cruise speed) — no more mid-drive churn.
-          best.respondT = 60 + bd / 15;
-          inc.assigned.push(best);
-          inc.needs.splice(n, 1);
-        }
-      }
+      if (inc.t <= 0) continue;
+      reconcileIncident(inc);
+      fillIncident(inc, units);
     }
 
     // Close finished or abandoned calls.
     this.incidents = this.incidents.filter((inc) => {
-      const gone = Math.hypot(inc.x - focus.x, inc.y - focus.y) > FORGET_RANGE;
+      // Fire calls are authoritative city incidents, not camera-local flavor.
+      // They remain assigned even when the player pans across Portland.
+      const gone =
+        inc.kind !== "fire" &&
+        Math.hypot(inc.x - focus.x, inc.y - focus.y) > FORGET_RANGE;
       if (inc.t > 0 && !gone) return true;
-      for (const u of inc.assigned) {
-        if (u.mode === "respond") {
-          // Never made it: cancel and resume patrol/return per its own logic.
-          u.mode = "roam";
-          u.goal = null;
-        }
-      }
+      releaseIncident(inc);
       if (inc.glow) {
         inc.glow.removeFromParent();
         (inc.glow.material as THREE.SpriteMaterial).dispose();

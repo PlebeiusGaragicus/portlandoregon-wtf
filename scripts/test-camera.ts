@@ -155,12 +155,62 @@ console.log("\ncursor anchor across handoff");
   rig.zoomBy((OVERVIEW_ORTHO_START + 0.02) / (OVERVIEW_ORTHO_START - 0.02));
   rig.apply(orthographic, aspect);
   const after = hit(orthographic);
-  rig.target.x += before.x - after.x;
-  rig.target.y += after.z - before.z;
-  rig.updateViewport(aspect);
+  rig.alignWorldPoint(
+    { x: before.x, y: -before.z },
+    { x: after.x, y: -after.z },
+  );
   rig.apply(orthographic, aspect);
   const anchored = hit(orthographic);
   check("off-center world point survives projection switch", anchored.distanceTo(before) < 1e-5, `drift ${anchored.distanceTo(before).toExponential(2)} m`);
+}
+
+console.log("\nmoving midpoint camera anchor");
+{
+  const rig = new CameraRig(map);
+  const aspect = 1.5;
+  rig.target = { x: 20000, y: 17000 };
+  rig.viewHeight = 1800;
+  rig.theta = 0.2;
+  const camera = new THREE.PerspectiveCamera();
+  const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  const raycaster = new THREE.Raycaster();
+  const hit = (ndc: THREE.Vector2): THREE.Vector3 => {
+    rig.apply(camera, aspect);
+    camera.updateMatrixWorld();
+    raycaster.setFromCamera(ndc, camera);
+    return raycaster.ray.intersectPlane(plane, new THREE.Vector3())!;
+  };
+
+  const from = new THREE.Vector2(-0.18, 0.08);
+  const to = new THREE.Vector2(0.24, -0.12);
+  const before = hit(from);
+  rig.theta += 0.48;
+  rig.zoomBy(0.72);
+  const after = hit(to);
+  rig.alignWorldPoint(
+    { x: before.x, y: -before.z },
+    { x: after.x, y: -after.z },
+  );
+  const anchored = hit(to);
+  check(
+    "pan + pinch + rotation preserve the moving midpoint",
+    anchored.distanceTo(before) < 1e-5,
+    `drift ${anchored.distanceTo(before).toExponential(2)} m`,
+  );
+
+  const tiltBefore = hit(to);
+  rig.tiltBy(-0.16);
+  const tiltAfter = hit(to);
+  rig.alignWorldPoint(
+    { x: tiltBefore.x, y: -tiltBefore.z },
+    { x: tiltAfter.x, y: -tiltAfter.z },
+  );
+  const tiltAnchored = hit(to);
+  check(
+    "off-center world point survives anchored tilt",
+    tiltAnchored.distanceTo(tiltBefore) < 1e-5,
+    `drift ${tiltAnchored.distanceTo(tiltBefore).toExponential(2)} m`,
+  );
 }
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} FAILED`);

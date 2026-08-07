@@ -9,7 +9,7 @@
 // awkward to even set up by clicking.
 import { latLonToWorld, worldToLatLon, type GameMap } from "@battle-juice/shared";
 import { CameraRig, MIN_VIEW_HEIGHT } from "../client/src/render/camera.js";
-import { createViewSaver, restoreView } from "../client/src/view.js";
+import { createViewSaver, formatLatLon, restoreView } from "../client/src/view.js";
 
 const store = new Map<string, string>();
 (globalThis as unknown as { localStorage: Storage }).localStorage = {
@@ -34,6 +34,12 @@ function check(label: string, ok: boolean, detail = ""): void {
   if (!ok) failures++;
 }
 const near = (a: number, b: number, tol: number): boolean => Math.abs(a - b) <= tol;
+
+check(
+  "HUD position is compact decimal WGS84 only",
+  formatLatLon(45.50666, -122.60496) === "45.50666, -122.60496",
+  formatLatLon(45.50666, -122.60496),
+);
 
 // 1. First visit: the requested place, fully zoomed in.
 {

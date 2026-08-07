@@ -38,7 +38,7 @@ import {
   type TileCacheStats,
   type WorldLayers,
 } from "./world.js";
-import { createViewSaver, restoreView } from "../view.js";
+import { createViewSaver, formatLatLon, restoreView } from "../view.js";
 import type { OverviewAtlasSource } from "../overview-atlas.js";
 import {
   buildOverview,
@@ -78,8 +78,6 @@ function disposeTree(root: THREE.Object3D): void {
 // Zoom thresholds (meters of vertical view).
 const BLEND_START = 2200; // street tint starts brightening
 const BLEND_END = 3200;
-/** Atlas ground is fully established before urban massing starts to fade in. */
-const OVERVIEW_GROUND_START = OVERVIEW_TRANSITION_START * 0.65;
 /** Also prevents a late async atlas load from appearing in one frame. */
 const OVERVIEW_READY_FADE_SECONDS = 0.6;
 
@@ -319,7 +317,7 @@ export class Renderer {
   private world: WorldLayers;
   private props: PropLayers;
   private landmarks: LandmarkLayer;
-  private minimap: Minimap;
+  private minimap: Minimap | null = null;
   private compass: HTMLDivElement;
   private resizeObserver: ResizeObserver;
   private raycaster = new THREE.Raycaster();
@@ -504,7 +502,6 @@ export class Renderer {
     this.fire.onNewFire = (x, y) => this.actors.reportFire(x, y, this.ground(x, y));
     this.fire.onCollapse = (bi) => this.fpv?.markCollapsed(bi);
     this.actors.hasFireNear = (x, y, r) => this.fire.hasFireNear(x, y, r);
-    this.actors.nearestFire = (x, y, r) => this.fire.nearestFire(x, y, r);
     this.actors.onFireIncident = (x, y) => this.fire.igniteNear(x, y, 90);
     this.actors.onTankFire = (x, y) => {
       const bi = this.fire.randomTargetNear(x, y, 45, 320);
@@ -535,23 +532,27 @@ export class Renderer {
       dispatchAt: () => {},
       deselect: () => {},
       zoomAt: (cx, cy, factor) => {
-        const before = this.toWorld(cx, cy);
-        this.rig.zoomBy(factor);
-        this.applyCamera();
-        const after = this.toWorld(cx, cy);
-        if (before && after) {
-          this.rig.target.x += before.x - after.x;
-          this.rig.target.y += before.y - after.y;
-          this.rig.clampToMap(map);
-        }
+        this.transformCameraAt(cx, cy, cx, cy, () => this.rig.zoomBy(factor));
       },
+      transformAt: (fromX, fromY, toX, toY, factor, rotation) => {
+        this.transformCameraAt(fromX, fromY, toX, toY, () => {
+          this.rig.theta += rotation;
+          this.rig.zoomBy(factor);
+        });
+      },
+      tiltAt: (cx, cy, delta) => {
+        this.transformCameraAt(cx, cy, cx, cy, () => this.rig.tiltBy(delta));
+      },
+      fireballAt: (cx, cy) => this.fireballAt(cx, cy),
     };
     this.controls = new Controls(canvas, this.rig, map, delegate);
 
     const parent = canvas.parentElement ?? document.body;
-    this.minimap = new Minimap(map, parent, (x, y) => {
-      this.rig.target = { x, y };
-    }, streetStore);
+    if (!HANDHELD) {
+      this.minimap = new Minimap(map, parent, (x, y) => {
+        this.rig.target = { x, y };
+      }, streetStore);
+    }
     this.compass = document.createElement("div");
     this.compass.id = "compass";
     this.compass.innerHTML = "<span>N</span>";
@@ -655,6 +656,38 @@ export class Renderer {
   }
 
   /**
+   * Apply a camera change while carrying the world point under one screen
+   * position to another. A two-finger pose uses this once for its combined
+   * pan/pinch/twist, so the map stays attached to the gesture midpoint.
+   */
+  private transformCameraAt(
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+    change: () => void,
+  ): void {
+    this.applyCamera();
+    const before = this.toWorld(fromX, fromY);
+    change();
+    this.applyCamera();
+    const after = this.toWorld(toX, toY);
+    if (before && after) {
+      this.rig.alignWorldPoint(before, after);
+      this.applyCamera();
+    }
+  }
+
+  /** Shared disaster-director action for desktop Shift+click and touch hold. */
+  private fireballAt(clientX: number, clientY: number): void {
+    if (this.fpvOn) return;
+    const world = this.toWorld(clientX, clientY);
+    if (!world) return;
+    this.fire.fireball(world.x, world.y);
+    this.hint("fireball", 1100);
+  }
+
+  /**
    * Generic strategic marker seam for authoritative gameplay state. Callers
    * provide only state they actually own; the renderer does not synthesize
    * units or objectives from ambient actors.
@@ -692,7 +725,7 @@ export class Renderer {
       if (document.pointerLockElement === this.canvas) document.exitPointerLock();
       this.fpvDrag = null;
       this.controls.active = true;
-      this.minimap.el.style.display = "";
+      if (this.minimap) this.minimap.el.style.display = "";
       this.hudScale.style.display = "";
       if (this.fpvProps) {
         this.fire.removePropSet(this.fpvProps);
@@ -730,7 +763,7 @@ export class Renderer {
     // window; keeping the hidden strategic cache doubled instance buffers.
     this.props.sync([]);
     this.controls.active = false;
-    this.minimap.el.style.display = "none";
+    if (this.minimap) this.minimap.el.style.display = "none";
     this.hudScale.style.display = "none";
     this.lockPointer();
     this.hint("WASD move · Shift sprint · Space jump · double-Space fly (Space up, C down) · drag look · click PUNCH · V exit", 6000);
@@ -934,14 +967,8 @@ export class Renderer {
         if (e.pointerType !== "touch") this.lockPointer();
         return;
       }
-      // Disaster director: shift+click torches the nearest building.
-      if (e.shiftKey) {
-        const w = this.toWorld(e.clientX, e.clientY);
-        if (w) {
-          this.fire.fireball(w.x, w.y);
-          this.hint("fireball", 1100);
-        }
-      }
+      // Disaster director: touch hold is wired through the same helper.
+      if (e.shiftKey) this.fireballAt(e.clientX, e.clientY);
     });
     on(document, "pointerlockchange", () => {
       if (!this.fpvOn) return;
@@ -971,7 +998,7 @@ export class Renderer {
     this.hudClock.remove();
     this.hudScale.remove();
     this.controls.dispose();
-    this.minimap.dispose();
+    this.minimap?.dispose();
     this.compass.remove();
     this.resizeObserver.disconnect();
     this.world.dispose();
@@ -1284,6 +1311,9 @@ export class Renderer {
     const metrics = this.rig.updateViewport(aspect);
     this.camera = metrics.orthographic ? this.overviewCamera : this.perspectiveCamera;
     this.rig.apply(this.camera, aspect, this.ground(this.rig.target.x, this.rig.target.y));
+    // Picking/gesture anchoring happens before render(), which would normally
+    // update this matrix for us.
+    this.camera.updateMatrixWorld();
     this.cameraMetrics = metrics;
     return metrics;
   }
@@ -1294,23 +1324,16 @@ export class Renderer {
     } else {
       this.overviewReveal = 0;
     }
-    const groundCamera = THREE.MathUtils.smoothstep(
-      metrics.coverage,
-      OVERVIEW_GROUND_START,
-      OVERVIEW_TRANSITION_START,
-    );
-    const ground = groundCamera * this.overviewReveal;
-    const urban = metrics.transition * this.overviewReveal;
+    const atlas = metrics.transition * this.overviewReveal;
     const visibility = resolveZoomTierVisibility({
       transition: metrics.transition,
       atlasReady: this.overviewReady,
-      groundOpacity: ground,
-      urbanOpacity: urban,
+      atlasOpacity: atlas,
     });
-    this.overview.setOpacity({ ground, urban, symbols: visibility.symbolOpacity });
+    this.overview.setOpacity({ atlas, symbols: visibility.symbolOpacity });
     this.overview.group.visible = visibility.atlas || visibility.symbols;
     this.overview.symbols.visible = visibility.symbols;
-    this.overviewComplete = urban >= 1 - 1e-4;
+    this.overviewComplete = atlas >= 1 - 1e-4;
     return visibility;
   }
 
@@ -1452,7 +1475,7 @@ export class Renderer {
     this.fire.group.visible = visibility.tacticalEffects;
     // Once the whole city is the primary canvas, the inset repeats the same
     // information and obscures a quarter of portrait/compact viewports.
-    this.minimap.el.style.display = visibility.owner === "overview" ? "none" : "";
+    if (this.minimap) this.minimap.el.style.display = visibility.owner === "overview" ? "none" : "";
     this.landmarks.setViewScale(vh);
 
     // HUD: compass needle tracks where world north points on screen.
@@ -1464,7 +1487,7 @@ export class Renderer {
       this.toWorld(rect.right, rect.bottom),
       this.toWorld(rect.left, rect.bottom),
     ];
-    this.minimap.update(corners, []);
+    this.minimap?.update(corners, []);
 
     this.actors.setListener(null);
     const actorsStarted = performance.now();
@@ -1561,10 +1584,10 @@ export class Renderer {
     }
 
     const alt = this.fpvOn ? ` · ▲${Math.round(fz)} m` : "";
-    // Focus position, world meters + WGS84 — so a screenshot pins the exact
-    // spot for debugging (world x/y feed rig.target / fpv.place directly).
+    // Decimal WGS84 is compact enough for a phone and remains unambiguous in
+    // screenshots and bug reports.
     const { lat, lon } = worldToLatLon(this.map.meta, fx, fy);
-    const pos = ` · ${Math.round(fx)}E ${Math.round(fy)}N · ${lat.toFixed(5)}, ${lon.toFixed(5)}`;
+    const pos = ` · ${formatLatLon(lat, lon)}`;
     const label = `${dn.day ? "☀" : "☾"} ${dn.clock}${alt}${pos}`;
     if (this.hudClock.textContent !== label) this.hudClock.textContent = label;
   }

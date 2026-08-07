@@ -17,22 +17,19 @@ check("overview plane centers in scene coordinates", transform.position[0] === 2
 const transition = resolveZoomTierVisibility({
   transition: 0.5,
   atlasReady: true,
-  groundOpacity: 1,
-  urbanOpacity: 0.5,
+  atlasOpacity: 0.5,
 });
 check("transition owns one shared set of layer gates", transition.owner === "transition" && transition.atlas && transition.tacticalWorld && transition.symbols);
 const strategic = resolveZoomTierVisibility({
   transition: 1,
   atlasReady: true,
-  groundOpacity: 1,
-  urbanOpacity: 1,
+  atlasOpacity: 1,
 });
 check("complete overview retires tactical layers", strategic.owner === "overview" && !strategic.tacticalWorld && !strategic.tacticalEffects);
 const fallback = resolveZoomTierVisibility({
   transition: 1,
   atlasReady: false,
-  groundOpacity: 0,
-  urbanOpacity: 0,
+  atlasOpacity: 0,
 });
 check("atlas failure keeps a complete city fallback", fallback.tacticalWorld && !fallback.atlas);
 

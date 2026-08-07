@@ -70,18 +70,45 @@ function check(label: string, ok: boolean, detail = ""): void {
 
 const calls: string[] = [];
 let rig = new CameraRig(map);
+let strategic = false;
+const worldAt = (clientX: number, clientY: number): { x: number; y: number } => {
+  const mpp = rig.viewHeight / canvas.clientHeight;
+  const right = rig.right();
+  const forward = rig.forward();
+  const sx = clientX - canvas.clientWidth / 2;
+  const sy = clientY - canvas.clientHeight / 2;
+  const fwd = (-sy * mpp) / Math.sin(rig.metrics().effectiveTilt);
+  return {
+    x: rig.target.x + sx * mpp * right.x + fwd * forward.x,
+    y: rig.target.y + sx * mpp * right.y + fwd * forward.y,
+  };
+};
 const delegate: ControlDelegate = {
-  isStrategic: () => false,
+  isStrategic: () => strategic,
   selectAt: (x, y) => void calls.push(`select ${x},${y}`),
   marqueeSelect: () => void calls.push("marquee"),
   dispatchAt: (x, y) => void calls.push(`dispatch ${x},${y}`),
   deselect: () => void calls.push("deselect"),
-  // The real one is anchored; for direction/magnitude checks the raw factor
-  // is what matters.
   zoomAt: (x, y, f) => {
     calls.push(`zoom ${f.toFixed(3)} @${x},${y}`);
+    const before = worldAt(x, y);
     rig.zoomBy(f);
+    rig.alignWorldPoint(before, worldAt(x, y));
   },
+  transformAt: (fromX, fromY, toX, toY, factor, rotation) => {
+    calls.push(`transform ${factor.toFixed(3)},${rotation.toFixed(3)} @${fromX},${fromY}->${toX},${toY}`);
+    const before = worldAt(fromX, fromY);
+    rig.theta += rotation;
+    rig.zoomBy(factor);
+    rig.alignWorldPoint(before, worldAt(toX, toY));
+  },
+  tiltAt: (x, y, delta) => {
+    calls.push(`tilt ${delta.toFixed(3)} @${x},${y}`);
+    const before = worldAt(x, y);
+    rig.tiltBy(delta);
+    rig.alignWorldPoint(before, worldAt(x, y));
+  },
+  fireballAt: (x, y) => void calls.push(`fireball ${x},${y}`),
 };
 
 let controls: Controls;
@@ -89,6 +116,7 @@ function reset(theta = 0): void {
   controls?.dispose();
   handlers.clear();
   calls.length = 0;
+  strategic = false;
   rig = new CameraRig(map);
   rig.viewHeight = 2000;
   rig.theta = theta;
@@ -99,12 +127,22 @@ function reset(theta = 0): void {
 const down = (id: number, x: number, y: number): void => fire("pointerdown", { pointerId: id, pointerType: "touch", clientX: x, clientY: y, button: 0 });
 const move = (id: number, x: number, y: number): void => fire("pointermove", { pointerId: id, pointerType: "touch", clientX: x, clientY: y });
 const up = (id: number, x: number, y: number): void => fire("pointerup", { pointerId: id, pointerType: "touch", clientX: x, clientY: y, button: 0 });
+const cancel = (id: number, x: number, y: number): void => fire("pointercancel", { pointerId: id, pointerType: "touch", clientX: x, clientY: y, button: 0 });
 /** Walk two fingers from their current spots to the given ones in N steps. */
 function drag2(a0: [number, number], b0: [number, number], a1: [number, number], b1: [number, number], steps = 10): void {
   for (let i = 1; i <= steps; i++) {
     const t = i / steps;
-    move(1, a0[0] + (a1[0] - a0[0]) * t, a0[1] + (a1[1] - a0[1]) * t);
-    move(2, b0[0] + (b1[0] - b0[0]) * t, b0[1] + (b1[1] - b0[1]) * t);
+    const a: [number, number] = [a0[0] + (a1[0] - a0[0]) * t, a0[1] + (a1[1] - a0[1]) * t];
+    const b: [number, number] = [b0[0] + (b1[0] - b0[0]) * t, b0[1] + (b1[1] - b0[1]) * t];
+    // Real browsers do not promise which finger's event arrives first.
+    if (i % 2) {
+      move(1, a[0], a[1]);
+      move(2, b[0], b[1]);
+    } else {
+      move(2, b[0], b[1]);
+      move(1, a[0], a[1]);
+    }
+    controls.update(1 / 60);
   }
 }
 
@@ -120,20 +158,43 @@ console.log("\nsingle touch");
   reset();
   const t0 = { ...rig.target };
   down(1, 600, 400);
-  for (let i = 1; i <= 10; i++) move(1, 600 + i * 10, 400);
+  for (let i = 1; i <= 10; i++) {
+    move(1, 600 + i * 10, 400);
+    controls.update(1 / 60);
+  }
   up(1, 700, 400);
   check("drag pans, no select", !calls.length && rig.target.x !== t0.x, `dx=${(rig.target.x - t0.x).toFixed(0)}m`);
   // theta = 0 means screen-right is world +x; dragging right pulls the map
   // right, so the camera target must move to smaller x.
   check("pan follows the finger", rig.target.x < t0.x, `x ${t0.x.toFixed(0)} -> ${rig.target.x.toFixed(0)}`);
 
-  // 3. Holding still past the long-press delay dispatches.
+  // 3. Holding still past the long-press delay drops a fireball even when
+  // tactical selection/dispatch is disabled at strategic zoom.
   reset();
+  strategic = true;
   down(1, 600, 400);
   runTimers();
-  check("long press dispatches", calls.some((c) => c.startsWith("dispatch")), calls.join("; "));
+  check("long press creates a fireball", calls.some((c) => c.startsWith("fireball")), calls.join("; "));
   up(1, 600, 400);
   check("long press then lift does not also select", !calls.some((c) => c.startsWith("select")), calls.join("; "));
+
+  reset();
+  down(1, 600, 400);
+  move(1, 620, 400);
+  runTimers();
+  check("moving beyond tap slop cancels fireball", !calls.some((c) => c.startsWith("fireball")), calls.join("; "));
+
+  reset();
+  down(1, 500, 400);
+  down(2, 700, 400);
+  runTimers();
+  check("second finger cancels fireball", !calls.some((c) => c.startsWith("fireball")), calls.join("; "));
+
+  reset();
+  down(1, 600, 400);
+  cancel(1, 600, 400);
+  runTimers();
+  check("pointer cancellation cannot fire or select", calls.length === 0, calls.join("; "));
 }
 
 console.log("\npinch");
@@ -158,6 +219,40 @@ console.log("\npinch");
   up(2, 700, 400);
 }
 
+console.log("\ncombined two-finger transform");
+{
+  reset();
+  down(1, 500, 400);
+  down(2, 700, 400);
+  const target0 = { ...rig.target };
+  move(1, 512, 400);
+  move(2, 712, 400);
+  controls.update(1 / 60);
+  check(
+    "recognition slop is consumed without a camera jump",
+    calls.every((c) => !c.startsWith("transform")) &&
+      rig.target.x === target0.x &&
+      rig.target.y === target0.y,
+    calls.join("; "),
+  );
+
+  const anchor = worldAt(612, 400);
+  drag2([512, 400], [712, 400], [501.4, 350], [778.6, 510], 20);
+  const anchored = worldAt(640, 430);
+  check(
+    "moving midpoint pans while pinching and twisting",
+    calls.some((c) => c.startsWith("transform")) &&
+      rig.viewHeight !== 2000 &&
+      Math.abs(rig.theta) > 0.1,
+    `view=${rig.viewHeight.toFixed(1)} theta=${rig.theta.toFixed(3)}`,
+  );
+  check(
+    "combined transform preserves the midpoint world anchor",
+    Math.hypot(anchored.x - anchor.x, anchored.y - anchor.y) < 1e-6,
+    `drift=${Math.hypot(anchored.x - anchor.x, anchored.y - anchor.y).toExponential(2)}m`,
+  );
+}
+
 console.log("\ntwist");
 {
   // Rotate the finger pair 45 degrees clockwise on screen about (600, 400).
@@ -178,7 +273,7 @@ console.log("\ntwist");
   // Screen y is down, so a positive atan2 sweep is clockwise; the map should
   // turn clockwise with the fingers, which is theta increasing.
   check("clockwise twist turns the map clockwise", rig.theta > 0, `theta=${((rig.theta * 180) / Math.PI).toFixed(1)}deg`);
-  check("twist tracks the fingers 1:1", Math.abs((rig.theta * 180) / Math.PI - 45) < 3, `${((rig.theta * 180) / Math.PI).toFixed(1)}deg of 45`);
+  check("twist follows the fingers after recognition slop", Math.abs((rig.theta * 180) / Math.PI - 45) < 7, `${((rig.theta * 180) / Math.PI).toFixed(1)}deg of 45`);
   up(1, a1[0], a1[1]);
   up(2, b1[0], b1[1]);
 
@@ -201,7 +296,7 @@ console.log("\ntwo-finger tilt");
   down(2, 700, 400);
   drag2([500, 400], [700, 400], [500, 250], [700, 250]); // both fingers up
   check("drag up tilts toward the horizon", rig.tilt < tilt0, `${((tilt0 * 180) / Math.PI).toFixed(1)} -> ${((rig.tilt * 180) / Math.PI).toFixed(1)}deg`);
-  check("tilt gesture does not zoom", !calls.some((c) => c.startsWith("zoom")), calls.join("; "));
+  check("tilt gesture does not transform", !calls.some((c) => c.startsWith("transform")), calls.join("; "));
   check("tilt gesture does not rotate", Math.abs(rig.theta) < 1e-6, `theta=${rig.theta.toFixed(4)}`);
   up(1, 500, 250);
   up(2, 700, 250);
@@ -235,7 +330,10 @@ console.log("\ntwo fingers to one");
   up(2, 900, 400);
   calls.length = 0;
   const t0 = { ...rig.target };
-  for (let i = 1; i <= 10; i++) move(1, 300 + i * 10, 400);
+  for (let i = 1; i <= 10; i++) {
+    move(1, 300 + i * 10, 400);
+    controls.update(1 / 60);
+  }
   up(1, 400, 400);
   check("lifting one finger resumes panning", rig.target.x !== t0.x, `dx=${(rig.target.x - t0.x).toFixed(0)}m`);
   check("the remaining finger never selects", !calls.length, calls.join("; "));

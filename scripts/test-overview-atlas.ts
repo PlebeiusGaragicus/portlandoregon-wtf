@@ -14,14 +14,13 @@ function level(width: OverviewAtlasWidth): Record<string, unknown> {
   return {
     width,
     height: width / 2,
-    ground: { file: `overview-ground-v1-${width}.png`, sha256: HASH },
-    urban: { file: `overview-urban-v1-${width}.png`, sha256: HASH },
+    image: { file: `overview-city-v2-${width}.png`, sha256: HASH },
   };
 }
 
 function fixture(): Record<string, unknown> {
   return {
-    version: 1,
+    version: 2,
     generator: "battle-juice-overview-atlas",
     map: { name: "test-city", sourceDate: "2026-08-06" },
     extent: {
@@ -56,7 +55,7 @@ function rejects(name: string, value: unknown): void {
 }
 
 const manifest = parseOverviewAtlasManifest(fixture());
-check("parses the versioned manifest", manifest.version === 1 && manifest.map.name === "test-city");
+check("parses the versioned manifest", manifest.version === 2 && manifest.map.name === "test-city");
 check("normalizes all three levels", manifest.levels.map(({ width }) => width).join(",") === "1024,2048,4096");
 
 {
@@ -73,7 +72,7 @@ check("normalizes all three levels", manifest.levels.map(({ width }) => width).j
 {
   const invalid = fixture();
   const levels = invalid["levels"] as Record<string, unknown>[];
-  (levels[0]!["ground"] as Record<string, unknown>)["file"] = "../wrong.png";
+  (levels[0]!["image"] as Record<string, unknown>)["file"] = "../wrong.png";
   rejects("rejects unexpected asset paths", invalid);
 }
 

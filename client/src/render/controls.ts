@@ -10,11 +10,12 @@ const TILT_SPEED = 1.2; // rad/s while R/F held
 const TILT_PER_PX = 0.005; // drag up = lower elevation angle = more oblique
 const YAW_PER_PX = 0.006;
 
-// Two-finger gesture arbitration. Totals accumulate from the moment the
-// second finger lands; the first threshold crossed decides the gesture.
-const TILT_TRIGGER_PX = 22; // parallel vertical travel of the midpoint
-const SPREAD_TRIGGER_PX = 22; // change in finger separation
-const TWIST_TRIGGER_RAD = 0.14; // change in finger-pair angle
+// Two-finger intent arbitration. The small dead zone absorbs landing noise;
+// once an intent wins it stays stable until the finger pair changes.
+const TILT_TRIGGER_PX = 10;
+const MIDPOINT_TRIGGER_PX = 8;
+const SPREAD_TRIGGER_PX = 10;
+const TWIST_TRIGGER_RAD = 0.065;
 
 const TAP_SLOP_PX = 12;
 const LONG_PRESS_MS = 450;
@@ -34,6 +35,12 @@ export interface ControlDelegate {
   deselect(): void;
   /** Zoom keeping the world point under the cursor fixed. */
   zoomAt(clientX: number, clientY: number, factor: number): void;
+  /** Carry the world under the old midpoint to the new one while scaling/yawing. */
+  transformAt(fromX: number, fromY: number, toX: number, toY: number, factor: number, rotation: number): void;
+  /** Tilt without allowing the ground beneath the midpoint to slip. */
+  tiltAt(clientX: number, clientY: number, delta: number): void;
+  /** Disaster-director action; touch hold is the mobile Shift+click. */
+  fireballAt(clientX: number, clientY: number): void;
 }
 
 /** Finger-pair pose: separation, pair angle, and midpoint. */
@@ -42,6 +49,10 @@ interface Pose {
   ang: number;
   mx: number;
   my: number;
+  ax: number;
+  ay: number;
+  bx: number;
+  by: number;
 }
 
 interface Gesture {
@@ -49,7 +60,7 @@ interface Gesture {
   start: Pose;
   /** Pose at the previous move — the baseline for the increment we apply. */
   last: Pose;
-  mode: "undecided" | "tilt" | "zoomrotate";
+  mode: "undecided" | "tilt" | "transform";
 }
 
 /**
@@ -63,12 +74,12 @@ interface Gesture {
  * selection is off.
  *
  * Touch (Google Maps-flavoured): one finger drags the map, one tap selects, a
- * long press dispatches; two fingers pinch to zoom and twist to rotate about
- * the gesture midpoint, while a two-finger parallel drag up/down tilts.
+ * long press drops a fireball; two fingers pan/pinch/twist about their moving
+ * midpoint, while a two-finger parallel drag up/down tilts.
  */
 export class Controls {
   /** False while FPV mode owns the input (all handlers become inert). */
-  active = true;
+  private enabled = true;
   private thetaGoal = 0;
   private keys = new Set<string>();
   private pointer: {
@@ -78,6 +89,8 @@ export class Controls {
     mode: "idle" | "maybe" | "pan" | "marquee" | "orbit";
   } | null = null;
   private touches = new Map<number, { x: number; y: number }>();
+  private singleLast: { x: number; y: number } | null = null;
+  private touchDirty = false;
   private tap: { x: number; y: number; moved: boolean; timer: number } | null = null;
   private gesture: Gesture | null = null;
   private marqueeEl: HTMLDivElement;
@@ -101,6 +114,7 @@ export class Controls {
     this.listen(canvas, "pointerdown", (e: PointerEvent) => {
       if (!this.active) return;
       if (e.pointerType === "touch") {
+        e.preventDefault();
         canvas.setPointerCapture(e.pointerId);
         this.touchDown(e);
         return;
@@ -117,6 +131,7 @@ export class Controls {
     this.listen(canvas, "pointermove", (e: PointerEvent) => {
       if (!this.active) return;
       if (e.pointerType === "touch") {
+        e.preventDefault();
         this.touchMove(e);
         return;
       }
@@ -140,6 +155,7 @@ export class Controls {
     this.listen(canvas, "pointerup", (e: PointerEvent) => {
       if (!this.active) return;
       if (e.pointerType === "touch") {
+        e.preventDefault();
         this.touchUp(e);
         return;
       }
@@ -156,6 +172,7 @@ export class Controls {
     });
     this.listen(canvas, "pointercancel", (e: PointerEvent) => {
       if (e.pointerType === "touch") {
+        e.preventDefault();
         this.touchUp(e);
         return;
       }
@@ -189,6 +206,21 @@ export class Controls {
     });
   }
 
+  get active(): boolean {
+    return this.enabled;
+  }
+
+  set active(value: boolean) {
+    if (value === this.enabled) return;
+    this.enabled = value;
+    if (!value) {
+      this.resetTouches();
+      this.pointer = null;
+      this.keys.clear();
+      this.marqueeEl.style.display = "none";
+    }
+  }
+
   faceNorth(): void {
     // Tween to the nearest full turn (theta = 0 mod 2pi).
     this.thetaGoal = Math.round(this.rig.theta / (2 * Math.PI)) * 2 * Math.PI;
@@ -202,6 +234,10 @@ export class Controls {
   /** Advance tweens, held-key panning and tilting. dt in seconds. */
   update(dt: number): void {
     if (!this.active) return;
+    // Pointer events update individual fingers at different times. Consuming
+    // one complete pose here avoids alternating fresh/stale-finger wobble.
+    this.flushTouchInput();
+
     const d = this.thetaGoal - this.rig.theta;
     if (Math.abs(d) < 1e-4) this.rig.theta = this.thetaGoal;
     else this.rig.theta += d * Math.min(1, dt * TWEEN_RATE);
@@ -224,7 +260,7 @@ export class Controls {
   dispose(): void {
     for (const d of this.disposers) d();
     this.disposers = [];
-    this.cancelLongPress();
+    this.resetTouches();
     this.marqueeEl.remove();
   }
 
@@ -246,61 +282,101 @@ export class Controls {
   // ---- touch ----------------------------------------------------------
 
   private touchDown(e: PointerEvent): void {
+    // Preserve the final movement from the previous finger-count state.
+    this.flushTouchInput();
     this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (this.touches.size === 1) {
+      this.singleLast = { x: e.clientX, y: e.clientY };
       this.tap = { x: e.clientX, y: e.clientY, moved: false, timer: 0 };
-      if (!this.delegate.isStrategic()) {
-        this.tap.timer = window.setTimeout(() => {
-          const t = this.tap;
-          if (!t || t.moved || this.touches.size !== 1) return;
-          this.tap = null;
-          this.delegate.dispatchAt(t.x, t.y);
-        }, LONG_PRESS_MS);
-      }
+      this.tap.timer = window.setTimeout(() => {
+        const t = this.tap;
+        if (!this.active || !t || t.moved || this.touches.size !== 1) return;
+        this.tap = null;
+        this.delegate.fireballAt(t.x, t.y);
+      }, LONG_PRESS_MS);
     } else if (this.touches.size === 2) {
       this.cancelLongPress();
+      this.tap = null;
+      this.singleLast = null;
       this.beginGesture();
     } else {
-      this.gesture = null; // three or more fingers: ignore until we're back to two
+      this.gesture = null;
+      this.singleLast = null;
     }
   }
 
   private touchMove(e: PointerEvent): void {
-    const prev = this.touches.get(e.pointerId);
-    if (!prev) return;
-    const dx = e.clientX - prev.x;
-    const dy = e.clientY - prev.y;
-    prev.x = e.clientX;
-    prev.y = e.clientY;
+    const point = this.touches.get(e.pointerId);
+    if (!point) return;
+    point.x = e.clientX;
+    point.y = e.clientY;
+    const t = this.tap;
+    if (t && !t.moved && Math.hypot(e.clientX - t.x, e.clientY - t.y) > TAP_SLOP_PX) {
+      t.moved = true;
+      this.cancelLongPress();
+    }
+    this.touchDirty = true;
+  }
 
-    if (this.touches.size === 1) {
-      const t = this.tap;
-      if (t && !t.moved && Math.hypot(e.clientX - t.x, e.clientY - t.y) > TAP_SLOP_PX) {
-        t.moved = true;
-        this.cancelLongPress();
+  private touchUp(e: PointerEvent): void {
+    const point = this.touches.get(e.pointerId);
+    if (!point) return;
+    point.x = e.clientX;
+    point.y = e.clientY;
+    this.touchDirty = true;
+    // Consume the last pose while both fingers still exist.
+    this.flushTouchInput();
+
+    const t = this.tap;
+    this.touches.delete(e.pointerId);
+    this.gesture = null;
+    if (this.touches.size === 0) {
+      this.cancelLongPress();
+      this.tap = null;
+      this.singleLast = null;
+      if (t && !t.moved && e.type === "pointerup" && !this.delegate.isStrategic()) {
+        this.delegate.selectAt(e.clientX, e.clientY);
       }
-      this.rig.panScreen(dx, dy, this.canvas.clientHeight);
-      this.rig.clampToMap(this.map);
+    } else if (this.touches.size === 1) {
+      // Dropping from two fingers to one: resume panning, but never as a tap.
+      this.tap = null;
+      const remaining = [...this.touches.values()][0]!;
+      this.singleLast = { ...remaining };
+    } else if (this.touches.size === 2) {
+      // A third finger left: the surviving pair starts from its current pose.
+      this.beginGesture();
+    }
+  }
+
+  /** Apply the latest complete touch pose at most once per rendered frame. */
+  private flushTouchInput(): void {
+    if (!this.touchDirty) return;
+    this.touchDirty = false;
+    if (this.touches.size === 1) {
+      const cur = [...this.touches.values()][0]!;
+      if (!this.singleLast) {
+        this.singleLast = { ...cur };
+        return;
+      }
+      const dx = cur.x - this.singleLast.x;
+      const dy = cur.y - this.singleLast.y;
+      this.singleLast = { ...cur };
+      if (dx || dy) {
+        this.rig.panScreen(dx, dy, this.canvas.clientHeight);
+        this.rig.clampToMap(this.map);
+      }
       return;
     }
     if (this.touches.size === 2) this.updateGesture();
   }
 
-  private touchUp(e: PointerEvent): void {
-    const t = this.tap;
-    const lifted = this.touches.delete(e.pointerId);
-    if (!lifted) return;
+  private resetTouches(): void {
+    this.cancelLongPress();
+    this.tap = null;
     this.gesture = null;
-    if (this.touches.size === 0) {
-      this.cancelLongPress();
-      this.tap = null;
-      if (t && !t.moved && e.type === "pointerup" && !this.delegate.isStrategic()) {
-        this.delegate.selectAt(e.clientX, e.clientY);
-      }
-    } else {
-      // Dropping from two fingers to one: resume panning, but never as a tap.
-      this.tap = null;
-    }
+    this.singleLast = null;
+    this.touchDirty = false;
+    this.touches.clear();
   }
 
   private cancelLongPress(): void {
@@ -317,6 +393,10 @@ export class Controls {
       ang: Math.atan2(b.y - a.y, b.x - a.x),
       mx: (a.x + b.x) / 2,
       my: (a.y + b.y) / 2,
+      ax: a.x,
+      ay: a.y,
+      bx: b.x,
+      by: b.y,
     };
   }
 
@@ -337,45 +417,63 @@ export class Controls {
     if (!cur) return;
 
     if (g.mode === "undecided") {
-      // Arbitrate on displacement since the gesture began, never on a sum of
-      // per-event deltas: touch moves arrive one finger at a time, so a pure
-      // tilt drag momentarily spreads and twists the pair on every other
-      // event. Summing that noise would let pinch win every time.
       const spread = Math.abs(cur.dist - g.start.dist);
       const twist = Math.abs(wrapPi(cur.ang - g.start.ang));
       const mdx = cur.mx - g.start.mx;
       const mdy = cur.my - g.start.my;
-      if (Math.abs(mdy) > TILT_TRIGGER_PX && Math.abs(mdy) > 2 * Math.abs(mdx) && spread < SPREAD_TRIGGER_PX && twist < TWIST_TRIGGER_RAD) {
+      const adx = cur.ax - g.start.ax;
+      const ady = cur.ay - g.start.ay;
+      const bdx = cur.bx - g.start.bx;
+      const bdy = cur.by - g.start.by;
+      const aLen = Math.hypot(adx, ady);
+      const bLen = Math.hypot(bdx, bdy);
+      const parallel = aLen > 1 && bLen > 1
+        ? (adx * bdx + ady * bdy) / (aLen * bLen)
+        : -1;
+      const balance = Math.min(aLen, bLen) / Math.max(1, aLen, bLen);
+      const tiltLike =
+        parallel > 0.82 &&
+        balance > 0.55 &&
+        Math.abs(mdy) > 1.5 * Math.abs(mdx) &&
+        spread < SPREAD_TRIGGER_PX * 1.25 &&
+        twist < TWIST_TRIGGER_RAD * 1.25;
+
+      if (tiltLike && Math.abs(mdy) > TILT_TRIGGER_PX) {
         g.mode = "tilt";
-      } else if (spread > SPREAD_TRIGGER_PX || twist > TWIST_TRIGGER_RAD) {
-        g.mode = "zoomrotate";
+      } else if (
+        spread > SPREAD_TRIGGER_PX ||
+        twist > TWIST_TRIGGER_RAD ||
+        (Math.hypot(mdx, mdy) > MIDPOINT_TRIGGER_PX && !tiltLike)
+      ) {
+        g.mode = "transform";
       } else {
-        // Midpoint drift alone no longer starts anything: two fingers are for
-        // zoom, twist and tilt, and one finger is for panning. Letting the
-        // midpoint pan too meant every pinch dragged the map as well.
         return;
       }
-      // Recognition costs a threshold's worth of travel. Replay it from the
-      // gesture's start so the whole drag ends up tracking the fingers 1:1.
-      g.last = g.start;
-    }
-
-    const dSpread = cur.dist - g.last.dist;
-    const dAng = wrapPi(cur.ang - g.last.ang);
-    const dmy = cur.my - g.last.my;
-    g.last = cur;
-
-    if (g.mode === "tilt") {
-      this.rig.tiltBy(dmy * TILT_PER_PX);
+      // Consume the recognition slop instead of replaying it as a jump.
+      g.last = cur;
       return;
     }
-    // Zoom about the midpoint and twist the map with the fingers. The
-    // midpoint deliberately does NOT pan: zooming about a moving anchor
-    // already tracks the fingers, and adding pan on top made every pinch
-    // shove the map sideways.
-    if (cur.dist > 1 && cur.dist - dSpread > 1) this.delegate.zoomAt(cur.mx, cur.my, (cur.dist - dSpread) / cur.dist);
-    this.rotateBy(dAng);
-    this.rig.clampToMap(this.map);
+
+    const dAng = wrapPi(cur.ang - g.last.ang);
+    const dmy = cur.my - g.last.my;
+
+    if (g.mode === "tilt") {
+      this.delegate.tiltAt(cur.mx, cur.my, dmy * TILT_PER_PX);
+      g.last = cur;
+      return;
+    }
+    if (cur.dist > 1 && g.last.dist > 1) {
+      this.delegate.transformAt(
+        g.last.mx,
+        g.last.my,
+        cur.mx,
+        cur.my,
+        g.last.dist / cur.dist,
+        dAng,
+      );
+      this.thetaGoal = this.rig.theta;
+    }
+    g.last = cur;
   }
 
   private drawMarquee(x0: number, y0: number, x1: number, y1: number): void {

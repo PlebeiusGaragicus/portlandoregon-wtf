@@ -98,13 +98,14 @@ function pngFixture(width: number, height: number, salt: number): Buffer {
 function writeAtlas(dir: string, map: GameMap): OverviewAtlasManifest {
   const levels: OverviewAtlasManifest["levels"] = OVERVIEW_ATLAS_WIDTHS.map((width) => {
     const height = overviewAtlasHeight(width, map.meta.width, map.meta.height);
-    const images = (["ground", "urban"] as const).map((kind, index) => {
-      const file = overviewAtlasFile(kind, width);
-      const png = pngFixture(width, height, width / 1024 + index);
-      writeFileSync(join(dir, file), png);
-      return { file, sha256: createHash("sha256").update(png).digest("hex") };
-    });
-    return { width, height, ground: images[0]!, urban: images[1]! };
+    const file = overviewAtlasFile(width);
+    const png = pngFixture(width, height, width / 1024);
+    writeFileSync(join(dir, file), png);
+    return {
+      width,
+      height,
+      image: { file, sha256: createHash("sha256").update(png).digest("hex") },
+    };
   });
   const manifest: OverviewAtlasManifest = {
     version: OVERVIEW_ATLAS_VERSION,
@@ -156,10 +157,10 @@ try {
   );
   atlas = writeAtlas(dir, map);
 
-  const wrongSizeFile = overviewAtlasFile("ground", 1024);
+  const wrongSizeFile = overviewAtlasFile(1024);
   const wrongSizePng = pngFixture(1000, overviewAtlasHeight(1024, map.meta.width, map.meta.height), 9);
   writeFileSync(join(dir, wrongSizeFile), wrongSizePng);
-  atlas.levels[0]!.ground.sha256 = createHash("sha256").update(wrongSizePng).digest("hex");
+  atlas.levels[0]!.image.sha256 = createHash("sha256").update(wrongSizePng).digest("hex");
   writeFileSync(join(dir, OVERVIEW_ATLAS_MANIFEST), JSON.stringify(atlas));
   results = verifyStagedMap(dir);
   check(
@@ -177,7 +178,7 @@ try {
   );
   atlas = writeAtlas(dir, map);
 
-  atlas.levels[0]!.urban.sha256 = "0".repeat(64);
+  atlas.levels[0]!.image.sha256 = "0".repeat(64);
   writeFileSync(join(dir, OVERVIEW_ATLAS_MANIFEST), JSON.stringify(atlas));
   results = verifyStagedMap(dir);
   check(

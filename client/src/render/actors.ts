@@ -8,17 +8,17 @@ import { radialGlowTexture } from "./props.js";
 // Ambient emergency traffic: fire engines/trucks, police cars and ambulances
 // running code 3 along the real street graph. Purely decorative and fully
 // client-side — the sim never sees them. Vehicles spawn from their real
-// facilities near the camera; fire apparatus stay inside their first-due
-// area and periodically return to the station and disappear.
+// facilities near the camera. Fire apparatus are different: every mapped
+// station owns a persistent engine + truck roster, hidden in their bays until
+// dispatch and returned to the same bay when the call closes.
 
-const MAX_FIRE = 9;
 const MAX_POLICE = 30;
 const MAX_AMBULANCE_DAY = 40;
 const MAX_AMBULANCE_NIGHT = 20;
 const MAX_CITYBUS = 12;
 const MAX_SCHOOLBUS = 10; // only during school runs
 const MAX_TANK = 5;
-const CAP = MAX_FIRE + MAX_POLICE + MAX_AMBULANCE_DAY + MAX_CITYBUS + MAX_SCHOOLBUS + MAX_TANK;
+const NON_FIRE_CAP = MAX_POLICE + MAX_AMBULANCE_DAY + MAX_CITYBUS + MAX_SCHOOLBUS + MAX_TANK;
 const TRAILER_CAP = MAX_CITYBUS;
 
 /** Monotonic vehicle identity (stable across the vehicles array mutating). */
@@ -74,14 +74,27 @@ const KINDS: Record<
 interface Vehicle {
   kind: keyof typeof KINDS;
   /** Home facility (fire station / hospital), world meters. */
-  home: { x: number; y: number } | null;
-  mode: "roam" | "return" | "respond" | "onscene";
+  home: Facility | null;
+  mode: "available" | "roam" | "return" | "return-bay" | "respond" | "onscene";
   /** Dispatch destination while responding. */
   goal: { x: number; y: number } | null;
   respondT: number;
   fireScanT: number;
   /** Stable identity for cross-system hooks (hose crews). */
   uid: number;
+  /** Owning fire-station roster slot; null for all ambient vehicles. */
+  stationId: number | null;
+  stationSlot: 0 | 1 | null;
+  /** Trucks queue behind their station's engine instead of spawning overlapped. */
+  departDelay: number;
+  /** Dispatch reservation; prevents simultaneous calls double-booking. */
+  incidentId: number | null;
+  /** Planned street-edge route for response/return travel. */
+  routeEdges: number[];
+  routeGoalNode: number;
+  routeMode: "respond" | "return" | null;
+  routeGoalX: number;
+  routeGoalY: number;
   sceneT: number;
   /** Seconds until this roamer heads home (fire/ambulance). */
   patience: number;
@@ -117,9 +130,36 @@ interface Vehicle {
 }
 
 interface Facility {
+  id: number;
   x: number;
   y: number;
   node: number;
+}
+
+export interface FireRosterSpec<T> {
+  station: T;
+  stationId: number;
+  stationSlot: 0 | 1;
+  kind: "engine" | "truck";
+}
+
+/** Deterministic two-piece company assignment for every mapped station. */
+export function buildFireRoster<T extends { id: number }>(stations: readonly T[]): FireRosterSpec<T>[] {
+  return stations.flatMap((station) => [
+    { station, stationId: station.id, stationSlot: 0 as const, kind: "engine" as const },
+    { station, stationId: station.id, stationSlot: 1 as const, kind: "truck" as const },
+  ]);
+}
+
+export interface FireApparatusSnapshot {
+  uid: number;
+  stationId: number;
+  stationSlot: 0 | 1;
+  kind: "engine" | "truck";
+  mode: Vehicle["mode"];
+  incidentId: number | null;
+  x: number;
+  y: number;
 }
 
 export class Actors {
@@ -132,6 +172,9 @@ export class Actors {
 
   private adj = new Map<number, number[]>();
   private nodePos = new Map<number, { x: number; y: number }>();
+  private edgeLengths: number[] = [];
+  private routeCache = new Map<string, number[]>();
+  private goalNodeCache = new Map<string, number>();
   private streets: StreetAccess;
   private fireHomes: Facility[] = [];
   private ambHomes: Facility[] = [];
@@ -167,6 +210,14 @@ export class Actors {
     for (let i = 0; i < this.streets.edgeCount; i++) {
       const e = this.streets.edge(i);
       if (e.class === "path" || e.class === "alley" || e.struct === "tunnel") continue;
+      let edgeLength = 0;
+      for (let point = 1; point < e.polyline.length; point++) {
+        edgeLength += Math.hypot(
+          e.polyline[point]![0] - e.polyline[point - 1]![0],
+          e.polyline[point]![1] - e.polyline[point - 1]![1],
+        );
+      }
+      this.edgeLengths[i] = edgeLength;
       let la = this.adj.get(e.a);
       if (!la) this.adj.set(e.a, (la = []));
       la.push(i);
@@ -179,7 +230,7 @@ export class Actors {
       if (this.adj.has(n.id)) this.nodePos.set(n.id, { x: n.x, y: n.y });
     }
 
-    const snap = (x: number, y: number): Facility => {
+    const snap = (id: number, x: number, y: number): Facility => {
       let best = -1;
       let bd = Infinity;
       for (const [id, p] of this.nodePos) {
@@ -189,13 +240,13 @@ export class Actors {
           best = id;
         }
       }
-      return { x, y, node: best };
+      return { id, x, y, node: best };
     };
     for (const lm of map.landmarks ?? []) {
-      if (lm.kind === "fire-station") this.fireHomes.push(snap(lm.x, lm.y));
-      else if (lm.kind === "hospital") this.ambHomes.push(snap(lm.x, lm.y));
-      else if (lm.kind === "police") this.policeHomes.push(snap(lm.x, lm.y));
-      else if (lm.kind === "school") this.schoolHomes.push(snap(lm.x, lm.y));
+      if (lm.kind === "fire-station") this.fireHomes.push(snap(lm.id, lm.x, lm.y));
+      else if (lm.kind === "hospital") this.ambHomes.push(snap(lm.id, lm.x, lm.y));
+      else if (lm.kind === "police") this.policeHomes.push(snap(lm.id, lm.x, lm.y));
+      else if (lm.kind === "school") this.schoolHomes.push(snap(lm.id, lm.x, lm.y));
     }
     this.dispatch = new Dispatch(
       (focus, range) => {
@@ -213,10 +264,11 @@ export class Actors {
     this.group.add(this.dispatch.group);
 
     const bodyMat = new THREE.MeshLambertMaterial({ flatShading: true });
-    this.body = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), bodyMat, CAP);
+    const vehicleCapacity = this.fireHomes.length * 2 + NON_FIRE_CAP;
+    this.body = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), bodyMat, vehicleCapacity);
     this.body.castShadow = true;
     const barMat = new THREE.MeshBasicMaterial(); // unlit: lightbars burn through any hour
-    this.bar = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), barMat, CAP);
+    this.bar = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), barMat, vehicleCapacity);
     this.trailer = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), bodyMat, TRAILER_CAP);
     this.trailer.castShadow = true;
     // Instance matrices place vehicles all over the city, but three.js culls
@@ -225,6 +277,14 @@ export class Actors {
     this.body.frustumCulled = this.bar.frustumCulled = this.trailer.frustumCulled = false;
     this.body.count = this.bar.count = this.trailer.count = 0;
     this.group.add(this.body, this.bar, this.trailer);
+
+    // Every station starts staffed, independent of camera position. Available
+    // rigs remain hidden logical records until Dispatch changes their mode.
+    for (const spec of buildFireRoster(this.fireHomes)) {
+      if (!this.spawnAt(spec.kind, spec.station, false, "available", spec.stationId, spec.stationSlot)) {
+        throw new Error(`Fire station ${spec.stationId} has no drivable road connection`);
+      }
+    }
   }
 
   /** Fire crews working a scene — the burn sim uses them as suppressors. */
@@ -232,6 +292,23 @@ export class Actors {
     return this.vehicles
       .filter((v) => (v.kind === "engine" || v.kind === "truck") && v.mode === "onscene")
       .map((v) => ({ id: v.uid, x: v.x, y: v.y }));
+  }
+
+  /** Read-only roster state for regression tests and browser diagnostics. */
+  fireApparatusSnapshot(): FireApparatusSnapshot[] {
+    return this.vehicles
+      .filter((v): v is Vehicle & { kind: "engine" | "truck"; stationId: number; stationSlot: 0 | 1 } =>
+        (v.kind === "engine" || v.kind === "truck") && v.stationId !== null && v.stationSlot !== null)
+      .map((v) => ({
+        uid: v.uid,
+        stationId: v.stationId,
+        stationSlot: v.stationSlot,
+        kind: v.kind,
+        mode: v.mode,
+        incidentId: v.incidentId,
+        x: v.x,
+        y: v.y,
+      }));
   }
 
   /** Report a real fire to dispatch (dedupes against open fire calls). */
@@ -248,15 +325,13 @@ export class Actors {
   /** Burn-sim probe (renderer wires it): active fire near (x, y)? Keeps
    * crews and fire calls on scene until the fire is actually out. */
   hasFireNear: ((x: number, y: number, r: number) => boolean) | null = null;
-  /** Burn-sim probe: nearest active fire within r — crews leapfrog to it. */
-  nearestFire: ((x: number, y: number, r: number) => { x: number; y: number } | null) | null = null;
 
   update(dt: number, timeSec: number, focus: { x: number; y: number }, night = 0, hour = 12): void {
     this.spawn(focus, dt, night, hour);
     this.dispatch.hasFireNear = this.hasFireNear;
     this.dispatch.update(dt, timeSec, focus, this.vehicles);
 
-    for (const v of this.vehicles) v.patience -= dt;
+    for (const v of this.vehicles) if (v.mode === "roam") v.patience -= dt;
     // Tanks near the camera bombard the neighborhood.
     for (const v of this.vehicles) {
       if (v.kind !== "tank") continue;
@@ -270,10 +345,11 @@ export class Actors {
     this.vehicles = this.vehicles.filter((v) => this.advance(v, dt, focus));
 
     // Write instances (bars only for lighted kinds, trailers only for buses).
+    const visible = this.vehicles.filter((v) => v.mode !== "available");
     let iBar = 0;
     let iTrail = 0;
-    this.body.count = this.vehicles.length;
-    this.vehicles.forEach((v, i) => {
+    this.body.count = visible.length;
+    visible.forEach((v, i) => {
       const k = KINDS[v.kind];
       const gz = this.groundAt(v);
       const [L, W, H] = k.size;
@@ -316,6 +392,7 @@ export class Actors {
         this.bar.setColorAt(iBar, this.color.setHex(flash ? k.flashA : k.flashB));
         iBar++;
         if (v.glow) {
+          v.glow.visible = true;
           const gm = v.glow.material as THREE.SpriteMaterial;
           gm.color.setHex(flash ? k.flashA : k.flashB);
           gm.opacity = 0.2 + 0.45 * night; // subtle by day, a beacon after dark
@@ -353,7 +430,6 @@ export class Actors {
     this.respawnCooldown -= dt;
     if (this.respawnCooldown > 0) return;
     const count = (k: (v: Vehicle) => boolean): number => this.vehicles.filter(k).length;
-    const nFire = count((v) => v.kind === "engine" || v.kind === "truck");
     const nPol = count((v) => v.kind === "police");
     const nAmb = count((v) => v.kind === "ambulance");
     const nBus = count((v) => v.kind === "citybus");
@@ -377,11 +453,7 @@ export class Actors {
       fs.filter((f) => Math.hypot(f.x - focus.x, f.y - focus.y) < SPAWN_NEAR);
 
     let spawned = false;
-    if (nFire < MAX_FIRE) {
-      const homes = near(this.fireHomes);
-      const h = homes[Math.floor(Math.random() * homes.length)];
-      if (h) spawned = this.spawnAt(Math.random() < 0.7 ? "engine" : "truck", h);
-    } else if (nPol < MAX_POLICE) {
+    if (nPol < MAX_POLICE) {
       const homes = near(this.policeHomes);
       const h = homes.length
         ? homes[Math.floor(Math.random() * homes.length)]!
@@ -410,7 +482,7 @@ export class Actors {
     }
     // Stagger arrivals — but fill a big deficit briskly after a view change.
     const deficit =
-      MAX_FIRE - nFire + (MAX_POLICE - nPol) + (maxAmb - nAmb) + (MAX_CITYBUS - nBus) + (maxSchool - nSchool);
+      (MAX_POLICE - nPol) + (maxAmb - nAmb) + (MAX_CITYBUS - nBus) + (maxSchool - nSchool);
     this.respawnCooldown = spawned ? (deficit > 12 ? 0.25 : 0.9 + Math.random() * 2.5) : 1.5;
   }
 
@@ -420,12 +492,19 @@ export class Actors {
     for (let tries = 0; tries < 40; tries++) {
       const id = ids[Math.floor(Math.random() * ids.length)]!;
       const p = this.nodePos.get(id)!;
-      if (Math.hypot(p.x - focus.x, p.y - focus.y) < 3000) return { x: p.x, y: p.y, node: id };
+      if (Math.hypot(p.x - focus.x, p.y - focus.y) < 3000) return { id: -1, x: p.x, y: p.y, node: id };
     }
     return null;
   }
 
-  private spawnAt(kind: keyof typeof KINDS, home: Facility, homeless = false): boolean {
+  private spawnAt(
+    kind: keyof typeof KINDS,
+    home: Facility,
+    homeless = false,
+    mode: Vehicle["mode"] = "roam",
+    stationId: number | null = null,
+    stationSlot: 0 | 1 | null = null,
+  ): boolean {
     const edges = this.adj.get(home.node);
     if (!edges?.length) return false;
     const edge = edges[Math.floor(Math.random() * edges.length)]!;
@@ -446,8 +525,8 @@ export class Actors {
     }
     const v: Vehicle = {
       kind,
-      home: homeless ? null : { x: home.x, y: home.y },
-      mode: "roam",
+      home: homeless ? null : home,
+      mode,
       patience: 70 + Math.random() * 140,
       pts: [],
       bridge: false,
@@ -473,13 +552,27 @@ export class Actors {
       respondT: 0,
       fireScanT: 0,
       uid: nextUid++,
+      stationId,
+      stationSlot,
+      departDelay: stationSlot === 1 ? 2.5 : 0,
+      incidentId: null,
+      routeEdges: [],
+      routeGoalNode: -1,
+      routeMode: null,
+      routeGoalX: NaN,
+      routeGoalY: NaN,
       sceneT: 0,
       trailHeading: 0,
       expire: false,
       bombardT: 6 + Math.random() * 14,
       glow,
     };
-    this.enterEdge(v, edge, home.node);
+    if (mode === "available") {
+      this.enterStationConnector(v, false);
+      if (v.glow) v.glow.visible = false;
+    } else {
+      this.enterEdge(v, edge, home.node);
+    }
     v.rHeading = v.trailHeading = this.pathHeading(v);
     this.vehicles.push(v);
     return true;
@@ -493,6 +586,50 @@ export class Actors {
   }
 
   // ---- driving -------------------------------------------------------------
+
+  /** Bay landmark <-> snapped street-node connector. It is deliberately a
+   * real path segment so dispatch never teleports a rig tens of metres from
+   * the station pin onto the road network. */
+  private enterStationConnector(v: Vehicle, inbound: boolean): void {
+    const home = v.home;
+    if (!home) return;
+    const node = this.nodePos.get(home.node);
+    if (!node) return;
+    const start: [number, number] = inbound ? [node.x, node.y] : [home.x, home.y];
+    const end: [number, number] = inbound ? [home.x, home.y] : [node.x, node.y];
+    v.pts = [start, end];
+    v.bridge = false;
+    v.hA = this.terrain(start[0], start[1]);
+    v.hB = this.terrain(end[0], end[1]);
+    v.edgeLen = Math.hypot(end[0] - start[0], end[1] - start[1]);
+    v.traveled = 0;
+    v.seg = 0;
+    v.segT = 0;
+    v.edgeId = inbound ? -3 : -2;
+    v.endNode = inbound ? -1 : home.node;
+    v.x = start[0];
+    v.y = start[1];
+    v.heading = Math.atan2(end[1] - start[1], end[0] - start[0]);
+    v.rHeading = v.trailHeading = v.heading;
+    if (inbound) v.mode = "return-bay";
+  }
+
+  private parkAtStation(v: Vehicle): void {
+    v.mode = "available";
+    v.goal = null;
+    v.incidentId = null;
+    v.routeEdges = [];
+    v.routeGoalNode = -1;
+    v.routeMode = null;
+    v.curSpeed = 0;
+    v.departDelay = v.stationSlot === 1 ? 2.5 : 0;
+    v.ox = 0;
+    v.oy = 0;
+    if (v.glow) v.glow.visible = false;
+    // Pre-stage the outbound connector. Dispatch only has to reserve the
+    // apparatus and switch it to respond for it to pull out immediately.
+    this.enterStationConnector(v, false);
+  }
 
   private enterEdge(v: Vehicle, edgeIndex: number, fromNode: number): void {
     const edge = this.streets.edge(edgeIndex);
@@ -525,54 +662,56 @@ export class Actors {
 
   /** Move the vehicle; false = despawn it. */
   private advance(v: Vehicle, dt: number, focus: { x: number; y: number }): boolean {
+    if (v.mode === "available") return true;
     const focusDist = Math.hypot(v.x - focus.x, v.y - focus.y);
-    if (focusDist > DESPAWN_FAR || (v.expire && focusDist > 450)) {
+    if ((v.stationId === null && focusDist > DESPAWN_FAR) || (v.expire && focusDist > 450)) {
       this.kill(v);
       return false;
     }
-    if (v.home && v.mode === "roam" && v.patience <= 0) v.mode = "return";
-    if (v.home && v.mode === "return" && Math.hypot(v.x - v.home.x, v.y - v.home.y) < HOME_DONE) {
+    if (v.stationId === null && v.home && v.mode === "roam" && v.patience <= 0) v.mode = "return";
+    if (v.stationId === null && v.home && v.mode === "return" && Math.hypot(v.x - v.home.x, v.y - v.home.y) < HOME_DONE) {
       this.kill(v); // backed into the bay
       return false;
     }
 
     // Dispatch lifecycle.
     const fireUnit = v.kind === "engine" || v.kind === "truck";
+    this.ensureGoalRoute(v);
     if (v.mode === "respond" && v.goal) {
       v.respondT -= dt;
       if (Math.hypot(v.x - v.goal.x, v.y - v.goal.y) < SCENE_RADIUS) {
         v.mode = "onscene";
         v.sceneT = 25 + Math.random() * 40;
       } else if (v.respondT <= 0) {
-        v.mode = "roam"; // couldn't find the address — back on patrol
-        v.goal = null;
+        // Station apparatus release through Dispatch, which restores the
+        // missing alarm slot and sends this rig home. Ambient units resume.
+        v.mode = fireUnit && v.stationId !== null ? "return" : "roam";
+        v.goal = v.home ? { x: v.home.x, y: v.home.y } : null;
       }
     } else if (v.mode === "onscene") {
       v.sceneT -= dt;
       if (v.sceneT <= 0) {
-        // Fire apparatus doesn't pack up while the fire's still going —
-        // and when this corner is out, it leapfrogs toward the next one to
-        // contain the spread.
-        if (fireUnit && this.hasFireNear?.(v.x, v.y, 130)) {
-          v.sceneT = 20 + Math.random() * 20;
+        if (fireUnit && v.incidentId !== null) {
+          // Dispatch owns the assignment and closes it when the real fire is
+          // out; do not freeload onto another incident.
+          v.sceneT = 2;
         } else {
-          const next = fireUnit ? this.nearestFire?.(v.x, v.y, 500) : null;
-          if (next) {
-            v.mode = "respond";
-            v.goal = { x: next.x, y: next.y };
-            v.respondT = 60 + Math.hypot(next.x - v.x, next.y - v.y) / 15;
-          } else {
-            v.goal = null;
-            v.mode = v.home ? "return" : "roam";
-            v.patience = 40 + Math.random() * 60;
-          }
+          v.goal = v.home ? { x: v.home.x, y: v.home.y } : null;
+          v.mode = v.home ? "return" : "roam";
+          v.patience = 40 + Math.random() * 60;
         }
       }
     }
 
+    if (v.mode === "respond" && v.edgeId === -2 && v.departDelay > 0) {
+      v.departDelay = Math.max(0, v.departDelay - dt);
+      v.curSpeed = 0;
+      return true;
+    }
+
     // Passing a working fire beats driving circles around the address: any
     // fire unit rolling past flames stops HERE and goes to work.
-    if (fireUnit && (v.mode === "respond" || v.mode === "roam")) {
+    if (fireUnit && v.stationId === null && (v.mode === "respond" || v.mode === "roam")) {
       v.fireScanT -= dt;
       if (v.fireScanT <= 0) {
         v.fireScanT = 1.2;
@@ -604,6 +743,10 @@ export class Actors {
       const a = v.pts[v.seg];
       const b = v.pts[v.seg + 1];
       if (!a || !b) {
+        if (v.mode === "return-bay") {
+          this.parkAtStation(v);
+          return true;
+        }
         if (!this.nextEdge(v)) return true; // boxed in: idle this frame
         continue;
       }
@@ -632,11 +775,15 @@ export class Actors {
    * shove) when two actually meet. O(n^2) over ~100 units — negligible. */
   private interact(dt: number): void {
     for (const v of this.vehicles) v.avoidCap = Infinity;
-    const vs = this.vehicles;
+    const vs = this.vehicles.filter((v) => v.mode !== "available");
     for (let i = 0; i < vs.length; i++) {
       const a = vs[i]!;
       for (let j = i + 1; j < vs.length; j++) {
         const b = vs[j]!;
+        // Same-alarm companies stack tightly at a scene and often leave
+        // together. Do not let this simple local traffic model permanently
+        // gridlock station rigs against one another.
+        if (a.stationId !== null && b.stationId !== null) continue;
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const d = Math.hypot(dx, dy);
@@ -662,11 +809,152 @@ export class Actors {
     }
   }
 
+  private nearestRoadNode(goal: { x: number; y: number }): number {
+    const key = `${Math.round(goal.x)},${Math.round(goal.y)}`;
+    const cached = this.goalNodeCache.get(key);
+    if (cached !== undefined) return cached;
+    let best = -1;
+    let bestDistance = Infinity;
+    for (const [node, point] of this.nodePos) {
+      const distance = (point.x - goal.x) ** 2 + (point.y - goal.y) ** 2;
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = node;
+      }
+    }
+    if (this.goalNodeCache.size >= 256) this.goalNodeCache.clear();
+    this.goalNodeCache.set(key, best);
+    return best;
+  }
+
+  /** A* over the drivable graph. Cached station/incident pairs let a whole
+   * company share one route and reuse its reverse path on the trip home. */
+  private shortestRoute(from: number, to: number): { edges: number[]; distance: number } {
+    if (from === to) return { edges: [], distance: 0 };
+    const key = `${from}>${to}`;
+    const cached = this.routeCache.get(key);
+    if (cached) {
+      return {
+        edges: [...cached],
+        distance: cached.reduce((sum, edge) => sum + (this.edgeLengths[edge] ?? 0), 0),
+      };
+    }
+    const destination = this.nodePos.get(to);
+    if (!destination || !this.nodePos.has(from)) return { edges: [], distance: Infinity };
+
+    type Step = { node: number; score: number };
+    const heap: Step[] = [];
+    const push = (step: Step): void => {
+      heap.push(step);
+      let index = heap.length - 1;
+      while (index > 0) {
+        const parent = (index - 1) >> 1;
+        if (heap[parent]!.score <= step.score) break;
+        heap[index] = heap[parent]!;
+        index = parent;
+      }
+      heap[index] = step;
+    };
+    const pop = (): Step | undefined => {
+      const first = heap[0];
+      const last = heap.pop();
+      if (!first || !last || heap.length === 0) return first;
+      let index = 0;
+      while (true) {
+        const left = index * 2 + 1;
+        const right = left + 1;
+        if (left >= heap.length) break;
+        const child =
+          right < heap.length && heap[right]!.score < heap[left]!.score ? right : left;
+        if (heap[child]!.score >= last.score) break;
+        heap[index] = heap[child]!;
+        index = child;
+      }
+      heap[index] = last;
+      return first;
+    };
+    const heuristic = (node: number): number => {
+      const point = this.nodePos.get(node)!;
+      return Math.hypot(point.x - destination.x, point.y - destination.y);
+    };
+
+    const cost = new Map<number, number>([[from, 0]]);
+    const cameFrom = new Map<number, { node: number; edge: number }>();
+    push({ node: from, score: heuristic(from) });
+    while (heap.length) {
+      const current = pop()!;
+      const currentCost = cost.get(current.node);
+      if (currentCost === undefined || current.score > currentCost + heuristic(current.node) + 1e-6) continue;
+      if (current.node === to) break;
+      for (const edgeIndex of this.adj.get(current.node) ?? []) {
+        const edge = this.streets.edge(edgeIndex);
+        const next = edge.a === current.node ? edge.b : edge.a;
+        const nextCost = currentCost + (this.edgeLengths[edgeIndex] || 1);
+        if (nextCost >= (cost.get(next) ?? Infinity)) continue;
+        cost.set(next, nextCost);
+        cameFrom.set(next, { node: current.node, edge: edgeIndex });
+        push({ node: next, score: nextCost + heuristic(next) });
+      }
+    }
+
+    if (!cameFrom.has(to)) return { edges: [], distance: Infinity };
+    const edges: number[] = [];
+    let node = to;
+    while (node !== from) {
+      const step = cameFrom.get(node);
+      if (!step) return { edges: [], distance: Infinity };
+      edges.push(step.edge);
+      node = step.node;
+    }
+    edges.reverse();
+    if (this.routeCache.size >= 256) this.routeCache.clear();
+    this.routeCache.set(key, edges);
+    this.routeCache.set(`${to}>${from}`, [...edges].reverse());
+    return { edges: [...edges], distance: cost.get(to)! };
+  }
+
+  private ensureGoalRoute(v: Vehicle): void {
+    const mode = v.mode === "respond" || v.mode === "return" ? v.mode : null;
+    const goal = mode === "respond" ? v.goal : mode === "return" ? v.home : null;
+    if (!mode || !goal) return;
+    if (v.routeMode === mode && v.routeGoalX === goal.x && v.routeGoalY === goal.y) return;
+    const target = this.nearestRoadNode(goal);
+    const route = this.shortestRoute(v.endNode, target);
+    v.routeEdges = route.edges;
+    v.routeGoalNode = target;
+    v.routeMode = mode;
+    v.routeGoalX = goal.x;
+    v.routeGoalY = goal.y;
+    if (mode === "respond" && Number.isFinite(route.distance)) {
+      v.respondT = Math.max(v.respondT, 60 + route.distance / 15);
+    }
+  }
+
   private nextEdge(v: Vehicle): boolean {
     const node = v.endNode;
     const pos = this.nodePos.get(node);
     const options = this.adj.get(node);
     if (!pos || !options?.length) return false;
+    if (v.stationId !== null && v.mode === "return" && v.home?.node === node) {
+      this.enterStationConnector(v, true);
+      return true;
+    }
+    if (v.mode === "respond" && v.routeGoalNode === node && v.routeEdges.length === 0) {
+      v.mode = "onscene";
+      v.sceneT = 25 + Math.random() * 40;
+      return false;
+    }
+    while (v.routeEdges.length) {
+      const planned = v.routeEdges.shift()!;
+      const edge = this.streets.edge(planned);
+      if (edge.a === node || edge.b === node) {
+        this.enterEdge(v, planned, node);
+        return true;
+      }
+      // A stale route should fall back safely and be replanned if the goal
+      // changes, never feed an unrelated edge into enterEdge.
+      v.routeEdges = [];
+    }
     const fresh = options.filter((edge) => this.streets.edge(edge).id !== v.edgeId);
     const cands = fresh.length ? fresh : options; // dead end: U-turn
 
@@ -738,7 +1026,7 @@ export class Actors {
       if (this.audio.state === "suspended") void this.audio.resume();
       let nearest = Infinity;
       for (const v of this.vehicles) {
-        if (!KINDS[v.kind].lights) continue; // buses don't wail
+        if (v.mode === "available" || !KINDS[v.kind].lights) continue; // buses and parked rigs don't wail
         nearest = Math.min(nearest, Math.hypot(v.x - this.listener.x, v.y - this.listener.y));
       }
       if (Number.isFinite(nearest)) target = 0.1 * Math.max(0, 1 - nearest / 900) ** 1.6;

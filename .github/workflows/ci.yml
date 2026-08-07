@@ -38,6 +38,7 @@ jobs:
           npm run test:overview-atlas
           npm run test:overview-symbols
           npm run test:camera
+          npm run test:apparatus
           npm run test:staged-map-gate
 
       - name: Build client

@@ -111,28 +111,26 @@ function verifyOverviewAtlas(bytes: Uint8Array, mapDir: string): string {
     if (level.height !== expectedHeight) {
       throw new Error(`${width}-wide atlas height is ${String(level.height)}, expected ${expectedHeight}`);
     }
-    for (const kind of ["ground", "urban"] as const) {
-      const image = object(level[kind], `${width}-wide ${kind} image`);
-      const expectedFile = overviewAtlasFile(kind, width);
-      if (image.file !== expectedFile) throw new Error(`${width}-wide ${kind} filename must be ${expectedFile}`);
-      if (typeof image.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(image.sha256)) {
-        throw new Error(`${expectedFile} has an invalid SHA-256`);
-      }
-      const imagePath = resolve(mapDir, expectedFile);
-      if (!existsSync(imagePath)) throw new Error(`${expectedFile} is missing`);
-      const png = readFileSync(imagePath);
-      const dimensions = pngDimensions(png, expectedFile);
-      if (dimensions.width !== width || dimensions.height !== expectedHeight) {
-        throw new Error(
-          `${expectedFile} is ${dimensions.width}x${dimensions.height}, expected ${width}x${expectedHeight}`,
-        );
-      }
-      const digest = createHash("sha256").update(png).digest("hex");
-      if (digest !== image.sha256) throw new Error(`${expectedFile} SHA-256 does not match the manifest`);
-      totalBytes += png.length;
+    const image = object(level.image, `${width}-wide city image`);
+    const expectedFile = overviewAtlasFile(width);
+    if (image.file !== expectedFile) throw new Error(`${width}-wide city filename must be ${expectedFile}`);
+    if (typeof image.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(image.sha256)) {
+      throw new Error(`${expectedFile} has an invalid SHA-256`);
     }
+    const imagePath = resolve(mapDir, expectedFile);
+    if (!existsSync(imagePath)) throw new Error(`${expectedFile} is missing`);
+    const png = readFileSync(imagePath);
+    const dimensions = pngDimensions(png, expectedFile);
+    if (dimensions.width !== width || dimensions.height !== expectedHeight) {
+      throw new Error(
+        `${expectedFile} is ${dimensions.width}x${dimensions.height}, expected ${width}x${expectedHeight}`,
+      );
+    }
+    const digest = createHash("sha256").update(png).digest("hex");
+    if (digest !== image.sha256) throw new Error(`${expectedFile} SHA-256 does not match the manifest`);
+    totalBytes += png.length;
   }
-  return `${OVERVIEW_ATLAS_WIDTHS.length} ground/urban levels, ${mb(totalBytes)} PNG`;
+  return `${OVERVIEW_ATLAS_WIDTHS.length} composite levels, ${mb(totalBytes)} PNG`;
 }
 
 const artifacts: Artifact[] = [

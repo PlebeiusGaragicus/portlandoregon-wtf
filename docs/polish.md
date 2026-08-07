@@ -59,7 +59,7 @@ roughly ordered by visible payoff. Deployment/gameplay backlogs live in
   the dedicated strategic overview described next.
 - **Coherent full-city overview** (2026-08-06): continuous coverage now
   transitions into an aspect-aware, fit-city orthographic camera backed by
-  deterministic offline ground/urban atlases. Fire, collapse, unit, and
+  a deterministic offline composite city atlas. Fire, collapse, unit, and
   objective symbols can retain live gameplay context while static civic
   labels stay tactical-only; one ownership decision retires tactical detail
   without a blank frame.
@@ -70,7 +70,13 @@ roughly ordered by visible payoff. Deployment/gameplay backlogs live in
   where it's burning; per-vertex localized char (extinguished buildings keep
   their scars); game-time burn clocks (house ~3-4 game h, big commercial ~a
   game day); tall black buoyant plumes; embers loft downwind and start spot
-  fires; shift+click drops a fireball that catches or gutters; crews
-  extinguish (knockdown + steam) instead of fast-forwarding; rubble is a
-  jagged walk-through ash heap smoldering 1-2 game days. Future: fire whirl
+  fires; Shift+click (desktop) or long-press (touch) drops a fireball that
+  catches or gutters; crews extinguish (knockdown + steam) instead of
+  fast-forwarding; rubble is a jagged walk-through ash heap smoldering 1-2
+  game days. Future: fire whirl
   under high wind, roof burn-through holes, hose streams.
+- **Station-based fire apparatus** (2026-08-06): every mapped fire station
+  permanently owns one engine and one truck. Available rigs stay hidden in
+  their bays; each fire reserves the four nearest individually available
+  apparatus, which pull onto the road, remain assigned through suppression,
+  then drive back into their original station and become available again.

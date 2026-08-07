@@ -262,6 +262,18 @@ export class CameraRig {
     this.constrain();
   }
 
+  /** Shift the camera target so `current` lands where `wanted` was in world
+   * space. Screen-anchored zoom/rotate/tilt unproject before and after, then
+   * use this single correction so map boundaries are resolved consistently. */
+  alignWorldPoint(
+    wanted: { x: number; y: number },
+    current: { x: number; y: number },
+  ): void {
+    this.target.x += wanted.x - current.x;
+    this.target.y += wanted.y - current.y;
+    this.constrain();
+  }
+
   clampToMap(_map?: GameMap): void {
     this.constrain();
   }

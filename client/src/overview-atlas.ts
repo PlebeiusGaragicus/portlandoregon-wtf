@@ -1,5 +1,6 @@
-export const OVERVIEW_ATLAS_VERSION = 1;
+export const OVERVIEW_ATLAS_VERSION = 2;
 export const OVERVIEW_ATLAS_WIDTHS = [1024, 2048, 4096] as const;
+export const OVERVIEW_ATLAS_MANIFEST = "overview-atlas-v2.json";
 
 export type OverviewAtlasWidth = (typeof OVERVIEW_ATLAS_WIDTHS)[number];
 
@@ -11,8 +12,7 @@ export interface OverviewAtlasImage {
 export interface OverviewAtlasLevel {
   width: OverviewAtlasWidth;
   height: number;
-  ground: OverviewAtlasImage;
-  urban: OverviewAtlasImage;
+  image: OverviewAtlasImage;
 }
 
 export interface OverviewAtlasManifest {
@@ -71,14 +71,14 @@ function expectedHeight(width: number, mapWidth: number, mapHeight: number): num
   return Math.max(1, Math.round((width * mapHeight) / mapWidth));
 }
 
-function image(value: unknown, kind: "ground" | "urban", width: OverviewAtlasWidth): OverviewAtlasImage {
-  const raw = record(value, `${width} ${kind} image`);
-  const file = string(raw["file"], `${width} ${kind} filename`);
-  const expected = `overview-${kind}-v${OVERVIEW_ATLAS_VERSION}-${width}.png`;
-  if (file !== expected) throw new Error(`overview atlas: ${width} ${kind} filename must be ${expected}`);
-  const sha256 = string(raw["sha256"], `${width} ${kind} SHA-256`);
+function image(value: unknown, width: OverviewAtlasWidth): OverviewAtlasImage {
+  const raw = record(value, `${width} city image`);
+  const file = string(raw["file"], `${width} city filename`);
+  const expected = `overview-city-v${OVERVIEW_ATLAS_VERSION}-${width}.png`;
+  if (file !== expected) throw new Error(`overview atlas: ${width} city filename must be ${expected}`);
+  const sha256 = string(raw["sha256"], `${width} city SHA-256`);
   if (!/^[0-9a-f]{64}$/.test(sha256)) {
-    throw new Error(`overview atlas: ${width} ${kind} SHA-256 is invalid`);
+    throw new Error(`overview atlas: ${width} city SHA-256 is invalid`);
   }
   return { file, sha256 };
 }
@@ -144,8 +144,7 @@ export function parseOverviewAtlasManifest(value: unknown): OverviewAtlasManifes
     levels.push({
       width: atlasWidth,
       height: levelHeight,
-      ground: image(level["ground"], "ground", atlasWidth),
-      urban: image(level["urban"], "urban", atlasWidth),
+      image: image(level["image"], atlasWidth),
     });
   }
   levels.sort((a, b) => a.width - b.width);
@@ -161,7 +160,7 @@ export function parseOverviewAtlasManifest(value: unknown): OverviewAtlasManifes
 }
 
 /**
- * Phones use the 1024 pair (roughly 7 MB of RGBA GPU memory); larger devices
+ * Phones use the 1024 image (roughly 3.5 MB of RGBA GPU memory); larger devices
  * prefer 4096. The WebGL texture limit can step either class down to the
  * largest complete level the GPU can accept.
  */

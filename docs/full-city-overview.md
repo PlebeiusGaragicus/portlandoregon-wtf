@@ -9,7 +9,7 @@ stretch the streamed tactical scene to city scale.
 with 8% padding. Coverage drives one continuous transition:
 
 - below 28% coverage: perspective tactical rendering;
-- 28–72%: tilt eases to top-down while the ground and urban atlas cross-fade;
+- 28–72%: tilt eases to top-down while the final composite atlas cross-fades;
 - at 72%: perspective and orthographic ground-plane projections match, then
   the orthographic camera owns the view;
 - at full reveal: tactical world, props, landmark plates, actors, effects, and
@@ -19,12 +19,11 @@ with 8% padding. Coverage drives one continuous transition:
 optional atlas fails to load, the complete tactical city remains visible; an
 atlas failure must never produce an empty frame.
 
-The overview scene contains two static planes and a screen-readable symbol
+The overview scene contains one static plane and a screen-readable symbol
 group:
 
-- opaque ground: hillshade, water, parks, rail yards, weighted roads, trails,
-  rails, and cased bridge crossings;
-- transparent urban: building use/height color plus sub-pixel density;
+- opaque composite: hillshade, water, parks, rail yards, transport,
+  building-use/height color, and sub-pixel density;
 - live symbols: active-fire intensity, collapsed-area clusters, and a generic
   unit/objective marker seam.
 
@@ -35,9 +34,10 @@ remain tactical-only so the full-city atlas stays uncluttered.
 ## Asset generation and staging
 
 `scripts/bake-overview-atlas.ts` uses `@napi-rs/canvas` during the normal map
-bake. It emits ground and urban PNG pairs at 1024, 2048, and 4096 pixels wide,
-plus `overview-atlas-v1.json`. The manifest binds the atlas to map identity,
-source date, extent, dimensions, and SHA-256 hashes.
+bake. It emits one composite PNG at 1024, 2048, and 4096 pixels wide, plus
+`overview-atlas-v2.json`. The manifest binds the atlas to map identity, source
+date, extent, dimensions, and SHA-256 hashes. The composition details and
+version 1 rationale are in `docs/urban-overlay.md`.
 
 Run:
 
@@ -48,7 +48,7 @@ npm run verify:staged-map
 
 Staging bakes the atlas beside the compact map artifacts and then verifies all
 levels, dimensions, extents, and hashes. The client loads the manifest and one
-capability-selected pair without blocking tactical startup:
+capability-selected image without blocking tactical startup:
 
 - handheld: 1024;
 - desktop: 4096;
@@ -79,18 +79,17 @@ rebakes.
 Measured on 2026-08-06 in headless Chrome on Apple M2, using the staged
 Portland map (43,573 × 35,780 m). These are baselines, not universal limits.
 
-- Atlas bake: 50.2 MB for all six PNGs.
-- Selected encoded payload: about 3.1 MB handheld (1024 pair), 34 MB desktop
-  (4096 pair).
-- Selected uncompressed RGBA texture memory: 6.6 MiB handheld, 105.1 MiB
-  desktop. Only one pair is loaded.
-- Empty desktop and portrait overview: 4 draw calls, 4 triangles, 0 points.
+- Atlas bake: 27.6 MB for all three PNGs, down from 50.2 MB.
+- Selected encoded payload: 1.71 MB handheld (1024), 19.86 MB desktop (4096).
+- Selected uncompressed RGBA texture memory: 3.28 MiB handheld, 52.55 MiB
+  desktop. Only one image is loaded.
+- Empty desktop and portrait overview: 3 draw calls, 2 triangles, 0 points.
   Live fire, collapse, unit, and objective point counts are workload-dependent.
-- Clean desktop overview frame sample: p50 16.7 ms, p95 16.9 ms.
+- Clean desktop overview frame sample: p50 16.7 ms, p95 17.1 ms.
 - Emulated-mobile overview sample targets the renderer's adaptive 30 fps:
   p50 33.3 ms, p95 35.3 ms. Screenshot capture caused a one-frame outlier and
   is excluded from the steady-state budget.
 
 Re-measure after changing atlas resolution, clustering, camera fit, or layer
-ownership. In particular, the 4096 desktop pair is the dominant GPU-memory
+ownership. In particular, the 4096 desktop image is the dominant GPU-memory
 cost and should be the first tier reconsidered for lower-memory devices.

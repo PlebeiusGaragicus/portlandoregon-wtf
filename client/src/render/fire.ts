@@ -522,6 +522,12 @@ export class FireSim {
     );
     this.menBody.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.menHead.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    // Crews can work anywhere in the city, while an InstancedMesh's geometry
+    // bounds stay around its local origin. Dynamic instance matrices do not
+    // keep that aggregate bound current, so frustum culling made the people
+    // disappear even though their separately rendered hose droplets remained.
+    this.menBody.frustumCulled = false;
+    this.menHead.frustumCulled = false;
     this.menBody.count = 0;
     this.menHead.count = 0;
     this.group.add(this.menBody, this.menHead);
