@@ -25,13 +25,12 @@ group:
 - opaque ground: hillshade, water, parks, rail yards, weighted roads, trails,
   rails, and cased bridge crossings;
 - transparent urban: building use/height color plus sub-pixel density;
-- live symbols: screen-space landmark clusters, active-fire intensity,
-  collapsed-area clusters, and a generic unit/objective marker seam.
+- live symbols: active-fire intensity, collapsed-area clusters, and a generic
+  unit/objective marker seam.
 
 Fire markers are read-only aggregates from `FireSim`; the overview does not
-duplicate simulation authority. Landmark clustering is recomputed in screen
-space, with stricter portrait limits and labels reserved for high-value civic
-clusters.
+duplicate simulation authority. Static landmark labels and pins intentionally
+remain tactical-only so the full-city atlas stays uncluttered.
 
 ## Asset generation and staging
 
@@ -63,7 +62,7 @@ rebakes.
 
 - `npm run test:overview-atlas` — manifest validation and GPU-tier selection.
 - `npm run test:overview-symbols` — plane transform, layer ownership,
-  screen-space clustering, fire aggregation, and fallback behavior.
+  fire aggregation, and fallback behavior.
 - `npm run test:camera` — rotated fit, transition thresholds, matched
   perspective/orthographic handoff, controls, and saved views.
 - `npm run test:staged-map-gate` — malformed, missing, dimension-mismatched,
@@ -85,8 +84,8 @@ Portland map (43,573 × 35,780 m). These are baselines, not universal limits.
   (4096 pair).
 - Selected uncompressed RGBA texture memory: 6.6 MiB handheld, 105.1 MiB
   desktop. Only one pair is loaded.
-- Desktop overview settled scene: 14 draw calls, 22 triangles, 50 points.
-- Portrait overview settled scene: 10 draw calls, 14 triangles, 23 points.
+- Empty desktop and portrait overview: 4 draw calls, 4 triangles, 0 points.
+  Live fire, collapse, unit, and objective point counts are workload-dependent.
 - Clean desktop overview frame sample: p50 16.7 ms, p95 16.9 ms.
 - Emulated-mobile overview sample targets the renderer's adaptive 30 fps:
   p50 33.3 ms, p95 35.3 ms. Screenshot capture caused a one-frame outlier and

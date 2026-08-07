@@ -1,7 +1,5 @@
-import type { Landmark } from "@battle-juice/shared";
 import { FireSim } from "../client/src/render/fire.js";
 import {
-  clusterOverviewLandmarks,
   overviewPlaneTransform,
   resolveZoomTierVisibility,
 } from "../client/src/render/overview.js";
@@ -11,20 +9,6 @@ function check(name: string, ok: boolean): void {
   console.log(`${ok ? "ok  " : "FAIL"} ${name}`);
   if (!ok) failures++;
 }
-
-const landmarks: Landmark[] = [
-  { id: 1, kind: "hospital", label: "A", name: "A", address: "", x: 100, y: 100 },
-  { id: 2, kind: "hospital", label: "B", name: "B", address: "", x: 300, y: 200 },
-  { id: 3, kind: "police", label: "P", name: "P", address: "", x: 200, y: 150 },
-  { id: 4, kind: "hospital", label: "C", name: "C", address: "", x: 2200, y: 100 },
-];
-const clusters = clusterOverviewLandmarks(
-  landmarks.map((landmark) => ({ landmark, screenX: landmark.x, screenY: landmark.y })),
-  1000,
-);
-check("nearby screen-space landmarks share a cluster", clusters.length === 2);
-check("cluster keeps the highest-priority symbol", clusters.some((cluster) => cluster.kind === "hospital" && cluster.count === 3));
-check("cluster center is the member average", clusters.some((cluster) => cluster.count === 3 && cluster.x === 200 && cluster.y === 150));
 
 const transform = overviewPlaneTransform({ minX: 10, minY: 20, width: 400, height: 300 }, 1);
 check("overview plane maps height onto local Z", transform.scale[0] === 400 && transform.scale[1] === 1 && transform.scale[2] === 300);

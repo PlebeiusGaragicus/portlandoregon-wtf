@@ -59,9 +59,10 @@ roughly ordered by visible payoff. Deployment/gameplay backlogs live in
   the dedicated strategic overview described next.
 - **Coherent full-city overview** (2026-08-06): continuous coverage now
   transitions into an aspect-aware, fit-city orthographic camera backed by
-  deterministic offline ground/urban atlases. Screen-space civic, fire,
-  collapse, unit, and objective symbols retain live gameplay context while
-  one ownership decision retires tactical detail without a blank frame.
+  deterministic offline ground/urban atlases. Fire, collapse, unit, and
+  objective symbols can retain live gameplay context while static civic
+  labels stay tactical-only; one ownership decision retires tactical detail
+  without a blank frame.
   Architecture, generation, tests, and measured budgets are documented in
   `docs/full-city-overview.md`.
 - **Fire realism v2** (2026-08-05): fire is a localized actor — per-building

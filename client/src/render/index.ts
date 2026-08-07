@@ -451,7 +451,6 @@ export class Renderer {
       handheld: HANDHELD,
       maxTextureSize: this.webgl.capabilities.maxTextureSize,
       maxAnisotropy: this.webgl.capabilities.getMaxAnisotropy(),
-      landmarks: map.landmarks ?? [],
     });
     this.overview.group.visible = false;
     this.scene.add(this.overview.group);
@@ -1455,12 +1454,6 @@ export class Renderer {
     // information and obscures a quarter of portrait/compact viewports.
     this.minimap.el.style.display = visibility.owner === "overview" ? "none" : "";
     this.landmarks.setViewScale(vh);
-    if (visibility.symbols) {
-      this.overview.updateView(this.camera, {
-        width: this.canvas.clientWidth || 1,
-        height: this.canvas.clientHeight || 1,
-      });
-    }
 
     // HUD: compass needle tracks where world north points on screen.
     this.compass.style.setProperty("--rot", `${this.rig.theta}rad`);

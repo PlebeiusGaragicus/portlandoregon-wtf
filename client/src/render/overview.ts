@@ -1,5 +1,4 @@
 import * as THREE from "three";
-import type { Landmark } from "@battle-juice/shared";
 import {
   selectOverviewAtlasLevel,
   type OverviewAtlasSource,
@@ -33,7 +32,6 @@ export interface OverviewOptions {
   handheld: boolean;
   maxTextureSize: number;
   maxAnisotropy?: number;
-  landmarks?: Landmark[];
   opacity?: Partial<OverviewOpacity>;
 }
 
@@ -48,8 +46,6 @@ export interface OverviewLayer {
   setDayNightTint(night: number): void;
   setFireMarkers(snapshot: FireOverviewSnapshot): void;
   setGameplayMarkers(markers: readonly OverviewGameplayMarker[]): void;
-  /** Re-cluster static landmarks in screen space for this camera/viewport. */
-  updateView(camera: THREE.Camera, viewport: { width: number; height: number }): void;
   dispose(): void;
 }
 
@@ -119,14 +115,6 @@ export function overviewPlaneTransform(
 
 const DAY_TINT = new THREE.Color(0xffffff);
 const NIGHT_TINT = new THREE.Color(0x7185a8);
-const LANDMARK_COLOR: Record<Landmark["kind"], number> = {
-  "fire-station": 0xff4b36,
-  police: 0x4d79ff,
-  hospital: 0xfff0f0,
-  "city-hall": 0xe7bd45,
-  school: 0x9cb77c,
-};
-const LANDMARK_CLUSTER_PX = 34;
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
@@ -139,78 +127,6 @@ function prepareTexture(texture: THREE.Texture, anisotropy: number): void {
   texture.generateMipmaps = false;
   texture.anisotropy = Math.max(1, Math.min(4, anisotropy));
   texture.needsUpdate = true;
-}
-
-export interface OverviewLandmarkCluster {
-  kind: Landmark["kind"];
-  x: number;
-  y: number;
-  screenX: number;
-  screenY: number;
-  count: number;
-  label: string;
-}
-
-export interface ProjectedOverviewLandmark {
-  landmark: Landmark;
-  screenX: number;
-  screenY: number;
-}
-
-/**
- * Collapse dense landmark points by rendered pixel distance. Priority ordering
- * is deterministic and keeps sparse civic labels stable while zooming.
- */
-export function clusterOverviewLandmarks(
-  projected: readonly ProjectedOverviewLandmark[],
-  radiusPx = LANDMARK_CLUSTER_PX,
-): OverviewLandmarkCluster[] {
-  const priority: Record<Landmark["kind"], number> = {
-    "city-hall": 5,
-    hospital: 4,
-    "fire-station": 3,
-    police: 2,
-    school: 1,
-  };
-  const ordered = [...projected].sort(
-    (a, b) =>
-      priority[b.landmark.kind] - priority[a.landmark.kind] ||
-      a.landmark.id - b.landmark.id,
-  );
-  const clusters: OverviewLandmarkCluster[] = [];
-  const radius2 = radiusPx * radiusPx;
-  for (const { landmark, screenX, screenY } of ordered) {
-    let nearest: OverviewLandmarkCluster | undefined;
-    let nearestDistance = radius2;
-    for (const cluster of clusters) {
-      const dx = cluster.screenX - screenX;
-      const dy = cluster.screenY - screenY;
-      const distance = dx * dx + dy * dy;
-      if (distance <= nearestDistance) {
-        nearest = cluster;
-        nearestDistance = distance;
-      }
-    }
-    if (!nearest) {
-      clusters.push({
-        kind: landmark.kind,
-        x: landmark.x,
-        y: landmark.y,
-        screenX,
-        screenY,
-        count: 1,
-        label: landmark.label,
-      });
-      continue;
-    }
-    const count = nearest.count;
-    nearest.x = (nearest.x * count + landmark.x) / (count + 1);
-    nearest.y = (nearest.y * count + landmark.y) / (count + 1);
-    nearest.screenX = (nearest.screenX * count + screenX) / (count + 1);
-    nearest.screenY = (nearest.screenY * count + screenY) / (count + 1);
-    nearest.count++;
-  }
-  return clusters;
 }
 
 function pointGeometry(
@@ -240,38 +156,6 @@ function pointMaterial(size: number): THREE.PointsMaterial {
     depthTest: false,
     depthWrite: false,
   });
-}
-
-function labelSprite(text: string, color: number): THREE.Sprite | null {
-  if (typeof document === "undefined") return null;
-  const font = "600 28px system-ui, sans-serif";
-  const measure = document.createElement("canvas").getContext("2d");
-  if (!measure) return null;
-  measure.font = font;
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.ceil(measure.measureText(text).width) + 28;
-  canvas.height = 44;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return null;
-  ctx.font = font;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "middle";
-  ctx.fillStyle = "rgba(12,15,20,0.78)";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = `#${color.toString(16).padStart(6, "0")}`;
-  ctx.fillText(text, canvas.width / 2, canvas.height / 2);
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: texture,
-    transparent: true,
-    depthTest: false,
-    sizeAttenuation: false,
-  }));
-  const ndcHeight = 0.045;
-  sprite.scale.set((canvas.width / canvas.height) * ndcHeight, ndcHeight, 1);
-  sprite.renderOrder = 114;
-  return sprite;
 }
 
 function replacePoints(
@@ -339,18 +223,6 @@ export function buildOverview(opts: OverviewOptions): OverviewLayer {
   groundMaterial.visible = false;
   urbanMaterial.visible = false;
 
-  const landmarks = opts.landmarks ?? [];
-  const landmarkMaterial = pointMaterial(5.5);
-  const landmarkPoints = new THREE.Points(
-    new THREE.BufferGeometry(),
-    landmarkMaterial,
-  );
-  landmarkPoints.name = "overview-landmarks";
-  landmarkPoints.renderOrder = 110;
-  const landmarkLabels = new THREE.Group();
-  landmarkLabels.name = "overview-landmark-labels";
-  symbols.add(landmarkPoints, landmarkLabels);
-
   const fireMaterial = pointMaterial(8);
   const firePoints = new THREE.Points(new THREE.BufferGeometry(), fireMaterial);
   firePoints.name = "overview-fires";
@@ -375,21 +247,15 @@ export function buildOverview(opts: OverviewOptions): OverviewLayer {
 
   let disposed = false;
   let tint = new THREE.Color(0xffffff);
-  let lastViewSignature = "";
-  const viewProjection = new THREE.Matrix4();
 
   const setOpacity = (opacity: Partial<OverviewOpacity>): void => {
     if (opacity.ground !== undefined) groundMaterial.opacity = clamp01(opacity.ground);
     if (opacity.urban !== undefined) urbanMaterial.opacity = clamp01(opacity.urban);
     if (opacity.symbols !== undefined) {
       const alpha = clamp01(opacity.symbols);
-      landmarkMaterial.opacity = alpha;
       fireMaterial.opacity = alpha;
       collapsedMaterial.opacity = alpha * 0.8;
       gameplayMaterial.opacity = alpha;
-      symbols.traverse((child) => {
-        if (child instanceof THREE.Sprite) child.material.opacity = alpha;
-      });
     }
   };
   const setTint = (color: THREE.ColorRepresentation): void => {
@@ -477,72 +343,6 @@ export function buildOverview(opts: OverviewOptions): OverviewLayer {
         if (marker.side === "south") return 0xff5b55;
         return 0xf1f1f1;
       });
-    },
-    updateView(camera, viewport): void {
-      if (viewport.width <= 0 || viewport.height <= 0) return;
-      camera.updateMatrixWorld();
-      viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-      const signature =
-        `${viewport.width}x${viewport.height}:` +
-        viewProjection.elements.map((value) => value.toFixed(5)).join(",");
-      if (signature === lastViewSignature) return;
-      lastViewSignature = signature;
-      const point = new THREE.Vector3();
-      const projected: ProjectedOverviewLandmark[] = [];
-      for (const landmark of landmarks) {
-        point.set(landmark.x, 5, -landmark.y).project(camera);
-        if (
-          point.z < -1 || point.z > 1 ||
-          point.x < -1.1 || point.x > 1.1 ||
-          point.y < -1.1 || point.y > 1.1
-        ) continue;
-        projected.push({
-          landmark,
-          screenX: (point.x * 0.5 + 0.5) * viewport.width,
-          screenY: (-point.y * 0.5 + 0.5) * viewport.height,
-        });
-      }
-      const clusters = clusterOverviewLandmarks(
-        projected,
-        viewport.width < viewport.height ? 38 : LANDMARK_CLUSTER_PX,
-      );
-      replacePoints(
-        landmarkPoints,
-        clusters,
-        (index) => LANDMARK_COLOR[clusters[index]!.kind],
-      );
-
-      disposeObjectResources(landmarkLabels);
-      landmarkLabels.clear();
-      // Labels are scarce in both portrait and desktop: only the highest-value
-      // clusters get one, and overlapping candidates are suppressed.
-      const maxLabels = viewport.width < viewport.height ? 5 : 10;
-      const labelled: OverviewLandmarkCluster[] = [];
-      for (const cluster of clusters) {
-        if (labelled.length >= maxLabels) break;
-        if (cluster.kind !== "city-hall" && cluster.kind !== "hospital") continue;
-        if (labelled.some((other) =>
-          Math.abs(other.screenX - cluster.screenX) < 150 &&
-          Math.abs(other.screenY - cluster.screenY) < 34
-        )) continue;
-        labelled.push(cluster);
-        const text = cluster.count > 1
-          ? `${cluster.label} +${cluster.count - 1}`
-          : cluster.label;
-        const label = labelSprite(text, LANDMARK_COLOR[cluster.kind]);
-        if (!label) continue;
-        if (camera instanceof THREE.OrthographicCamera) {
-          // Three's sizeAttenuation=false compensation only applies to
-          // perspective projection. Convert the desired 18 CSS px explicitly
-          // in orthographic mode or the sprite would be only centimeters tall.
-          const ratio = label.scale.x / label.scale.y;
-          const worldHeight =
-            ((camera.top - camera.bottom) / camera.zoom) * (18 / viewport.height);
-          label.scale.set(worldHeight * ratio, worldHeight, 1);
-        }
-        label.position.set(cluster.x, 5, -cluster.y);
-        landmarkLabels.add(label);
-      }
     },
     dispose(): void {
       if (disposed) return;
