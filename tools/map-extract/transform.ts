@@ -21,6 +21,13 @@ import type {
 import { extractDate, HEIGHT_PER_STORY_M, MANIFEST_FILE, MAP_NAME, processedDir, rawDir, SIGN_KEEP } from "./config.js";
 import type { GeoJsonCollection, GeoJsonFeature } from "./lib/arcgis.js";
 import { clipPolylineAtExit, clipRingToRect, ensureWinding, inRect, round1, simplify, type Pt, type Rect } from "./lib/geo.js";
+import {
+  junctionsOf,
+  trimMarkingsAtJunctions,
+  MIN_JUNCTION_DEGREE,
+  MIN_RUN_M,
+  TRIM_MARGIN,
+} from "./lib/junction-trim.js";
 import { origin, playArea, toLocal } from "./lib/proj.js";
 
 const STREET_EPSILON = 1; // m, Douglas-Peucker
@@ -789,6 +796,16 @@ async function main(): Promise<void> {
   const sidewalks = transformPolys("sidewalks", rect);
   const markings = transformMarkings(rect);
 
+  // The source striping runs straight through every crossing; clear it out of
+  // the junctions so intersections read as bare asphalt. See lib/junction-trim.
+  const junctions = junctionsOf(graph.nodes, graph.edges);
+  const trimmed = trimMarkingsAtJunctions(markings.lines, junctions);
+  console.log(
+    `  markings: cleared ${junctions.length} junctions — ` +
+      `${markings.lines.length} lines in, ${trimmed.lines.length} out ` +
+      `(${trimmed.touched} touched, ${trimmed.split} split, ${trimmed.dropped} dropped)`,
+  );
+
   const map: GameMap = {
     meta: {
       name: MAP_NAME,
@@ -810,7 +827,7 @@ async function main(): Promise<void> {
     railStops,
     sidewalks,
     markingAreas: markings.areas,
-    markingLines: markings.lines,
+    markingLines: trimmed.lines,
   };
 
   mkdirSync(processedDir(), { recursive: true });
@@ -827,6 +844,17 @@ async function main(): Promise<void> {
     heightUnitRlis: rlis?.heightUnit ?? null,
     streetEpsilonM: STREET_EPSILON,
     footprintEpsilonM: FOOTPRINT_EPSILON,
+    junctionTrim: {
+      junctions: junctions.length,
+      minDegree: MIN_JUNCTION_DEGREE,
+      radiusMargin: TRIM_MARGIN,
+      minRunM: MIN_RUN_M,
+      linesIn: markings.lines.length,
+      linesOut: trimmed.lines.length,
+      touched: trimmed.touched,
+      split: trimmed.split,
+      dropped: trimmed.dropped,
+    },
     counts: {
       nodes: map.nodes.length,
       edges: map.edges.length,
@@ -840,7 +868,7 @@ async function main(): Promise<void> {
       railStops: railStops.length,
       sidewalks: sidewalks.length,
       markingAreas: markings.areas.length,
-      markingLines: markings.lines.length,
+      markingLines: trimmed.lines.length,
     },
   };
   writeFileSync(MANIFEST_FILE, JSON.stringify(manifest, null, 2) + "\n");
