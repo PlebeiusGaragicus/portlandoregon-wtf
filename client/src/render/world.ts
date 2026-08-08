@@ -1187,6 +1187,9 @@ export function beginWorld(
   // surface kinks, so draped decals conform instead of clipping.
   const cell = hf ? hf.cellSize : Infinity;
   const streetMat = decalMat({ color: STREET_COLOR });
+  // Bridge structure is solid geometry, not paint: it writes depth so the
+  // slab occludes the water under it and the piers occlude each other.
+  const bridgeMat = new THREE.MeshLambertMaterial({ color: BRIDGE_COLOR });
   const streets = streetsFrom(map, streetStore);
   const terrain = hf ? createTerrainCache(map, layers, hf) : null;
   if (terrain) group.add(terrain.group);
@@ -1282,6 +1285,7 @@ export function beginWorld(
     dispose(): void {
       tiles.dispose();
       detailTiles.dispose();
+      bridgeMat.dispose();
       terrain?.dispose();
       groundMap?.dispose();
       if (lod2) {
@@ -1360,6 +1364,11 @@ export function beginWorld(
     const stops = buildRailStops(map.railStops ?? [], ground);
     if (stops) place(stops, DECAL_ORDER.railStop);
     yield "rails";
+
+    // Bridge structure: the slab, barriers and piers under the deck the road
+    // ribbon paints. Real geometry rather than a decal, so it writes depth
+    // and occludes the water beneath it.
+    yield* pour("bridges", buildBridges(streets, ground, cell, water, bridgeMat), DECAL_ORDER.laneLine + 1);
   }
 
   return { world, steps: fill() };
@@ -2368,6 +2377,218 @@ function* railTiles(
       pushRibbon(soup.pos, line, RAIL_STYLE[b.kind].width, DECAL_Y, ground, cell, overWater(line), Infinity);
     }
     yield soup.pos.length ? soupMesh(soup, matOf(b.kind)) : null;
+  }
+}
+
+
+// ---------------------------------------------------------------- bridges
+//
+// The road ribbon paints a bridge deck as a single draped surface: seen from
+// the river a crossing is a floating sheet of asphalt with nothing holding it
+// up. These are the parts that make it a structure — the slab it is paved on,
+// the barriers along its edges, and the piers carrying it down to the ground.
+//
+// The deck surface itself stays the road ribbon's job. Everything here hangs
+// off exactly the same deck-height rule (`deckHeights`), so the structure sits
+// under the road rather than beside it.
+
+const DECK_THICKNESS = 1.7; // m of slab below the road surface
+const PARAPET_HEIGHT = 1.15; // m of barrier above it
+const PARAPET_WIDTH = 0.5;
+const PIER_SPACING = 45; // m between piers along the span
+const PIER_HALF_WIDTH = 1.7;
+/** Below this much air under the slab, a pier would be a kerb. */
+const PIER_MIN_CLEARANCE = 2.5;
+const BRIDGE_COLOR = 0x6d6c68; // weathered structural concrete
+
+/** Push a flat quad (a-b-c-d, counter-clockwise seen from outside) with one
+ * face normal. World coords in, scene coords out. */
+function pushQuad(
+  soup: Soup,
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+  c: readonly [number, number, number],
+  d: readonly [number, number, number],
+): void {
+  const ux = b[0] - a[0], uy = b[2] - a[2], uz = -(b[1] - a[1]);
+  const vx = c[0] - a[0], vy = c[2] - a[2], vz = -(c[1] - a[1]);
+  let nx = uy * vz - uz * vy;
+  let ny = uz * vx - ux * vz;
+  let nz = ux * vy - uy * vx;
+  const len = Math.hypot(nx, ny, nz) || 1;
+  nx /= len; ny /= len; nz /= len;
+  const p = (v: readonly [number, number, number]): void => {
+    soup.pos.push(v[0], v[2], -v[1]);
+    soup.nrm!.push(nx, ny, nz);
+  };
+  p(a); p(b); p(c);
+  p(a); p(c); p(d);
+}
+
+/**
+ * Deck geometry for one bridge leg: centre line, edge offsets and the deck
+ * height at each station. Mirrors `pushRibbon`'s span branch exactly — the
+ * same mitred normals and the same `max(terrain, lerp(bank, bank))` — because
+ * a structure that disagrees with the road surface by even a few centimetres
+ * shows as z-fighting along the whole span.
+ */
+export function deckStations(
+  rawPolyline: [number, number][],
+  width: number,
+  ground: GroundFn,
+  cell: number,
+): { lx: Float64Array; ly: Float64Array; rx: Float64Array; ry: Float64Array; h: Float64Array; cx: Float64Array; cy: Float64Array } | null {
+  const polyline = resample(rawPolyline, cell);
+  const n = polyline.length;
+  if (n < 2) return null;
+  const half = width / 2;
+  const lx = new Float64Array(n), ly = new Float64Array(n);
+  const rx = new Float64Array(n), ry = new Float64Array(n);
+  const cx = new Float64Array(n), cy = new Float64Array(n);
+  const h = new Float64Array(n);
+  const along = new Float64Array(n);
+
+  for (let i = 0; i < n; i++) {
+    const px = polyline[i]![0];
+    const py = polyline[i]![1];
+    if (i > 0) along[i] = along[i - 1]! + Math.hypot(px - polyline[i - 1]![0], py - polyline[i - 1]![1]);
+    let nx = 0, ny = 0;
+    for (let j = i - 1; j <= i; j++) {
+      const a = polyline[j];
+      const b = polyline[j + 1];
+      if (!a || !b) continue;
+      const dx = b[0] - a[0];
+      const dy = b[1] - a[1];
+      const l = Math.hypot(dx, dy) || 1;
+      nx += -dy / l;
+      ny += dx / l;
+    }
+    const nl = Math.hypot(nx, ny) || 1;
+    cx[i] = px; cy[i] = py;
+    lx[i] = px + (nx / nl) * half; ly[i] = py + (ny / nl) * half;
+    rx[i] = px - (nx / nl) * half; ry[i] = py - (ny / nl) * half;
+  }
+
+  const total = along[n - 1]! || 1;
+  const hA = ground(polyline[0]![0], polyline[0]![1]);
+  const hB = ground(polyline[n - 1]![0], polyline[n - 1]![1]);
+  for (let i = 0; i < n; i++) {
+    const g = ground(cx[i]!, cy[i]!);
+    h[i] = Math.max(g, hA + (hB - hA) * (along[i]! / total));
+  }
+  return { lx, ly, rx, ry, h, cx, cy };
+}
+
+/** Slab sides and soffit, edge barriers, and piers down to the ground. */
+function pushBridge(
+  soup: Soup,
+  rawPolyline: [number, number][],
+  width: number,
+  ground: GroundFn,
+  cell: number,
+): void {
+  const s = deckStations(rawPolyline, width, ground, cell);
+  if (!s) return;
+  const { lx, ly, rx, ry, h, cx, cy } = s;
+  const n = h.length;
+  const top = (i: number, x: Float64Array, y: Float64Array): [number, number, number] =>
+    [x[i]!, y[i]!, h[i]! + DECAL_Y];
+  const bot = (i: number, x: Float64Array, y: Float64Array): [number, number, number] =>
+    [x[i]!, y[i]!, h[i]! - DECK_THICKNESS];
+
+  for (let i = 0; i < n - 1; i++) {
+    // Fascia: the slab edge you see from the water, both sides.
+    pushQuad(soup, top(i, lx, ly), bot(i, lx, ly), bot(i + 1, lx, ly), top(i + 1, lx, ly));
+    pushQuad(soup, top(i + 1, rx, ry), bot(i + 1, rx, ry), bot(i, rx, ry), top(i, rx, ry));
+    // Soffit: the underside, which is what you actually see from below.
+    pushQuad(soup, bot(i, lx, ly), bot(i, rx, ry), bot(i + 1, rx, ry), bot(i + 1, lx, ly));
+
+    // Barriers. Inset so they stand ON the deck rather than floating off its
+    // edge, and capped so the top reads as a rail rather than a bare sheet.
+    for (const [ex, ey, ox, oy] of [[lx, ly, cx, cy], [rx, ry, cx, cy]] as const) {
+      const t = PARAPET_WIDTH / (width / 2);
+      const ix = (i: number): number => ex[i]! + (ox[i]! - ex[i]!) * t;
+      const iy = (i: number): number => ey[i]! + (oy[i]! - ey[i]!) * t;
+      const o0: [number, number, number] = [ex[i]!, ey[i]!, h[i]! + DECAL_Y];
+      const o1: [number, number, number] = [ex[i + 1]!, ey[i + 1]!, h[i + 1]! + DECAL_Y];
+      const oc0: [number, number, number] = [ex[i]!, ey[i]!, h[i]! + PARAPET_HEIGHT];
+      const oc1: [number, number, number] = [ex[i + 1]!, ey[i + 1]!, h[i + 1]! + PARAPET_HEIGHT];
+      const ic0: [number, number, number] = [ix(i), iy(i), h[i]! + PARAPET_HEIGHT];
+      const ic1: [number, number, number] = [ix(i + 1), iy(i + 1), h[i + 1]! + PARAPET_HEIGHT];
+      const ii0: [number, number, number] = [ix(i), iy(i), h[i]! + DECAL_Y];
+      const ii1: [number, number, number] = [ix(i + 1), iy(i + 1), h[i + 1]! + DECAL_Y];
+      pushQuad(soup, o0, oc0, oc1, o1); // outer face
+      pushQuad(soup, ii1, ic1, ic0, ii0); // inner face
+      pushQuad(soup, oc0, ic0, ic1, oc1); // top cap
+    }
+  }
+
+  // Piers, evenly along the span wherever there is genuine air underneath.
+  let sinceP = PIER_SPACING / 2; // offset so a short span still gets one
+  for (let i = 0; i < n - 1; i++) {
+    const seg = Math.hypot(cx[i + 1]! - cx[i]!, cy[i + 1]! - cy[i]!);
+    sinceP += seg;
+    if (sinceP < PIER_SPACING) continue;
+    sinceP = 0;
+    const px = cx[i]!;
+    const py = cy[i]!;
+    const g = ground(px, py);
+    const under = h[i]! - DECK_THICKNESS;
+    if (under - g < PIER_MIN_CLEARANCE) continue;
+    // Piers follow the deck: wide crossings get chunkier columns.
+    const hw = Math.min(PIER_HALF_WIDTH * 1.8, Math.max(PIER_HALF_WIDTH, width * 0.12));
+    const dx = cx[i + 1]! - px;
+    const dy = cy[i + 1]! - py;
+    const l = Math.hypot(dx, dy) || 1;
+    const ax = (dx / l) * hw;
+    const ay = (dy / l) * hw;
+    const bx = (-dy / l) * hw;
+    const by = (dx / l) * hw;
+    const corner = (sa: number, sb: number, z: number): [number, number, number] =>
+      [px + ax * sa + bx * sb, py + ay * sa + by * sb, z];
+    for (const [s0, s1] of [[[1, 1], [1, -1]], [[1, -1], [-1, -1]], [[-1, -1], [-1, 1]], [[-1, 1], [1, 1]]] as const) {
+      pushQuad(
+        soup,
+        corner(s0[0], s0[1], under),
+        corner(s0[0], s0[1], g - 1),
+        corner(s1[0], s1[1], g - 1),
+        corner(s1[0], s1[1], under),
+      );
+    }
+  }
+}
+
+/**
+ * Bridge structures, tiled like the street ribbons so the GPU can cull them.
+ * Only legs the street layer already treats as spanning get one, so this
+ * cannot invent a bridge where the road merely drapes.
+ */
+function* buildBridges(
+  edges: StreetAccess,
+  ground: GroundFn,
+  cell: number,
+  overWater: (p: [number, number][]) => boolean,
+  material: THREE.Material,
+): Generator<THREE.Mesh | null, void, void> {
+  const buckets = new Map<number, number[]>();
+  for (let i = 0; i < edges.edgeCount; i++) {
+    const edge = edges.edge(i);
+    if (edge.struct === "tunnel") continue;
+    if (edge.struct !== "bridge" && !overWater(edge.polyline)) continue;
+    const [mx, my] = edge.polyline[Math.floor(edge.polyline.length / 2)]!;
+    const key = tileKey(mx, my);
+    let list = buckets.get(key);
+    if (!list) buckets.set(key, (list = []));
+    list.push(i);
+  }
+  yield null;
+  for (const list of buckets.values()) {
+    const soup: Soup = { pos: [], nrm: [] };
+    for (const index of list) {
+      const edge = edges.edge(index);
+      pushBridge(soup, edge.polyline, RENDER_WIDTH[edge.class] ?? edge.width, ground, cell);
+    }
+    yield soup.pos.length ? soupMesh(soup, material, true, false) : null;
   }
 }
 

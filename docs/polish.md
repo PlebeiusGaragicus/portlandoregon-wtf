@@ -16,10 +16,14 @@ roughly ordered by visible payoff. Deployment/gameplay backlogs live in
    parkway where the street trees stand. Options: paint terrain vertex
    colors along street corridors, or a verge ribbon between road edge and
    sidewalk line.
-3. **Bridges are paper.** Decks are single flat ribbons: no thickness,
-   railings, or piers. Deck slab + a few concrete piers to the water would
-   sell the 13 Willamette crossings. Pairs with the bridge-identity layer
-   (`COP_OpenData_Transportation/79`+`/80`) from the extraction backlog.
+3. ~~**Bridges are paper.**~~ **Done (2026-08-07)**: every spanning leg now
+   carries a 1.7 m slab (fascia + soffit), 1.15 m edge barriers, and square
+   piers every 45 m wherever there is real air beneath — 1,465 legs, 98 km.
+   The structure hangs off the same deck-height rule as the road ribbon, so
+   it cannot drift from the surface it holds up. Deck *outlines* are now
+   extracted too (`bridges` layer, 541 decks — see `docs/map-derivations.md`
+   §4b) but are not used yet: they would give true deck shapes instead of
+   `RENDER_WIDTH[class]`, once there is a way to lift them to deck height.
 
 ## FPV feel
 
