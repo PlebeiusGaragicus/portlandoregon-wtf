@@ -21,6 +21,8 @@ import {
   type RailLine,
   type RailStop,
   type RoadClass,
+  crossingByKey,
+  type CrossingSpec,
   type StreetEdge,
   type StreetStore,
   type WaterBody,
@@ -29,6 +31,7 @@ import { buildCityModel, type CityModel } from "../city.js";
 import { HANDHELD } from "../device.js";
 import { buildGroundMap } from "./groundmap.js";
 import { streetsFrom, type StreetAccess } from "../streets.js";
+import { pushSuperstructure } from "./superstructure.js";
 import {
   deckLift,
   deckStations,
@@ -2402,9 +2405,14 @@ function pushBridge(
   cell: number,
   liftA = 0,
   liftB = 0,
+  spec: CrossingSpec | null = null,
 ): void {
   const s = deckStations(rawPolyline, width, ground, cell, liftA, liftB);
   if (!s) return;
+  // A named crossing places its own supports: the point of a main span is
+  // that nothing stands inside it. Blind 45 m spacing marches piers straight
+  // through the navigation channel of every bridge on the river.
+  const placed = spec ? pushSuperstructure(soup, s, spec) : null;
   const { lx, ly, rx, ry, h, cx, cy } = s;
   const n = h.length;
   const top = (i: number, x: Float64Array, y: Float64Array): [number, number, number] =>
@@ -2439,20 +2447,48 @@ function pushBridge(
     }
   }
 
-  // Piers, evenly along the span wherever there is genuine air underneath.
-  let sinceP = PIER_SPACING / 2; // offset so a short span still gets one
-  for (let i = 0; i < n - 1; i++) {
-    const seg = Math.hypot(cx[i + 1]! - cx[i]!, cy[i + 1]! - cy[i]!);
-    sinceP += seg;
-    if (sinceP < PIER_SPACING) continue;
-    sinceP = 0;
+  // Where the piers go. A named crossing puts them at the ends of its clear
+  // span and nowhere between; everything else falls back to regular spacing.
+  const stations: number[] = [];
+  if (placed) {
+    // Offsets are along-deck metres from the middle station.
+    const mid = Math.floor(n / 2);
+    const along: number[] = new Array(n).fill(0);
+    for (let i = 1; i < n; i++) {
+      along[i] = along[i - 1]! + Math.hypot(cx[i]! - cx[i - 1]!, cy[i]! - cy[i - 1]!);
+    }
+    for (const offset of placed) {
+      const want = along[mid]! + offset;
+      let best = 0;
+      let bestD = Infinity;
+      for (let i = 0; i < n - 1; i++) {
+        const d = Math.abs(along[i]! - want);
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      // Only if the support actually lands on this span.
+      if (bestD < PIER_SPACING) stations.push(best);
+    }
+  } else {
+    let sinceP = PIER_SPACING / 2; // offset so a short span still gets one
+    for (let i = 0; i < n - 1; i++) {
+      const seg = Math.hypot(cx[i + 1]! - cx[i]!, cy[i + 1]! - cy[i]!);
+      sinceP += seg;
+      if (sinceP < PIER_SPACING) continue;
+      sinceP = 0;
+      stations.push(i);
+    }
+  }
+  for (const i of stations) {
     const px = cx[i]!;
     const py = cy[i]!;
     const g = ground(px, py);
     const under = h[i]! - DECK_THICKNESS;
     if (under - g < PIER_MIN_CLEARANCE) continue;
     // Piers follow the deck: wide crossings get chunkier columns.
-    const hw = Math.min(PIER_HALF_WIDTH * 1.8, Math.max(PIER_HALF_WIDTH, width * 0.12));
+    // A main support on a named crossing is a substantial thing.
+    const hw = placed
+      ? Math.max(PIER_HALF_WIDTH * 2.2, width * 0.2)
+      : Math.min(PIER_HALF_WIDTH * 1.8, Math.max(PIER_HALF_WIDTH, width * 0.12));
     const dx = cx[i + 1]! - px;
     const dy = cy[i + 1]! - py;
     const l = Math.hypot(dx, dy) || 1;
@@ -2503,7 +2539,7 @@ function* buildBridges(
     for (const index of list) {
       const edge = edges.edge(index);
       const [la, lb] = deckLift(edge);
-      pushBridge(soup, edge.polyline, deckWidthOf(edge), ground, cell, la, lb);
+      pushBridge(soup, edge.polyline, deckWidthOf(edge), ground, cell, la, lb, crossingByKey(edge.crossing ?? 0));
     }
     yield soup.pos.length ? soupMesh(soup, material, true, false) : null;
   }

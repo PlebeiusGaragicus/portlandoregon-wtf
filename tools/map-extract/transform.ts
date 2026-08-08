@@ -28,6 +28,7 @@ import {
   MAX_SLENDERNESS,
   MIN_FOOTPRINT_M2,
 } from "./lib/building-shape.js";
+import { crossingKey } from "@portlandoregon/shared";
 import { DeckIndex, measureDeckWidth, WIDTH_CAP_RATIO } from "./lib/deck-width.js";
 import {
   junctionsOf,
@@ -909,6 +910,36 @@ async function main(): Promise<void> {
     widths.push(width);
     measured++;
   }
+  // Tag ONE edge per named crossing — the longest — as the carrier of its
+  // main structure, so a bridge grows one set of towers rather than one per
+  // leg. The structural form itself is hand-authored (shared/src/bridges.ts):
+  // the city publishes no structural type for these.
+  const lengthOfLine = (line: [number, number][]): number => {
+    let total = 0;
+    for (let i = 1; i < line.length; i++) {
+      total += Math.hypot(line[i]![0] - line[i - 1]![0], line[i]![1] - line[i - 1]![1]);
+    }
+    return total;
+  };
+  const longest = new Map<number, { edge: StreetEdge; length: number }>();
+  for (const deck of bridges) {
+    if (!deck.name) continue;
+    const key = crossingKey(deck.name);
+    if (key === 0) continue;
+    const one = new DeckIndex([deck]);
+    for (const edge of graph.edges) {
+      if (edge.struct !== "bridge") continue;
+      const mid = edge.polyline[Math.floor(edge.polyline.length / 2)]!;
+      if (!one.at(mid[0], mid[1])) continue;
+      const length = lengthOfLine(edge.polyline);
+      const best = longest.get(key);
+      if (!best || length > best.length) longest.set(key, { edge, length });
+    }
+  }
+  for (const [key, { edge }] of longest) edge.crossing = key;
+  const namedForms = [...longest.keys()].length;
+  console.log(`  bridges: ${namedForms} named crossings carry a structural form`);
+
   widths.sort((a, b) => a - b);
   console.log(
     `  bridges: measured deck width for ${measured}/${spans} spans` +

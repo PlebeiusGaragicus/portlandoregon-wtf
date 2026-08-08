@@ -52,6 +52,12 @@ export interface StreetEdge {
    * renderer falls back to the road class's drawn width.
    */
   deckWidth?: number;
+  /**
+   * Index into `CROSSINGS` + 1 for the span carrying a named crossing's main
+   * structure, 0 otherwise. Only ONE edge per crossing is tagged — the
+   * longest — so a bridge grows one set of towers rather than one per leg.
+   */
+  crossing?: number;
 }
 
 /** Normalized building category, for palette/gameplay variety. */

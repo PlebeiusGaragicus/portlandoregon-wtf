@@ -238,6 +238,18 @@ that describes a bridge is its main carriageway's.
 a low-class road is clipped — Tilikum Crossing measures 19.2 m against a real
 23.7 m because its edges are class `local`.
 
+**Structural form is hand-authored, and is the one thing here that is not
+GIS-derived.** The city publishes no structural type for its river crossings —
+River Bridges carries `NAME` and `PAVED`, and the municipal layer types
+records by *use* (VEHICLE / PEDESTRIAN / RAILROAD / SIGN / CULVERT), with only
+8 of 520 carrying any structural hint. `shared/src/bridges.ts` therefore
+carries a curated table of the 13 named crossings: form, main span, rise.
+Main spans are close to published figures; rises are eyeballed to read at game
+scale rather than surveyed. Treat it as art direction with a factual basis and
+keep it out of anything needing real numbers. The transform tags the *longest*
+edge inside each named deck so a bridge grows one set of towers, not one per
+leg. See `docs/bridges.md`.
+
 **Not yet resolved: decks have no elevation.** The source polygons are flat at
 ground level, so draped on terrain they sit *in* the river. Placing them needs
 the `STRUC_TYPE` 21/23 street spans that cross each polygon, interpolated —

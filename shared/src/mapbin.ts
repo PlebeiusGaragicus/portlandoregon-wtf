@@ -40,7 +40,7 @@ const GRID = 0.01;
 /** Bumped on ANY layout change. A stale artefact must fail loudly here rather
  * than decode as garbage — reading a v1 file with a v2 reader misaligned the
  * stream and tried to allocate 9 GB before anything noticed. */
-const FORMAT_VERSION = 6; // 6: street edges carry a measured deck width
+const FORMAT_VERSION = 7; // 7: street edges carry a named-crossing key
 
 /** Normalised building categories, indexed by the store's `use` array. */
 export const BUILDING_USES = ["sfr", "mfr", "com", "off", "ind", "inst", "other"] as const;
@@ -676,6 +676,8 @@ export interface StreetStore {
   zlevB: Int8Array;
   /** Measured deck width in cm, or 0 when the span has no published outline. */
   deckWidthCm: Uint16Array;
+  /** Named-crossing key (see CROSSINGS), 0 for ordinary spans. */
+  crossing: Uint8Array;
   nameIndex: Uint32Array;
   names: string[];
   /** Render-only midpoint index. Graph edge order remains unchanged. */
@@ -732,6 +734,7 @@ export function encodeStreets(map: Pick<GameMap, "nodes" | "edges">): Uint8Array
     w.u8(Math.max(0, Math.min(255, (edge.zlev?.[1] ?? 1) + ZLEV_BIAS)));
     // Measured deck width in centimetres; 0 means "none published".
     w.varint(Math.max(0, Math.min(65535, Math.round((edge.deckWidth ?? 0) * 100))));
+    w.u8(Math.max(0, Math.min(255, edge.crossing ?? 0)));
   }
 
   // Keep graph order stable for routing, and store a separate render index
@@ -825,6 +828,7 @@ export function decodeStreets(bytes: Uint8Array): StreetStore {
   const zlevA = new Int8Array(edgeCount);
   const zlevB = new Int8Array(edgeCount);
   const deckWidthCm = new Uint16Array(edgeCount);
+  const crossing = new Uint8Array(edgeCount);
   previousId = 0;
   let previousA = 0;
   let previousB = 0;
@@ -841,6 +845,7 @@ export function decodeStreets(bytes: Uint8Array): StreetStore {
     zlevA[i] = r.u8() - ZLEV_BIAS;
     zlevB[i] = r.u8() - ZLEV_BIAS;
     deckWidthCm[i] = r.varint();
+    crossing[i] = r.u8();
   }
 
   const tileSize = r.u32();
@@ -875,7 +880,7 @@ export function decodeStreets(bytes: Uint8Array): StreetStore {
   }
   return {
     nodeCount, nodeId, nodeX, nodeY, edgeCount, edgeId, a, b,
-    pointStart, coords, widthCm, roadClass, struct, zlevA, zlevB, deckWidthCm, nameIndex, names,
+    pointStart, coords, widthCm, roadClass, struct, zlevA, zlevB, deckWidthCm, crossing, nameIndex, names,
     tileSize, tileKey, tileStart, tileEdge,
   };
 }
@@ -923,6 +928,7 @@ export function streetEdge(store: StreetStore, edge: number): StreetEdge {
     struct: streetStruct(store, edge),
     zlev: [store.zlevA[edge]!, store.zlevB[edge]!],
     ...(store.deckWidthCm[edge]! > 0 ? { deckWidth: store.deckWidthCm[edge]! / 100 } : {}),
+    ...(store.crossing[edge]! > 0 ? { crossing: store.crossing[edge]! } : {}),
   };
 }
 
@@ -932,7 +938,7 @@ export function streetStoreBytes(store: StreetStore): number {
     store.edgeId.byteLength + store.a.byteLength + store.b.byteLength +
     store.pointStart.byteLength + store.coords.byteLength + store.widthCm.byteLength +
     store.roadClass.byteLength + store.struct.byteLength + store.zlevA.byteLength +
-    store.zlevB.byteLength + store.deckWidthCm.byteLength + store.nameIndex.byteLength +
+    store.zlevB.byteLength + store.deckWidthCm.byteLength + store.crossing.byteLength + store.nameIndex.byteLength +
     store.tileKey.byteLength + store.tileStart.byteLength + store.tileEdge.byteLength +
     store.names.reduce((sum, name) => sum + name.length * 2, 0)
   );

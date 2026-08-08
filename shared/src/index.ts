@@ -1,3 +1,4 @@
+export * from "./bridges.js";
 export * from "./constants.js";
 export * from "./geo.js";
 export * from "./heightfield.js";

@@ -107,6 +107,16 @@ export function resample(polyline: [number, number][], cell: number, step = RIBB
  * a structure that disagrees with the road surface by even a few centimetres
  * shows as z-fighting along the whole span.
  */
+export interface DeckStations {
+  lx: Float64Array;
+  ly: Float64Array;
+  rx: Float64Array;
+  ry: Float64Array;
+  h: Float64Array;
+  cx: Float64Array;
+  cy: Float64Array;
+}
+
 export function deckStations(
   rawPolyline: [number, number][],
   width: number,
@@ -114,7 +124,7 @@ export function deckStations(
   cell: number,
   liftA = 0,
   liftB = 0,
-): { lx: Float64Array; ly: Float64Array; rx: Float64Array; ry: Float64Array; h: Float64Array; cx: Float64Array; cy: Float64Array } | null {
+): DeckStations | null {
   const polyline = resample(rawPolyline, cell);
   const n = polyline.length;
   if (n < 2) return null;
