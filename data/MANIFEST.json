@@ -87,10 +87,27 @@
     "heightUnitRlis": "feet (converted x0.3048)",
     "streetEpsilonM": 1,
     "footprintEpsilonM": 0.5,
+    "buildingShape": {
+      "minFootprintM2": 4,
+      "maxSlenderness": 6,
+      "sliversDropped": 1381,
+      "needlesClamped": 470
+    },
+    "junctionTrim": {
+      "junctions": 39601,
+      "minDegree": 3,
+      "radiusMargin": 1.15,
+      "minRunM": 3,
+      "linesIn": 65068,
+      "linesOut": 57312,
+      "touched": 22000,
+      "split": 4324,
+      "dropped": 13801
+    },
     "counts": {
       "nodes": 65433,
       "edges": 84087,
-      "buildings": 538519,
+      "buildings": 537610,
       "props": 405582,
       "water": 2,
       "parks": 11807,
@@ -100,12 +117,12 @@
       "railStops": 159,
       "sidewalks": 52692,
       "markingAreas": 3394,
-      "markingLines": 65068
+      "markingLines": 57312
     }
   },
   "bakedMap": {
     "file": "data/maps/portland.json.gz",
-    "kind": "gz-asset (139.8 MB raw, 30.5 MB gz)",
+    "kind": "gz-asset (139.0 MB raw, 30.4 MB gz)",
     "meta": {
       "name": "portland",
       "sourceDate": "2026-08-04",
@@ -118,7 +135,7 @@
     },
     "nodes": 65433,
     "edges": 84087,
-    "buildings": 538519,
+    "buildings": 537610,
     "props": 405582,
     "water": 2,
     "landmarks": {

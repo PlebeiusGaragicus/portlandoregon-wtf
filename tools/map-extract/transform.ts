@@ -22,6 +22,12 @@ import { extractDate, HEIGHT_PER_STORY_M, MANIFEST_FILE, MAP_NAME, processedDir,
 import type { GeoJsonCollection, GeoJsonFeature } from "./lib/arcgis.js";
 import { clipPolylineAtExit, clipRingToRect, ensureWinding, inRect, round1, simplify, type Pt, type Rect } from "./lib/geo.js";
 import {
+  isBuildableFootprint,
+  plausibleHeight,
+  MAX_SLENDERNESS,
+  MIN_FOOTPRINT_M2,
+} from "./lib/building-shape.js";
+import {
   junctionsOf,
   trimMarkingsAtJunctions,
   MIN_JUNCTION_DEGREE,
@@ -372,6 +378,10 @@ interface BuildingsOut {
   heightUnit: string;
   /** Occupied centroid cells (for cross-source dedup). */
   cells: Set<number>;
+  /** Rings too small to be structures, dropped outright. */
+  slivers: number;
+  /** Rings whose inherited height was clamped to something they could stand at. */
+  needles: number;
 }
 
 function transformBuildings(
@@ -397,6 +407,8 @@ function transformBuildings(
   const list: Building[] = [];
   const cells = new Set<number>();
   let deduped = 0;
+  let slivers = 0;
+  let needles = 0;
   for (const f of buildings.features) {
     if (!f.geometry) continue;
     const polys: [number, number][][][] =
@@ -424,6 +436,15 @@ function transformBuildings(
       const outer = simplify(toLoc(outerRaw), FOOTPRINT_EPSILON);
       if (outer.length < 3) continue;
       if (!outer.some((p) => inRect(p, rect))) continue; // fully outside the play area
+      // A MultiPolygon gives one prism per ring and every ring inherits the
+      // feature's height, so a tower's digitizing slivers become needles at
+      // full tower height. See lib/building-shape.
+      if (!isBuildableFootprint(outer)) {
+        slivers++;
+        continue;
+      }
+      const ringHeight = plausibleHeight(outer, height);
+      if (ringHeight < height) needles++;
 
       let cx = 0;
       let cy = 0;
@@ -460,13 +481,17 @@ function transformBuildings(
         id: list.length,
         footprint: ensureWinding(outer, true).map(([x, y]): [number, number] => [round1(x), round1(y)]),
         ...(holes.length ? { holes } : {}),
-        height: round1(height),
+        height: round1(ringHeight),
         use,
       });
     }
   }
-  console.log(`  ${label}: ${list.length} prisms in play area${deduped ? ` (${deduped} deduped vs primary)` : ""}`);
-  return { list, heightUnit, cells };
+  console.log(
+    `  ${label}: ${list.length} prisms in play area${deduped ? ` (${deduped} deduped vs primary)` : ""}` +
+      `${slivers ? ` (${slivers} sub-${MIN_FOOTPRINT_M2}m2 slivers dropped)` : ""}` +
+      `${needles ? ` (${needles} needle heights clamped)` : ""}`,
+  );
+  return { list, heightUnit, cells, slivers, needles };
 }
 
 function transformPolys(key: "water" | "parks" | "railyards" | "sidewalks", rect: Rect): WaterBody[] {
@@ -844,6 +869,12 @@ async function main(): Promise<void> {
     heightUnitRlis: rlis?.heightUnit ?? null,
     streetEpsilonM: STREET_EPSILON,
     footprintEpsilonM: FOOTPRINT_EPSILON,
+    buildingShape: {
+      minFootprintM2: MIN_FOOTPRINT_M2,
+      maxSlenderness: MAX_SLENDERNESS,
+      sliversDropped: cop.slivers + (rlis?.slivers ?? 0),
+      needlesClamped: cop.needles + (rlis?.needles ?? 0),
+    },
     junctionTrim: {
       junctions: junctions.length,
       minDegree: MIN_JUNCTION_DEGREE,

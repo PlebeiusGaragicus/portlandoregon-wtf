@@ -84,9 +84,43 @@ the source is a surveyor's record rather than a network.
   **check it after any re-extract**, because a silent unit flip triples the
   skyline.
 - **Height fallback chain**: `MAX_HEIGHT` → `NUM_STORY × HEIGHT_PER_STORY_M`
-  → two storeys.
+  → two storeys. Note the consequence: **28% of the metro (153,046 buildings)
+  lands at exactly 7.0 m**, the two-storey default, and 31% of all heights are
+  an exact multiple of 3.5 m rather than a measurement. Residential areas are
+  uniform because the source is silent, not because the pipeline flattened
+  them. A better height source would be the single biggest fidelity win
+  available.
 - **Simplification** `FOOTPRINT_EPSILON = 0.5 m`; rings are stored open
   (closing point dropped), outer ring CCW, holes CW.
+
+### 3a. Footprint and height plausibility (added 2026-08-07)
+
+A source building is often a MultiPolygon and we emit **one prism per ring**,
+with every ring inheriting the feature's height. Most rings are real, but
+towers routinely carry digitizing slivers a metre or two across. Wells Fargo
+Center arrives as 45 rings: one genuine 1,514 m² tower and 44 slivers of
+2–17 m², all extruded to 163.1 m — a thicket of needles beside Portland's
+tallest building. Across the metro this was ~200 spikes over 30 m tall,
+including three with a literally zero-area footprint.
+
+Two rules in `tools/map-extract/lib/building-shape.ts`, because they catch
+different failures — an area floor removes rings that are not structures at
+all, and a slenderness cap fixes rings that are plausible in plan but absurd
+in elevation:
+
+| Constant | Value | Why |
+| --- | --- | --- |
+| `MIN_FOOTPRINT_M2` | 4 | Chosen from the distribution: drops 907 rings (0.17%), the degenerate tail. A 2×2 m structure is below what we draw meaningfully. Raising it eats real sheds and detached garages — a 20 m² floor would drop 26,251. |
+| `MAX_SLENDERNESS` | 6 | Height ceiling of `6 × √area`. Leaves every genuine tower alone (the extract's tallest, 192.5 m on 1,124 m², sits under a 201 m ceiling) while clamping 330 rings that are needles. Lower values start trimming legitimately slender towers. |
+
+Counts go to the manifest under `transform.buildingShape`. Covered by
+`npm run test:building-shape`.
+
+**Known bad source value, not corrected:** the tallest building in the extract
+is 192.5 m on a legitimate 1,124 m² multifamily footprint. Portland's tallest
+building is 166 m and its tallest residential about 122 m, so that
+`MAX_HEIGHT` is wrong at the source. One building; left alone rather than
+special-cased.
 
 ## 4. Painted markings
 
