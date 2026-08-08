@@ -197,19 +197,48 @@ console.log("\nmoving midpoint camera anchor");
     anchored.distanceTo(before) < 1e-5,
     `drift ${anchored.distanceTo(before).toExponential(2)} m`,
   );
+}
 
-  const tiltBefore = hit(to);
-  rig.tiltBy(-0.16);
-  const tiltAfter = hit(to);
-  rig.alignWorldPoint(
-    { x: tiltBefore.x, y: -tiltBefore.z },
-    { x: tiltAfter.x, y: -tiltAfter.z },
-  );
-  const tiltAnchored = hit(to);
+// The camera target must never leave the city, at any heading, zoom or screen
+// shape. It used to: a shallow tilt grows the frustum's forward reach until no
+// legal interval survives in `constrain`, and the old fallback centred the
+// footprint rather than the map, stranding the target tens of km off the south
+// edge — a sliver of city at the top of a phone screen and void everywhere
+// else. Portrait aspects are the worst case, so sweep them explicitly.
+console.log("\ntarget stays on the map across heading x zoom x aspect");
+{
+  let worst = 0;
+  let worstAt = "";
+  for (const aspect of [0.42, 1170 / 2100, 0.75, 1, 16 / 9, 2.2]) {
+    for (let ti = 0; ti < 64; ti++) {
+      const theta = (ti / 64) * 2 * Math.PI;
+      const probe = new CameraRig(map);
+      probe.theta = theta;
+      const fit = probe.metrics(aspect).fitSpan;
+      for (let step = 1; step <= 40; step++) {
+        const rig = new CameraRig(map);
+        rig.theta = theta;
+        rig.updateViewport(aspect);
+        rig.viewHeight = fit * (step / 40);
+        rig.target = { x: map.meta.width / 2, y: map.meta.height / 2 };
+        rig.updateViewport(aspect);
+        const excursion = Math.max(
+          -rig.target.x,
+          rig.target.x - map.meta.width,
+          -rig.target.y,
+          rig.target.y - map.meta.height,
+        );
+        if (excursion > worst) {
+          worst = excursion;
+          worstAt = `aspect=${aspect.toFixed(2)} theta=${((theta * 180) / Math.PI).toFixed(0)}deg vh=${(fit * (step / 40)).toFixed(0)}`;
+        }
+      }
+    }
+  }
   check(
-    "off-center world point survives anchored tilt",
-    tiltAnchored.distanceTo(tiltBefore) < 1e-5,
-    `drift ${tiltAnchored.distanceTo(tiltBefore).toExponential(2)} m`,
+    "target never leaves the map",
+    worst <= 0,
+    worst > 0 ? `${worst.toFixed(0)} m outside at ${worstAt}` : "0 m outside over 15360 poses",
   );
 }
 

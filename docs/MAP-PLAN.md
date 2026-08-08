@@ -117,7 +117,7 @@ could get different art or gameplay tags without any authoring.
 >   adds faux earth curvature (vertex shader), drifting clouds, and a
 >   gentle blur. 60 fps at every zoom on Apple Silicon.
 > - **Controls:** left-click/drag select (marquee, multi-squad), right-click
->   move, off-click deselect, WASD pan, Q/E rotate, R/F tilt, N faces
+>   move, off-click deselect, WASD pan, Q/E rotate, N faces
 >   north (compass HUD), wheel zooms toward the cursor, translucent
 >   minimap with view quad + unit dots (click to jump). Above ~4.5 km view
 >   height the game becomes a read-only strategic map — no orders.

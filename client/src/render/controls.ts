@@ -4,15 +4,12 @@ import { CameraRig } from "./camera.js";
 const DRAG_THRESHOLD_PX = 4;
 const SNAP = Math.PI / 4; // 8 rotation snap angles
 const TWEEN_RATE = 12; // theta easing, higher = snappier
-const TILT_SPEED = 1.2; // rad/s while R/F held
 
-// Direct-manipulation rates, shared by touch gestures and mouse orbit.
-const TILT_PER_PX = 0.005; // drag up = lower elevation angle = more oblique
+// Direct-manipulation rate, shared by touch gestures and mouse orbit.
 const YAW_PER_PX = 0.006;
 
 // Two-finger intent arbitration. The small dead zone absorbs landing noise;
 // once an intent wins it stays stable until the finger pair changes.
-const TILT_TRIGGER_PX = 10;
 const MIDPOINT_TRIGGER_PX = 8;
 const SPREAD_TRIGGER_PX = 10;
 const TWIST_TRIGGER_RAD = 0.065;
@@ -37,8 +34,6 @@ export interface ControlDelegate {
   zoomAt(clientX: number, clientY: number, factor: number): void;
   /** Carry the world under the old midpoint to the new one while scaling/yawing. */
   transformAt(fromX: number, fromY: number, toX: number, toY: number, factor: number, rotation: number): void;
-  /** Tilt without allowing the ground beneath the midpoint to slip. */
-  tiltAt(clientX: number, clientY: number, delta: number): void;
   /** Disaster-director action; touch hold is the mobile Shift+click. */
   fireballAt(clientX: number, clientY: number): void;
 }
@@ -60,22 +55,24 @@ interface Gesture {
   start: Pose;
   /** Pose at the previous move — the baseline for the increment we apply. */
   last: Pose;
-  mode: "undecided" | "tilt" | "transform";
+  mode: "undecided" | "transform";
 }
 
 /**
  * Two input schemes over one camera rig.
  *
+ * The elevation angle is fixed (`TACTICAL_TILT`), so neither scheme exposes a
+ * tilt control; zooming to city scale is what lifts the view to overhead.
+ *
  * Mouse/trackpad (RTS/CAD-flavoured): left click selects (off-click
  * deselects), left drag marquee-selects, right click dispatches, middle drag
- * pans, middle+shift or alt+left drag orbits (horizontal yaws, vertical
- * tilts), WASD pans, Q/E snap-rotate, R/F tilt, N faces north, wheel zooms
- * toward the cursor. In strategic view (far zoom) left drag pans instead and
- * selection is off.
+ * pans, middle+shift or alt+left drag yaws, WASD pans, Q/E snap-rotate, N
+ * faces north, wheel zooms toward the cursor. In strategic view (far zoom)
+ * left drag pans instead and selection is off.
  *
  * Touch (Google Maps-flavoured): one finger drags the map, one tap selects, a
  * long press drops a fireball; two fingers pan/pinch/twist about their moving
- * midpoint, while a two-finger parallel drag up/down tilts.
+ * midpoint.
  */
 export class Controls {
   /** False while FPV mode owns the input (all handlers become inert). */
@@ -147,7 +144,6 @@ export class Controls {
         this.rig.clampToMap(this.map);
       } else if (p.mode === "orbit") {
         this.rotateBy(e.movementX * YAW_PER_PX);
-        this.rig.tiltBy(e.movementY * TILT_PER_PX);
       } else if (p.mode === "marquee") {
         this.drawMarquee(p.x, p.y, e.clientX, e.clientY);
       }
@@ -231,7 +227,7 @@ export class Controls {
     this.thetaGoal = this.rig.theta;
   }
 
-  /** Advance tweens, held-key panning and tilting. dt in seconds. */
+  /** Advance tweens and held-key panning. dt in seconds. */
   update(dt: number): void {
     if (!this.active) return;
     // Pointer events update individual fingers at different times. Consuming
@@ -252,9 +248,6 @@ export class Controls {
       this.rig.panKeys(rightAmt, fwdAmt, dt);
       this.rig.clampToMap(this.map);
     }
-
-    if (this.keys.has("r")) this.rig.tiltBy(TILT_SPEED * dt);
-    if (this.keys.has("f")) this.rig.tiltBy(-TILT_SPEED * dt);
   }
 
   dispose(): void {
@@ -421,29 +414,13 @@ export class Controls {
       const twist = Math.abs(wrapPi(cur.ang - g.start.ang));
       const mdx = cur.mx - g.start.mx;
       const mdy = cur.my - g.start.my;
-      const adx = cur.ax - g.start.ax;
-      const ady = cur.ay - g.start.ay;
-      const bdx = cur.bx - g.start.bx;
-      const bdy = cur.by - g.start.by;
-      const aLen = Math.hypot(adx, ady);
-      const bLen = Math.hypot(bdx, bdy);
-      const parallel = aLen > 1 && bLen > 1
-        ? (adx * bdx + ady * bdy) / (aLen * bLen)
-        : -1;
-      const balance = Math.min(aLen, bLen) / Math.max(1, aLen, bLen);
-      const tiltLike =
-        parallel > 0.82 &&
-        balance > 0.55 &&
-        Math.abs(mdy) > 1.5 * Math.abs(mdx) &&
-        spread < SPREAD_TRIGGER_PX * 1.25 &&
-        twist < TWIST_TRIGGER_RAD * 1.25;
 
-      if (tiltLike && Math.abs(mdy) > TILT_TRIGGER_PX) {
-        g.mode = "tilt";
-      } else if (
+      // Every two-finger intent now funnels into one combined pan/pinch/twist,
+      // so recognition only has to clear the landing dead zone.
+      if (
         spread > SPREAD_TRIGGER_PX ||
         twist > TWIST_TRIGGER_RAD ||
-        (Math.hypot(mdx, mdy) > MIDPOINT_TRIGGER_PX && !tiltLike)
+        Math.hypot(mdx, mdy) > MIDPOINT_TRIGGER_PX
       ) {
         g.mode = "transform";
       } else {
@@ -455,13 +432,7 @@ export class Controls {
     }
 
     const dAng = wrapPi(cur.ang - g.last.ang);
-    const dmy = cur.my - g.last.my;
 
-    if (g.mode === "tilt") {
-      this.delegate.tiltAt(cur.mx, cur.my, dmy * TILT_PER_PX);
-      g.last = cur;
-      return;
-    }
     if (cur.dist > 1 && g.last.dist > 1) {
       this.delegate.transformAt(
         g.last.mx,

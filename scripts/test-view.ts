@@ -8,7 +8,7 @@
 // interesting cases here (corrupt records, a view saved for another map) are
 // awkward to even set up by clicking.
 import { latLonToWorld, worldToLatLon, type GameMap } from "@portlandoregon/shared";
-import { CameraRig, MIN_VIEW_HEIGHT } from "../client/src/render/camera.js";
+import { CameraRig, MIN_VIEW_HEIGHT, TACTICAL_TILT } from "../client/src/render/camera.js";
 import { createViewSaver, formatLatLon, restoreView } from "../client/src/view.js";
 
 const store = new Map<string, string>();
@@ -66,7 +66,6 @@ check(
   rig.target = { x: 19935, y: 19671 };
   rig.viewHeight = 900;
   rig.theta = 1.2345;
-  rig.tilt = 1.0;
   save();
 
   const rig2 = new CameraRig(map);
@@ -78,7 +77,8 @@ check(
     `x=${rig2.target.x.toFixed(1)} y=${rig2.target.y.toFixed(1)}`,
   );
   check("return visit: same zoom", near(rig2.viewHeight, 900, 0.1), `${rig2.viewHeight}`);
-  check("return visit: same heading", near(rig2.theta, 1.2345, 1e-3) && near(rig2.tilt, 1.0, 1e-3));
+  check("return visit: same heading", near(rig2.theta, 1.2345, 1e-3), `theta=${rig2.theta.toFixed(4)}`);
+  check("return visit: fixed tactical tilt", rig2.tilt === TACTICAL_TILT, `${((rig2.tilt * 180) / Math.PI).toFixed(1)}deg`);
 }
 
 // 3. Junk and hostile records fall back to the default instead of wedging.

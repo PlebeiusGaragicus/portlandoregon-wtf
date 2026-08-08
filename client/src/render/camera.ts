@@ -22,6 +22,16 @@ export const FOV_DEG = 35; // narrow-ish perspective: depth without fisheye
 const HALF_FOV = (FOV_DEG * Math.PI) / 360;
 const TOP_DOWN = Math.PI / 2;
 
+/**
+ * The one tactical elevation angle, as the original design specified. It is
+ * fixed rather than player-adjustable for feel and for safety: a tilted
+ * frustum reaches much further forward than back, and below roughly 40 the
+ * forward ray denominator in `footprint` collapses, growing the footprint
+ * past the map on every axis. `constrain` then has no legal interval left and
+ * its fallback would strand the camera well outside the city.
+ */
+export const TACTICAL_TILT = (55 * Math.PI) / 180;
+
 export interface CameraCoverage {
   /** Current vertical span divided by the padded, rotated full-city fit span. */
   coverage: number;
@@ -32,7 +42,7 @@ export interface CameraCoverage {
   /** Rotated city bounds along screen-right and screen-up. */
   rotatedWidth: number;
   rotatedHeight: number;
-  /** Tilt actually rendered; `tilt` remains the user's tactical preference. */
+  /** Tilt actually rendered: `TACTICAL_TILT`, eased toward 90 at city scale. */
   effectiveTilt: number;
   /** True after perspective has reached a matched top-down projection. */
   orthographic: boolean;
@@ -57,10 +67,8 @@ export class CameraRig {
   target: { x: number; y: number };
   theta = 0; // azimuth, radians; 0 = north up
   viewHeight = 400;
-  /** User's tactical elevation preference. Overview forcing does not erase it. */
-  tilt = (55 * Math.PI) / 180;
-  static readonly MIN_TILT = (25 * Math.PI) / 180;
-  static readonly MAX_TILT = (80 * Math.PI) / 180;
+  /** Fixed tactical elevation. See `TACTICAL_TILT`. */
+  readonly tilt = TACTICAL_TILT;
   private mapW: number;
   private mapH: number;
   private lastAspect = 16 / 9;
@@ -156,7 +164,6 @@ export class CameraRig {
   /** Keep target inside the remaining legal interval; center only when the
    * footprint has grown too large for an interval to exist. */
   private constrain(): void {
-    this.tilt = Math.min(CameraRig.MAX_TILT, Math.max(CameraRig.MIN_TILT, this.tilt));
     const fit = this.fitSpan(this.lastAspect);
     const wasFit = this.viewHeight >= this.lastFitSpan * (1 - 1e-7);
     if (wasFit && Number.isFinite(this.lastFitSpan)) this.viewHeight = fit.fitSpan;
@@ -166,12 +173,15 @@ export class CameraRig {
     const corners = this.footprint(this.metrics());
     const xs = corners.map((corner) => corner.x);
     const ys = corners.map((corner) => corner.y);
+    // When the footprint has outgrown the map no legal interval exists. Fall
+    // back to the middle of the map rather than the middle of the interval:
+    // the tilted footprint is not centred on the target, so the interval
+    // midpoint drifts by the frustum's forward/back asymmetry and can put the
+    // target outside the city entirely.
     const clampAxis = (value: number, minOffset: number, maxOffset: number, dimension: number): number => {
       const low = -minOffset;
       const high = dimension - maxOffset;
-      return low <= high
-        ? Math.min(high, Math.max(low, value))
-        : (low + high) / 2;
+      return low <= high ? Math.min(high, Math.max(low, value)) : dimension / 2;
     };
     this.target.x = clampAxis(this.target.x, Math.min(...xs), Math.max(...xs), this.mapW);
     this.target.y = clampAxis(this.target.y, Math.min(...ys), Math.max(...ys), this.mapH);
@@ -257,13 +267,9 @@ export class CameraRig {
     this.constrain();
   }
 
-  tiltBy(delta: number): void {
-    this.tilt = Math.min(CameraRig.MAX_TILT, Math.max(CameraRig.MIN_TILT, this.tilt + delta));
-    this.constrain();
-  }
 
   /** Shift the camera target so `current` lands where `wanted` was in world
-   * space. Screen-anchored zoom/rotate/tilt unproject before and after, then
+   * space. Screen-anchored zoom and rotate unproject before and after, then
    * use this single correction so map boundaries are resolved consistently. */
   alignWorldPoint(
     wanted: { x: number; y: number },

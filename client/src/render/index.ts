@@ -540,9 +540,6 @@ export class Renderer {
           this.rig.zoomBy(factor);
         });
       },
-      tiltAt: (cx, cy, delta) => {
-        this.transformCameraAt(cx, cy, cx, cy, () => this.rig.tiltBy(delta));
-      },
       fireballAt: (cx, cy) => this.fireballAt(cx, cy),
     };
     this.controls = new Controls(canvas, this.rig, map, delegate);

@@ -102,12 +102,6 @@ const delegate: ControlDelegate = {
     rig.zoomBy(factor);
     rig.alignWorldPoint(before, worldAt(toX, toY));
   },
-  tiltAt: (x, y, delta) => {
-    calls.push(`tilt ${delta.toFixed(3)} @${x},${y}`);
-    const before = worldAt(x, y);
-    rig.tiltBy(delta);
-    rig.alignWorldPoint(before, worldAt(x, y));
-  },
   fireballAt: (x, y) => void calls.push(`fireball ${x},${y}`),
 };
 
@@ -288,35 +282,30 @@ console.log("\ntwist");
   up(2, d1[0], d1[1]);
 }
 
-console.log("\ntwo-finger tilt");
+// The elevation angle is fixed now, so a parallel two-finger drag — which used
+// to be claimed by the tilt branch of the arbitration — must read as an
+// ordinary pan and leave the tilt untouched.
+console.log("\ntwo-finger parallel drag");
 {
   reset();
   const tilt0 = rig.tilt;
+  const t0 = { ...rig.target };
   down(1, 500, 400);
   down(2, 700, 400);
   drag2([500, 400], [700, 400], [500, 250], [700, 250]); // both fingers up
-  check("drag up tilts toward the horizon", rig.tilt < tilt0, `${((tilt0 * 180) / Math.PI).toFixed(1)} -> ${((rig.tilt * 180) / Math.PI).toFixed(1)}deg`);
-  check("tilt gesture does not transform", !calls.some((c) => c.startsWith("transform")), calls.join("; "));
-  check("tilt gesture does not rotate", Math.abs(rig.theta) < 1e-6, `theta=${rig.theta.toFixed(4)}`);
+  check("parallel drag pans", rig.target.y !== t0.y, `dy=${(rig.target.y - t0.y).toFixed(0)}m`);
+  check("parallel drag holds the tilt", rig.tilt === tilt0, `${((rig.tilt * 180) / Math.PI).toFixed(1)}deg`);
+  check("parallel drag does not rotate", Math.abs(rig.theta) < 1e-6, `theta=${rig.theta.toFixed(4)}`);
   up(1, 500, 250);
   up(2, 700, 250);
 
-  reset();
-  const tilt1 = rig.tilt;
-  down(1, 500, 300);
-  down(2, 700, 300);
-  drag2([500, 300], [700, 300], [500, 450], [700, 450]); // both fingers down
-  check("drag down tilts toward top-down", rig.tilt > tilt1, `${((tilt1 * 180) / Math.PI).toFixed(1)} -> ${((rig.tilt * 180) / Math.PI).toFixed(1)}deg`);
-  up(1, 500, 450);
-  up(2, 700, 450);
-
-  // A tilt drag must survive the fingers not being perfectly parallel.
+  // Sloppy fingers must not resurrect a special-case intent either.
   reset();
   const tilt2 = rig.tilt;
   down(1, 500, 400);
   down(2, 700, 400);
   drag2([500, 400], [700, 400], [508, 250], [694, 256]);
-  check("sloppy tilt drag still tilts", rig.tilt < tilt2 - 0.05 && Math.abs(rig.theta) < 1e-6, `theta=${rig.theta.toFixed(3)} tilt=${((rig.tilt * 180) / Math.PI).toFixed(1)}deg`);
+  check("sloppy parallel drag holds the tilt", rig.tilt === tilt2, `${((rig.tilt * 180) / Math.PI).toFixed(1)}deg`);
   up(1, 508, 250);
   up(2, 694, 256);
 }
@@ -410,7 +399,8 @@ console.log("\nmouse (unchanged paths)");
   const tilt0 = rig.tilt;
   mdown(0, 600, 400, { altKey: true });
   mmove(700, 300, 100, -100);
-  check("alt+drag orbits", rig.theta > 0 && rig.tilt < tilt0, `theta=${rig.theta.toFixed(3)} tilt=${((rig.tilt * 180) / Math.PI).toFixed(1)}deg`);
+  check("alt+drag yaws", rig.theta > 0, `theta=${rig.theta.toFixed(3)}`);
+  check("alt+drag holds the tilt", rig.tilt === tilt0, `${((rig.tilt * 180) / Math.PI).toFixed(1)}deg`);
   mup(0, 700, 300);
 
   reset();

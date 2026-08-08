@@ -28,7 +28,6 @@ interface SavedView {
   lon: number;
   viewHeight: number;
   theta: number;
-  tilt: number;
 }
 
 function isFiniteNumber(v: unknown): v is number {
@@ -49,9 +48,9 @@ function parse(raw: string, map: GameMap): SavedView | null {
   const s = v as Record<string, unknown>;
   if (s["map"] !== map.meta.name) return null;
   if (!isFiniteNumber(s["lat"]) || !isFiniteNumber(s["lon"])) return null;
-  if (!isFiniteNumber(s["viewHeight"]) || !isFiniteNumber(s["theta"]) || !isFiniteNumber(s["tilt"])) {
-    return null;
-  }
+  // `tilt` was a v1 field back when R/F could change the elevation angle. It
+  // is fixed now, so records still carrying one restore fine without it.
+  if (!isFiniteNumber(s["viewHeight"]) || !isFiniteNumber(s["theta"])) return null;
   const world = latLonToWorld(map.meta, { lat: s["lat"], lon: s["lon"] });
   if (!withinMap(map.meta, world.x, world.y)) return null;
   return {
@@ -62,7 +61,6 @@ function parse(raw: string, map: GameMap): SavedView | null {
     // rig. Keeping the v1 field unversioned preserves old 12 km saves.
     viewHeight: Math.max(MIN_VIEW_HEIGHT, s["viewHeight"]),
     theta: s["theta"],
-    tilt: s["tilt"],
   };
 }
 
@@ -84,10 +82,7 @@ export function restoreView(rig: CameraRig, map: GameMap): boolean {
 
   rig.target = inBounds ? { x: world.x, y: world.y } : { x: map.meta.width / 2, y: map.meta.height / 2 };
   rig.viewHeight = saved?.viewHeight ?? DEFAULT_VIEW_HEIGHT;
-  if (saved) {
-    rig.theta = saved.theta;
-    rig.tilt = saved.tilt;
-  }
+  if (saved) rig.theta = saved.theta;
   rig.clampToMap(map);
   return saved !== null;
 }
@@ -107,7 +102,6 @@ export function createViewSaver(rig: CameraRig, map: GameMap): () => void {
       lon: Number(lon.toFixed(5)),
       viewHeight: Number(rig.viewHeight.toFixed(1)),
       theta: Number(rig.theta.toFixed(4)),
-      tilt: Number(rig.tilt.toFixed(4)),
     };
     const serialized = JSON.stringify(record);
     if (serialized === lastSerialized) return;
