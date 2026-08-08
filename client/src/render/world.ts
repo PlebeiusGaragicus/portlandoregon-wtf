@@ -29,6 +29,16 @@ import { buildCityModel, type CityModel } from "../city.js";
 import { HANDHELD } from "../device.js";
 import { buildGroundMap } from "./groundmap.js";
 import { streetsFrom, type StreetAccess } from "../streets.js";
+import {
+  deckLift,
+  deckStations,
+  resample,
+  RENDER_WIDTH,
+  DECK_THICKNESS,
+  PARAPET_HEIGHT,
+  PARAPET_WIDTH,
+  RIBBON_STEP,
+} from "./deck.js";
 import { geometryBytes } from "./bytes.js";
 import { TileScheduler, type TileTicket } from "./tile-scheduler.js";
 import {
@@ -142,7 +152,6 @@ const CURB_H = 0.14; // raised concrete: sidewalk tops sit a curb above grade
 // Rendered curb-to-curb widths, wider than the baked graph widths: the paved
 // roadway should fill its right-of-way up to the sidewalks, leaving only a
 // planting strip. (edge.width stays the sim/graph number.)
-const RENDER_WIDTH: Record<RoadClass, number> = { arterial: 17, collector: 13.5, local: 11, alley: 5, path: 2.5 };
 const MARK_WHITE = 0xb9c0c8; // painted pavement markings
 const MARK_YELLOW = 0xc2a53a;
 
@@ -2194,7 +2203,6 @@ function* streetTiles(
   }
 }
 
-const RIBBON_STEP = 15; // m — max span between ribbon cross-sections
 /**
  * Cross-section spacing for the always-resident coarse street tier.
  *
@@ -2207,49 +2215,6 @@ const RIBBON_STEP = 15; // m — max span between ribbon cross-sections
  */
 const FAR_RIBBON_STEP = 30;
 
-/** Push the segment parameters (0..1) where `u` crosses integer values. */
-function addCrossings(ts: number[], u0: number, u1: number): void {
-  if (u0 === u1) return;
-  const lo = Math.min(u0, u1);
-  const hi = Math.max(u0, u1);
-  for (let k = Math.ceil(lo); k <= Math.floor(hi); k++) {
-    const t = (k - u0) / (u1 - u0);
-    if (t > 1e-4 && t < 1 - 1e-4) ts.push(t);
-  }
-}
-
-/**
- * Insert points so no span exceeds RIBBON_STEP AND a vertex lands wherever
- * the segment crosses a terrain grid line (columns, rows, and the cell
- * anti-diagonals the mesh is triangulated along). Between two such vertices
- * the terrain surface is planar, so a draped ribbon sampled at them conforms
- * exactly instead of letting slopes poke through mid-span.
- */
-function resample(polyline: [number, number][], cell: number, step = RIBBON_STEP): [number, number][] {
-  const out: [number, number][] = [polyline[0]!];
-  for (let i = 1; i < polyline.length; i++) {
-    const [ax, ay] = polyline[i - 1]!;
-    const [bx, by] = polyline[i]!;
-    const len = Math.hypot(bx - ax, by - ay);
-    const ts: number[] = [];
-    const n = Math.ceil(len / step);
-    for (let k = 1; k < n; k++) ts.push(k / n);
-    if (Number.isFinite(cell)) {
-      addCrossings(ts, ax / cell, bx / cell);
-      addCrossings(ts, ay / cell, by / cell);
-      addCrossings(ts, (ax + ay) / cell, (bx + by) / cell);
-    }
-    ts.sort((p, q) => p - q);
-    let last = 0;
-    for (const t of ts) {
-      if (t - last < 1e-4) continue;
-      last = t;
-      out.push([ax + (bx - ax) * t, ay + (by - ay) * t]);
-    }
-    out.push([bx, by]);
-  }
-  return out;
-}
 
 /**
  * Mitered ribbon along a polyline, draped onto the terrain. When `span` is
@@ -2397,30 +2362,11 @@ function* railTiles(
 // off exactly the same deck-height rule (`deckHeights`), so the structure sits
 // under the road rather than beside it.
 
-const DECK_THICKNESS = 1.7; // m of slab below the road surface
-const PARAPET_HEIGHT = 1.15; // m of barrier above it
-const PARAPET_WIDTH = 0.5;
 const PIER_SPACING = 45; // m between piers along the span
 const PIER_HALF_WIDTH = 1.7;
 /** Below this much air under the slab, a pier would be a kerb. */
 const PIER_MIN_CLEARANCE = 2.5;
 const BRIDGE_COLOR = 0x6d6c68; // weathered structural concrete
-/**
- * Height of one grade-separation level. Standard highway vertical clearance
- * is ~4.9 m; adding the slab puts the upper road surface here above the lower
- * one, which is what ZLEV 2 means.
- */
-const LEVEL_HEIGHT = 6.5;
-
-/** Metres to raise each end of a deck, from its resolved grade level. Only
- * spans lift: a road merely marked level 2 without a bridge structure is not
- * something we can hold up. */
-export function deckLift(edge: Pick<StreetEdge, "struct" | "zlev">): [number, number] {
-  if (edge.struct !== "bridge") return [0, 0];
-  const z = edge.zlev ?? [1, 1];
-  return [Math.max(0, z[0] - 1) * LEVEL_HEIGHT, Math.max(0, z[1] - 1) * LEVEL_HEIGHT];
-}
-
 /** Push a flat quad (a-b-c-d, counter-clockwise seen from outside) with one
  * face normal. World coords in, scene coords out. */
 function pushQuad(
@@ -2443,62 +2389,6 @@ function pushQuad(
   };
   p(a); p(b); p(c);
   p(a); p(c); p(d);
-}
-
-/**
- * Deck geometry for one bridge leg: centre line, edge offsets and the deck
- * height at each station. Mirrors `pushRibbon`'s span branch exactly — the
- * same mitred normals and the same `max(terrain, lerp(bank, bank))` — because
- * a structure that disagrees with the road surface by even a few centimetres
- * shows as z-fighting along the whole span.
- */
-export function deckStations(
-  rawPolyline: [number, number][],
-  width: number,
-  ground: GroundFn,
-  cell: number,
-  liftA = 0,
-  liftB = 0,
-): { lx: Float64Array; ly: Float64Array; rx: Float64Array; ry: Float64Array; h: Float64Array; cx: Float64Array; cy: Float64Array } | null {
-  const polyline = resample(rawPolyline, cell);
-  const n = polyline.length;
-  if (n < 2) return null;
-  const half = width / 2;
-  const lx = new Float64Array(n), ly = new Float64Array(n);
-  const rx = new Float64Array(n), ry = new Float64Array(n);
-  const cx = new Float64Array(n), cy = new Float64Array(n);
-  const h = new Float64Array(n);
-  const along = new Float64Array(n);
-
-  for (let i = 0; i < n; i++) {
-    const px = polyline[i]![0];
-    const py = polyline[i]![1];
-    if (i > 0) along[i] = along[i - 1]! + Math.hypot(px - polyline[i - 1]![0], py - polyline[i - 1]![1]);
-    let nx = 0, ny = 0;
-    for (let j = i - 1; j <= i; j++) {
-      const a = polyline[j];
-      const b = polyline[j + 1];
-      if (!a || !b) continue;
-      const dx = b[0] - a[0];
-      const dy = b[1] - a[1];
-      const l = Math.hypot(dx, dy) || 1;
-      nx += -dy / l;
-      ny += dx / l;
-    }
-    const nl = Math.hypot(nx, ny) || 1;
-    cx[i] = px; cy[i] = py;
-    lx[i] = px + (nx / nl) * half; ly[i] = py + (ny / nl) * half;
-    rx[i] = px - (nx / nl) * half; ry[i] = py - (ny / nl) * half;
-  }
-
-  const total = along[n - 1]! || 1;
-  const hA = ground(polyline[0]![0], polyline[0]![1]) + liftA;
-  const hB = ground(polyline[n - 1]![0], polyline[n - 1]![1]) + liftB;
-  for (let i = 0; i < n; i++) {
-    const g = ground(cx[i]!, cy[i]!);
-    h[i] = Math.max(g, hA + (hB - hA) * (along[i]! / total));
-  }
-  return { lx, ly, rx, ry, h, cx, cy };
 }
 
 /** Slab sides and soffit, edge barriers, and piers down to the ground. */

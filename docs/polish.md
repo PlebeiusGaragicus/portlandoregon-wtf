@@ -27,9 +27,16 @@ roughly ordered by visible payoff. Deployment/gameplay backlogs live in
 
 ## FPV feel
 
-4. **Curbs aren't solid.** FPV collision knows terrain and roofs only; the
-   14 cm sidewalk slab passes through your feet. Add sidewalk tops to
-   `support()` if it ever reads wrong.
+4. **Curbs aren't solid.** FPV collision knows terrain, roofs and now bridge
+   decks; the 14 cm sidewalk slab still passes through your feet. Add
+   sidewalk tops to `support()` if it ever reads wrong.
+
+   Bridges are walkable as of 2026-08-07. `SolidIndex` gained `base` and
+   `platform`: a deck holds you up but has no volume, so walking *under* an
+   overpass is unobstructed, while the barriers are real walls standing on
+   the deck so you cannot step off the side. Both come from the same
+   `deckStations` the renderer draws (`client/src/render/deck.ts`) — if they
+   ever diverge you fall through a bridge you can see.
 5. **Vehicles drive through the player.** Small player push-out (or a honk)
    when traffic passes through you.
 

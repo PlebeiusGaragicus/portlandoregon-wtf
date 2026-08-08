@@ -10,6 +10,16 @@ import {
 } from "@portlandoregon/shared";
 import type { CityModel } from "../city.js";
 import { toScene } from "./camera.js";
+import {
+  deckLift,
+  deckStations,
+  DECK_SURFACE_Y,
+  RENDER_WIDTH,
+  DECK_THICKNESS,
+  PARAPET_HEIGHT,
+  PARAPET_WIDTH,
+  type GroundFn,
+} from "./deck.js";
 
 // First-person walk/fly mode. Physics runs in world meters (x east, y north,
 // z up); the camera is derived each frame. Buildings are solid: walls block
@@ -42,6 +52,17 @@ interface Solid {
   segs: number[];
   /** Absolute roof height (matches the rendered prism top). */
   top: number;
+  /**
+   * Bottom of the solid volume. Buildings run to the ground, so -Infinity;
+   * a bridge deck floats, and walking UNDER one must not hit anything.
+   */
+  base: number;
+  /**
+   * A surface with no volume — you stand on it, you never collide with its
+   * edges. Without this a deck's outline becomes an invisible wall under
+   * every overpass in the city.
+   */
+  platform: boolean;
 }
 
 /** Uniform-grid index of building prisms for FPV collision + roof support. */
@@ -54,7 +75,81 @@ class SolidIndex {
   private cols: number;
   private rows: number;
 
-  constructor(map: GameMap, store: BuildingStore, city: CityModel) {
+  /** Register one convex quad as a solid, in the same grid as the buildings. */
+  private addQuad(
+    quad: readonly [number, number][],
+    top: number,
+    base: number,
+    platform: boolean,
+  ): void {
+    let xmin = Infinity, ymin = Infinity, xmax = -Infinity, ymax = -Infinity;
+    const segs: number[] = [];
+    for (let i = 0; i < quad.length; i++) {
+      const [x1, y1] = quad[i]!;
+      const [x2, y2] = quad[(i + 1) % quad.length]!;
+      segs.push(x1, y1, x2, y2);
+      xmin = Math.min(xmin, x1); ymin = Math.min(ymin, y1);
+      xmax = Math.max(xmax, x1); ymax = Math.max(ymax, y1);
+    }
+    const index = this.solids.length;
+    this.solids.push({ xmin, ymin, xmax, ymax, segs, top, base, platform });
+    const c0 = this.clampC(Math.floor(xmin / CELL));
+    const c1 = this.clampC(Math.floor(xmax / CELL));
+    const r0 = this.clampR(Math.floor(ymin / CELL));
+    const r1 = this.clampR(Math.floor(ymax / CELL));
+    for (let r = r0; r <= r1; r++) {
+      for (let c = c0; c <= c1; c++) {
+        const key = r * this.cols + c;
+        const list = this.grid.get(key);
+        if (list) list.push(index);
+        else this.grid.set(key, [index]);
+      }
+    }
+  }
+
+  /**
+   * Bridge decks, from the same deckStations the renderer draws. One walkable
+   * quad per cross-section, plus the barriers as real walls so you cannot
+   * stroll off the side of the Burnside.
+   *
+   * Decks are platforms: they hold you up and nothing more. Giving them
+   * volume would wall off the road underneath every overpass.
+   */
+  private addBridges(map: GameMap, terrain: GroundFn, cell: number): void {
+    for (const edge of map.edges) {
+      if (edge.struct !== "bridge") continue;
+      const [la, lb] = deckLift(edge);
+      const width = RENDER_WIDTH[edge.class] ?? edge.width;
+      const s = deckStations(edge.polyline, width, terrain, cell, la, lb);
+      if (!s) continue;
+      const { lx, ly, rx, ry, h } = s;
+      for (let i = 0; i < h.length - 1; i++) {
+        // The walkable surface matches the rendered road exactly.
+        const deck = Math.max(h[i]!, h[i + 1]!) + DECK_SURFACE_Y;
+        this.addQuad(
+          [[lx[i]!, ly[i]!], [rx[i]!, ry[i]!], [rx[i + 1]!, ry[i + 1]!], [lx[i + 1]!, ly[i + 1]!]],
+          deck,
+          Math.min(h[i]!, h[i + 1]!) - DECK_THICKNESS,
+          true,
+        );
+        // Barriers, thin volumes standing on the deck. Base at deck level so
+        // they never block anyone walking underneath.
+        const inset = PARAPET_WIDTH / (width / 2);
+        for (const [ex, ey] of [[lx, ly], [rx, ry]] as const) {
+          const ix = (k: number): number => ex[k]! + (s.cx[k]! - ex[k]!) * inset;
+          const iy = (k: number): number => ey[k]! + (s.cy[k]! - ey[k]!) * inset;
+          this.addQuad(
+            [[ex[i]!, ey[i]!], [ix(i), iy(i)], [ix(i + 1), iy(i + 1)], [ex[i + 1]!, ey[i + 1]!]],
+            Math.max(h[i]!, h[i + 1]!) + PARAPET_HEIGHT,
+            Math.min(h[i]!, h[i + 1]!),
+            false,
+          );
+        }
+      }
+    }
+  }
+
+  constructor(map: GameMap, store: BuildingStore, city: CityModel, terrain: GroundFn, cell: number) {
     this.cols = Math.max(1, Math.ceil(map.meta.width / CELL));
     this.rows = Math.max(1, Math.ceil(map.meta.height / CELL));
     // Solid index == building store index (see `dead`), which is also the city
@@ -83,7 +178,12 @@ class SolidIndex {
       }
       // The city model sinks the prism base 1 m (so uphill walls show no gap);
       // the roof you can stand on is the visible top, so add it back.
-      this.solids.push({ xmin, ymin, xmax, ymax, segs, top: city.baseZ[bi]! + 1 + buildingHeight(store, bi) });
+      this.solids.push({
+        xmin, ymin, xmax, ymax, segs,
+        top: city.baseZ[bi]! + 1 + buildingHeight(store, bi),
+        base: -Infinity,
+        platform: false,
+      });
       const c0 = this.clampC(Math.floor(xmin / CELL));
       const c1 = this.clampC(Math.floor(xmax / CELL));
       const r0 = this.clampR(Math.floor(ymin / CELL));
@@ -97,6 +197,9 @@ class SolidIndex {
         }
       }
     }
+    // Bridges come after, so `dead` and the building indices above stay
+    // one-to-one with the building store.
+    this.addBridges(map, terrain, cell);
   }
 
   private clampC(c: number): number {
@@ -132,7 +235,7 @@ class SolidIndex {
   blocked(ax: number, ay: number, bx: number, by: number, z: number): boolean {
     let hit = false;
     this.each(Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by), (s) => {
-      if (hit || z >= s.top - STEP) return;
+      if (hit || s.platform || z >= s.top - STEP || z < s.base - STEP) return;
       const e = s.segs;
       for (let i = 0; i < e.length; i += 4) {
         if (segsIntersect(ax, ay, bx, by, e[i]!, e[i + 1]!, e[i + 2]!, e[i + 3]!)) {
@@ -161,7 +264,7 @@ class SolidIndex {
     for (let pass = 0; pass < 2; pass++) {
       let moved = false;
       this.each(x - r, y - r, x + r, y + r, (s) => {
-        if (z >= s.top - STEP) return;
+        if (s.platform || z >= s.top - STEP || z < s.base - STEP) return;
         const e = s.segs;
         for (let i = 0; i < e.length; i += 4) {
           const ax = e[i]!;
@@ -263,7 +366,7 @@ export class FpvMode {
     dropHeight = 0,
   ) {
     this.terrain = hf ? (x, y) => heightAt(hf, x, y) : () => 0;
-    this.solids = new SolidIndex(map, store, city);
+    this.solids = new SolidIndex(map, store, city, this.terrain, hf ? hf.cellSize : Infinity);
     this.mapW = map.meta.width;
     this.mapH = map.meta.height;
     this.x = start.x;

@@ -6,7 +6,13 @@
 //
 //   npm run test:bridges
 import { existsSync, readFileSync } from "node:fs";
-import { deckStations } from "../client/src/render/world.js";
+import {
+  deckLift,
+  deckStations,
+  DECK_SURFACE_Y,
+  PARAPET_HEIGHT,
+  RENDER_WIDTH,
+} from "../client/src/render/deck.js";
 
 let failures = 0;
 function check(label: string, ok: boolean, detail = ""): void {
@@ -56,6 +62,47 @@ console.log("\ndegenerate input");
 {
   check("a single point makes no deck", deckStations([[0, 0]], 11, () => 0, 30) === null);
   check("an empty line makes no deck", deckStations([], 11, () => 0, 30) === null);
+}
+
+// Collision must agree with what is drawn. The renderer and the FPV solid
+// index both consume deckStations, so this pins the contract between them:
+// the walkable surface is the deck line plus the decal offset, the barrier
+// stands a person's height above it, and neither has volume below the slab
+// (or every overpass walls off the road beneath it).
+console.log("\nwalkable surface");
+{
+  const s = deckStations([[0, 0], [400, 0]], RENDER_WIDTH.arterial, (x) => (x > 80 && x < 320 ? -6 : 10), 30)!;
+  const n = s.h.length;
+
+  let below = 0;
+  for (let i = 0; i < n; i++) if (s.h[i]! + DECK_SURFACE_Y <= s.h[i]!) below++;
+  check("the walkable surface sits on the deck line", below === 0);
+
+  // Standing on the deck, the barrier must be above head height relative to
+  // the surface you are standing on.
+  const surface = s.h[Math.floor(n / 2)]! + DECK_SURFACE_Y;
+  const barrier = s.h[Math.floor(n / 2)]! + PARAPET_HEIGHT;
+  check("the barrier stands above the walking surface", barrier > surface + 0.9, `${(barrier - surface).toFixed(2)} m`);
+
+  // Mid-span the deck is well clear of the terrain, which is what makes the
+  // deck a platform rather than a slab lying on the ground.
+  const mid = Math.floor(n / 2);
+  check("mid-span deck is clear of the ground", s.h[mid]! - -6 > 10, `${(s.h[mid]! + 6).toFixed(1)} m of air`);
+
+  // Deck width is what collision uses for the walkable quad, so an edge that
+  // renders wide must collide wide.
+  const w = Math.hypot(s.lx[0]! - s.rx[0]!, s.ly[0]! - s.ry[0]!);
+  check("collision width matches render width", Math.abs(w - RENDER_WIDTH.arterial) < 1e-6, `${w.toFixed(2)} m`);
+}
+
+console.log("\nlift");
+{
+  check("a non-bridge never lifts", deckLift({ struct: undefined, zlev: [3, 3] }).every((v) => v === 0));
+  check("a level-1 bridge does not lift", deckLift({ struct: "bridge", zlev: [1, 1] }).every((v) => v === 0));
+  const two = deckLift({ struct: "bridge", zlev: [2, 2] });
+  check("a level-2 bridge clears a road below", two[0] > 5 && two[0] === two[1], `${two[0]} m`);
+  const ramp = deckLift({ struct: "bridge", zlev: [2, 1] });
+  check("a ramp lifts only its upper end", ramp[0] > 0 && ramp[1] === 0, `${ramp[0]} -> ${ramp[1]}`);
 }
 
 // Against the real extract, if one is present. This is the check that would
