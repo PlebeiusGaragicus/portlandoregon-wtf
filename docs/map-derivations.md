@@ -70,6 +70,24 @@ the source is a surveyor's record rather than a network.
   `CFCC` is missing.
 - **Grade separation** from `STRUC_TYPE`: 21 viaduct / 23 bridge → `bridge`,
   32 → `tunnel`. Tunnels are not rendered.
+- **Deck level from `F_ZLEV`/`T_ZLEV`**, resolved **per node, lowest wins**.
+  This is the only thing that says an overpass is above the road it crosses —
+  the 30 m DEM does not resolve the cut beneath it, so terrain alone leaves
+  every land bridge lying flat on the ground (measured: only 0.9% of bridge
+  legs got any clearance before this). Two edges meeting at a node are
+  physically joined there, so if they disagree about level the road steps
+  vertically; 1,002 nodes in the metro disagree. Taking the **lowest** level
+  claimed at a node makes the network continuous by construction and never
+  lifts a road that is genuinely at grade. `LEVEL_HEIGHT` is 6.5 m in the
+  renderer (≈4.9 m standard highway clearance plus the slab).
+
+  **Consequence, accepted deliberately:** lowest-wins collapses a short
+  overpass whose *both* ends touch grade roads, so 32% of bridge legs end up
+  elevated rather than the 89% that `max` would give. `max` was measured and
+  rejected: it raises 1,902 at-grade roads, 413 of them steeper than 15% and
+  the worst effectively vertical on a short edge. Absurd geometry on ordinary
+  streets is a worse artefact than a flat short overpass. Viaducts and every
+  river crossing elevate correctly under `min`.
 
 ## 3. Buildings
 

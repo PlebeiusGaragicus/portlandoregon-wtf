@@ -39,6 +39,13 @@ export interface StreetEdge {
   /** Grade separation (from Portland's STRUC_TYPE): bridges/viaducts span
    * between endpoint heights; tunnels are not rendered. Absent = at grade. */
   struct?: "bridge" | "tunnel";
+  /**
+   * Deck level at each end, from Portland's F_ZLEV/T_ZLEV. 1 is grade, 2 is
+   * one level up, and so on. This is the only thing that says an overpass is
+   * above the road it crosses: the 30 m DEM does not resolve the cut beneath
+   * it, so terrain alone leaves every land bridge lying flat on the ground.
+   */
+  zlev?: [number, number];
 }
 
 /** Normalized building category, for palette/gameplay variety. */

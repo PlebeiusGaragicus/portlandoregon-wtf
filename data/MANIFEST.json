@@ -124,7 +124,7 @@
   },
   "bakedMap": {
     "file": "data/maps/portland.json.gz",
-    "kind": "gz-asset (139.2 MB raw, 30.4 MB gz)",
+    "kind": "gz-asset (140.2 MB raw, 30.4 MB gz)",
     "meta": {
       "name": "portland",
       "sourceDate": "2026-08-04",

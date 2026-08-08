@@ -21,6 +21,7 @@ import {
   type RailLine,
   type RailStop,
   type RoadClass,
+  type StreetEdge,
   type StreetStore,
   type WaterBody,
 } from "@portlandoregon/shared";
@@ -410,9 +411,10 @@ function createDetailTiles(
         const i = streetIdx[at]!;
         const e = edges.edge(i);
         if (e.struct === "tunnel") continue; // roads vanish into the hillside
+        const [la, lb] = deckLift(e);
         pushRibbon(
           soup.pos, e.polyline, RENDER_WIDTH[e.class] ?? e.width, DECAL_Y, ground, cell,
-          e.struct === "bridge" || overWater(e.polyline),
+          e.struct === "bridge" || overWater(e.polyline), RIBBON_STEP, la, lb,
         );
       }
       if (soup.pos.length) meshes.push(...order([soupMesh(soup, streetMat)], DECAL_ORDER.street));
@@ -2185,7 +2187,8 @@ function* streetTiles(
     for (const index of list) {
       const edge = edges.edge(index);
       const span = edge.struct === "bridge" || overWater(edge.polyline);
-      pushRibbon(soup.pos, edge.polyline, RENDER_WIDTH[edge.class] ?? edge.width, DECAL_Y, ground, cell, span, step);
+      const [la, lb] = deckLift(edge);
+      pushRibbon(soup.pos, edge.polyline, RENDER_WIDTH[edge.class] ?? edge.width, DECAL_Y, ground, cell, span, step, la, lb);
     }
     yield soupMesh(soup, mat);
   }
@@ -2275,6 +2278,8 @@ function pushRibbon(
   cell: number,
   span = false,
   step = RIBBON_STEP,
+  liftA = 0,
+  liftB = 0,
 ): void {
   if (rawPolyline.length < 2) return;
   const polyline = resample(rawPolyline, cell, step);
@@ -2318,8 +2323,8 @@ function pushRibbon(
 
   // One height sample per row point, not one per quad corner.
   const total = along[n - 1]! || 1;
-  const hA = ground(polyline[0]![0], polyline[0]![1]);
-  const hB = ground(polyline[n - 1]![0], polyline[n - 1]![1]);
+  const hA = ground(polyline[0]![0], polyline[0]![1]) + liftA;
+  const hB = ground(polyline[n - 1]![0], polyline[n - 1]![1]) + liftB;
   for (let r = 0; r < 3; r++) {
     const xs = X[r]!;
     const ys = Y[r]!;
@@ -2400,6 +2405,21 @@ const PIER_HALF_WIDTH = 1.7;
 /** Below this much air under the slab, a pier would be a kerb. */
 const PIER_MIN_CLEARANCE = 2.5;
 const BRIDGE_COLOR = 0x6d6c68; // weathered structural concrete
+/**
+ * Height of one grade-separation level. Standard highway vertical clearance
+ * is ~4.9 m; adding the slab puts the upper road surface here above the lower
+ * one, which is what ZLEV 2 means.
+ */
+const LEVEL_HEIGHT = 6.5;
+
+/** Metres to raise each end of a deck, from its resolved grade level. Only
+ * spans lift: a road merely marked level 2 without a bridge structure is not
+ * something we can hold up. */
+export function deckLift(edge: Pick<StreetEdge, "struct" | "zlev">): [number, number] {
+  if (edge.struct !== "bridge") return [0, 0];
+  const z = edge.zlev ?? [1, 1];
+  return [Math.max(0, z[0] - 1) * LEVEL_HEIGHT, Math.max(0, z[1] - 1) * LEVEL_HEIGHT];
+}
 
 /** Push a flat quad (a-b-c-d, counter-clockwise seen from outside) with one
  * face normal. World coords in, scene coords out. */
@@ -2437,6 +2457,8 @@ export function deckStations(
   width: number,
   ground: GroundFn,
   cell: number,
+  liftA = 0,
+  liftB = 0,
 ): { lx: Float64Array; ly: Float64Array; rx: Float64Array; ry: Float64Array; h: Float64Array; cx: Float64Array; cy: Float64Array } | null {
   const polyline = resample(rawPolyline, cell);
   const n = polyline.length;
@@ -2470,8 +2492,8 @@ export function deckStations(
   }
 
   const total = along[n - 1]! || 1;
-  const hA = ground(polyline[0]![0], polyline[0]![1]);
-  const hB = ground(polyline[n - 1]![0], polyline[n - 1]![1]);
+  const hA = ground(polyline[0]![0], polyline[0]![1]) + liftA;
+  const hB = ground(polyline[n - 1]![0], polyline[n - 1]![1]) + liftB;
   for (let i = 0; i < n; i++) {
     const g = ground(cx[i]!, cy[i]!);
     h[i] = Math.max(g, hA + (hB - hA) * (along[i]! / total));
@@ -2486,8 +2508,10 @@ function pushBridge(
   width: number,
   ground: GroundFn,
   cell: number,
+  liftA = 0,
+  liftB = 0,
 ): void {
-  const s = deckStations(rawPolyline, width, ground, cell);
+  const s = deckStations(rawPolyline, width, ground, cell, liftA, liftB);
   if (!s) return;
   const { lx, ly, rx, ry, h, cx, cy } = s;
   const n = h.length;
@@ -2586,7 +2610,8 @@ function* buildBridges(
     const soup: Soup = { pos: [], nrm: [] };
     for (const index of list) {
       const edge = edges.edge(index);
-      pushBridge(soup, edge.polyline, RENDER_WIDTH[edge.class] ?? edge.width, ground, cell);
+      const [la, lb] = deckLift(edge);
+      pushBridge(soup, edge.polyline, RENDER_WIDTH[edge.class] ?? edge.width, ground, cell, la, lb);
     }
     yield soup.pos.length ? soupMesh(soup, material, true, false) : null;
   }

@@ -79,12 +79,20 @@ interface RawEdge {
   cls: RoadClass;
   /** From STRUC_TYPE: 21 viaduct / 23 bridge -> "bridge"; 32 -> "tunnel". */
   struct?: "bridge" | "tunnel";
+  /** F_ZLEV / T_ZLEV. 1 = grade. Carried through so overpasses can rise. */
+  zlev: [number, number];
 }
 
 interface RawGraph {
   edges: RawEdge[];
   nodePos: Map<number, Pt>;
   nodeZ: Map<number, Set<number>>;
+}
+
+/** Missing ZLEV means at grade. */
+function zlevOf(v: unknown): number {
+  const n = Number(v ?? NaN);
+  return Number.isFinite(n) ? n : 1;
 }
 
 function buildGraph(streets: GeoJsonCollection): RawGraph {
@@ -122,6 +130,7 @@ function buildGraph(streets: GeoJsonCollection): RawGraph {
       line,
       name: String(p["FULL_NAME"] ?? ""),
       cls: roadClass(p["CFCC"], p["TYPE"]),
+      zlev: [zlevOf(p["F_ZLEV"]), zlevOf(p["T_ZLEV"])],
       ...(st === 21 || st === 23 ? { struct: "bridge" as const } : st === 32 ? { struct: "tunnel" as const } : {}),
     });
   }
@@ -317,9 +326,32 @@ function transformStreets(streets: GeoJsonCollection, rect: Rect) {
       width: ROAD_WIDTH[e.cls],
       name: e.name,
       class: e.cls,
+      zlev: startIn && endIn ? e.zlev : [e.zlev[0], e.zlev[0]],
       ...(e.struct ? { struct: e.struct } : {}),
     });
   }
+
+  // Grade separation is resolved per NODE, not per edge end. Two edges
+  // meeting at a node are physically joined there, so if they disagree about
+  // the level the road steps vertically — 1002 such nodes in the metro, each
+  // a 6.5 m cliff mid-street. Taking the LOWEST level claimed at a node makes
+  // the network continuous by construction and never lifts a road that is
+  // genuinely at grade: a viaduct's interior nodes stay elevated because
+  // every edge there claims the upper level, while its end comes down to meet
+  // the street it lands on, which is what an approach ramp does anyway.
+  const nodeLevel = new Map<number, number>();
+  for (const e of edges) {
+    for (const [node, level] of [[e.a, e.zlev![0]], [e.b, e.zlev![1]]] as const) {
+      const current = nodeLevel.get(node);
+      if (current === undefined || level < current) nodeLevel.set(node, level);
+    }
+  }
+  let lifted = 0;
+  for (const e of edges) {
+    e.zlev = [nodeLevel.get(e.a) ?? 1, nodeLevel.get(e.b) ?? 1];
+    if (e.zlev[0] > 1 || e.zlev[1] > 1) lifted++;
+  }
+  console.log(`  streets: ${lifted} edges sit above grade after node level resolution`);
 
   // Entry candidates: boundary nodes on the north/south map edges.
   const margin = 2; // m

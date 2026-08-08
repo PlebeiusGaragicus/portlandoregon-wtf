@@ -5,6 +5,7 @@
 // if it sags the piers point at the riverbed instead of holding the deck up.
 //
 //   npm run test:bridges
+import { existsSync, readFileSync } from "node:fs";
 import { deckStations } from "../client/src/render/world.js";
 
 let failures = 0;
@@ -55,6 +56,32 @@ console.log("\ndegenerate input");
 {
   check("a single point makes no deck", deckStations([[0, 0]], 11, () => 0, 30) === null);
   check("an empty line makes no deck", deckStations([], 11, () => 0, 30) === null);
+}
+
+// Against the real extract, if one is present. This is the check that would
+// have caught the first attempt: the structure was correct but hung on a rule
+// that lifted almost nothing, so 98% of bridges rendered as a slab buried in
+// the terrain and it looked exactly like the flat decks it replaced.
+console.log("\nreal extract");
+{
+  const core = "data/processed/2026-08-04-portland/portland-core.json";
+  if (!existsSync(core)) {
+    console.log("  --  skipped (no local extract; run the transform stage first)");
+  } else {
+    const map = JSON.parse(readFileSync(core, "utf8")) as {
+      edges: { polyline: [number, number][]; struct?: string; zlev?: [number, number] }[];
+    };
+    const spans = map.edges.filter((e) => e.struct === "bridge");
+    const elevated = spans.filter((e) => (e.zlev?.[0] ?? 1) > 1 || (e.zlev?.[1] ?? 1) > 1);
+    check("the extract carries bridges", spans.length > 1000, `${spans.length} legs`);
+    check(
+      "a real share of them sit above grade",
+      elevated.length / spans.length > 0.25,
+      `${elevated.length}/${spans.length} (${((elevated.length / spans.length) * 100).toFixed(0)}%)`,
+    );
+    // Terrain alone lifts almost nothing, so without ZLEV this collapses.
+    check("grade levels survived the bake", map.edges.some((e) => (e.zlev?.[0] ?? 1) > 1), "found level 2+");
+  }
 }
 
 console.log(failures === 0 ? "\nall checks passed" : `\n${failures} FAILED`);
