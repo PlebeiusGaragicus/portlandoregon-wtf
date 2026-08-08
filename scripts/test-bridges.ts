@@ -76,7 +76,7 @@ console.log("\nreal extract");
     check("the extract carries bridges", spans.length > 1000, `${spans.length} legs`);
     check(
       "a real share of them sit above grade",
-      elevated.length / spans.length > 0.25,
+      elevated.length / spans.length > 0.7,
       `${elevated.length}/${spans.length} (${((elevated.length / spans.length) * 100).toFixed(0)}%)`,
     );
     // Terrain alone lifts almost nothing, so without ZLEV this collapses.

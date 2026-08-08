@@ -331,27 +331,23 @@ function transformStreets(streets: GeoJsonCollection, rect: Rect) {
     });
   }
 
-  // Grade separation is resolved per NODE, not per edge end. Two edges
-  // meeting at a node are physically joined there, so if they disagree about
-  // the level the road steps vertically — 1002 such nodes in the metro, each
-  // a 6.5 m cliff mid-street. Taking the LOWEST level claimed at a node makes
-  // the network continuous by construction and never lifts a road that is
-  // genuinely at grade: a viaduct's interior nodes stay elevated because
-  // every edge there claims the upper level, while its end comes down to meet
-  // the street it lands on, which is what an approach ramp does anyway.
-  const nodeLevel = new Map<number, number>();
-  for (const e of edges) {
-    for (const [node, level] of [[e.a, e.zlev![0]], [e.b, e.zlev![1]]] as const) {
-      const current = nodeLevel.get(node);
-      if (current === undefined || level < current) nodeLevel.set(node, level);
-    }
-  }
+  // Grade separation stays exactly as the source claims it, per edge end.
+  //
+  // An earlier version resolved this per node, taking the lowest level any
+  // incident edge claimed, on the theory that a disagreement was a vertical
+  // step in a road. Measured, it is not: of the 1002 nodes where levels
+  // disagree, 966 are two DIFFERENT roads crossing — which is precisely what
+  // grade separation means and should stay stepped — and only 36 are one
+  // named road at two levels, all of them ramp junctions that already carry
+  // both. Lowest-wins therefore dragged viaducts down to grade wherever a
+  // street happened to touch them, putting a dip in the middle of the deck:
+  // the bridge dived under the road it was supposed to cross.
+  //
+  // Only spans are lifted at render time, so an at-grade road cannot be
+  // raised by this no matter what it claims.
   let lifted = 0;
-  for (const e of edges) {
-    e.zlev = [nodeLevel.get(e.a) ?? 1, nodeLevel.get(e.b) ?? 1];
-    if (e.zlev[0] > 1 || e.zlev[1] > 1) lifted++;
-  }
-  console.log(`  streets: ${lifted} edges sit above grade after node level resolution`);
+  for (const e of edges) if (e.zlev![0] > 1 || e.zlev![1] > 1) lifted++;
+  console.log(`  streets: ${lifted} edges claim a level above grade`);
 
   // Entry candidates: boundary nodes on the north/south map edges.
   const margin = 2; // m

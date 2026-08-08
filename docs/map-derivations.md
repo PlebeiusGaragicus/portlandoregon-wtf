@@ -70,24 +70,31 @@ the source is a surveyor's record rather than a network.
   `CFCC` is missing.
 - **Grade separation** from `STRUC_TYPE`: 21 viaduct / 23 bridge → `bridge`,
   32 → `tunnel`. Tunnels are not rendered.
-- **Deck level from `F_ZLEV`/`T_ZLEV`**, resolved **per node, lowest wins**.
-  This is the only thing that says an overpass is above the road it crosses —
-  the 30 m DEM does not resolve the cut beneath it, so terrain alone leaves
-  every land bridge lying flat on the ground (measured: only 0.9% of bridge
-  legs got any clearance before this). Two edges meeting at a node are
-  physically joined there, so if they disagree about level the road steps
-  vertically; 1,002 nodes in the metro disagree. Taking the **lowest** level
-  claimed at a node makes the network continuous by construction and never
-  lifts a road that is genuinely at grade. `LEVEL_HEIGHT` is 6.5 m in the
-  renderer (≈4.9 m standard highway clearance plus the slab).
+- **Deck level from `F_ZLEV`/`T_ZLEV`**, kept exactly as claimed, per edge
+  end. This is the only thing that says an overpass is above the road it
+  crosses — the 30 m DEM does not resolve the cut beneath it, so terrain alone
+  leaves every land bridge lying flat on the ground (measured: only 0.9% of
+  bridge legs got any clearance before this). `LEVEL_HEIGHT` is 6.5 m in the
+  renderer (≈4.9 m standard highway clearance plus the slab). Only edges with
+  `struct: "bridge"` are lifted at render time, so a road that merely claims a
+  level cannot float.
 
-  **Consequence, accepted deliberately:** lowest-wins collapses a short
-  overpass whose *both* ends touch grade roads, so 32% of bridge legs end up
-  elevated rather than the 89% that `max` would give. `max` was measured and
-  rejected: it raises 1,902 at-grade roads, 413 of them steeper than 15% and
-  the worst effectively vertical on a short edge. Absurd geometry on ordinary
-  streets is a worse artefact than a flat short overpass. Viaducts and every
-  river crossing elevate correctly under `min`.
+  **A rejected rule worth recording, because it looked right and was wrong.**
+  Levels were briefly resolved per node, taking the lowest any incident edge
+  claimed, on the theory that disagreement between two edges meeting at a node
+  meant a vertical step in a road. Measured, it does not: of the 1,002 nodes
+  where levels disagree, **966 are two different roads crossing** — which is
+  exactly what grade separation is, and should stay stepped — and only 36 are
+  one named road at two levels, all ramp junctions already carrying both.
+  Lowest-wins therefore dragged viaducts down to grade wherever a street
+  happened to touch one, putting a dip in the middle of the deck: the bridge
+  dived under the road it was meant to cross. It also elevated only 32% of
+  bridge legs against 89% for the faithful rule.
+
+  **Accepted cost:** 471 segments ramp between levels, 33 of them steeper than
+  40% — the worst climbs 6.5 m over a 5 m stub at a freeway ramp junction.
+  These are short kinks at already-dense interchange geometry. Smoothing a
+  transition across neighbouring segments would fix them and is not done.
 
 ## 3. Buildings
 
