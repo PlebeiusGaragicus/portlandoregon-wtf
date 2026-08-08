@@ -5,6 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
+  BridgeDeck,
   Building,
   GameMap,
   MarkingArea,
@@ -693,6 +694,49 @@ function transformMarkings(rect: Rect): { areas: MarkingArea[]; lines: MarkingLi
 // Candidate size fields for street trees (exact schema discovered at runtime).
 const TREE_SIZE_FIELDS = ["DBH", "DIAMETER", "TREE_DBH", "TRUNKDIAM", "DIAMETER_BREAST_HEIGHT"];
 
+/**
+ * Bridge decks. Two source layers: 520 road bridges (no name at source) and
+ * the 13 Willamette crossings, which are the only bridges the city publishes
+ * with a NAME. Both are polygons — real deck outlines, not the street ribbon
+ * — so they carry the width and shape the street graph cannot.
+ */
+function transformBridges(rect: Rect): BridgeDeck[] {
+  const out: BridgeDeck[] = [];
+  const read = (key: string, kind: BridgeDeck["kind"], nameField?: string): void => {
+    const raw = readRaw(key);
+    if (!raw) return;
+    let count = 0;
+    for (const f of raw.features) {
+      if (!f.geometry) continue;
+      const name = nameField ? String(f.properties[nameField] ?? "").trim() : "";
+      const polys: [number, number][][][] =
+        f.geometry.type === "Polygon"
+          ? [f.geometry.coordinates as [number, number][][]]
+          : (f.geometry.coordinates as [number, number][][][]);
+      for (const rings of polys) {
+        const clipped = rings
+          .map((ring) => {
+            const local = ring.map(([lon, lat]) => toLocal(lon, lat));
+            return simplify(clipRingToRect(local, rect), 1).map(
+              ([x, y]): [number, number] => [round1(x), round1(y)],
+            );
+          })
+          .filter((ring) => ring.length >= 3);
+        if (clipped.length === 0 || clipped[0]!.length < 3) continue;
+        const outer = ensureWinding(clipped[0]!, true);
+        const holes = clipped.slice(1).map((r) => ensureWinding(r, false));
+        out.push({ id: out.length, rings: [outer, ...holes], kind, ...(name ? { name } : {}) });
+        count++;
+      }
+    }
+    console.log(`  ${key}: ${count} decks in play area`);
+  };
+  // River bridges first so a Willamette crossing keeps the lower id.
+  read("riverbridges", "river", "NAME");
+  read("bridges", "road");
+  return out;
+}
+
 function transformProps(rect: Rect): Prop[] {
   const props: Prop[] = [];
 
@@ -819,6 +863,7 @@ async function main(): Promise<void> {
   const railYards = transformPolys("railyards", rect);
   const railStops = transformRailStops(rect);
   const sidewalks = transformPolys("sidewalks", rect);
+  const bridges = transformBridges(rect);
   const markings = transformMarkings(rect);
 
   // The source striping runs straight through every crossing; clear it out of
@@ -853,6 +898,7 @@ async function main(): Promise<void> {
     sidewalks,
     markingAreas: markings.areas,
     markingLines: trimmed.lines,
+    bridges,
   };
 
   mkdirSync(processedDir(), { recursive: true });
@@ -900,6 +946,8 @@ async function main(): Promise<void> {
       sidewalks: sidewalks.length,
       markingAreas: markings.areas.length,
       markingLines: trimmed.lines.length,
+      bridges: bridges.length,
+      namedBridges: bridges.filter((b) => b.name).length,
     },
   };
   writeFileSync(MANIFEST_FILE, JSON.stringify(manifest, null, 2) + "\n");

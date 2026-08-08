@@ -114,6 +114,20 @@ export interface MarkingLine {
 }
 
 /** Named civic point of interest, drawn with a label. */
+/**
+ * A bridge deck outline. The street graph already spans bridges between
+ * endpoint heights; this carries the real deck footprint and, for the 13
+ * Willamette crossings, the name — the only bridge layer the city publishes
+ * with one.
+ */
+export interface BridgeDeck {
+  id: number;
+  rings: [number, number][][];
+  /** Willamette crossings only; the 520 road bridges are unnamed at source. */
+  name?: string;
+  kind: "river" | "road";
+}
+
 export interface Landmark {
   id: number;
   kind: "fire-station" | "police" | "hospital" | "city-hall" | "school";
@@ -158,4 +172,5 @@ export interface GameMap {
   markingAreas?: MarkingArea[];
   /** Painted lane centerlines (render-only). */
   markingLines?: MarkingLine[];
+  bridges?: BridgeDeck[];
 }

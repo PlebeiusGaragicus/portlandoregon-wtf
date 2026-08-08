@@ -169,6 +169,27 @@ lines in/out, touched/split/dropped) go to the manifest under
 
 Covered by `npm run test:junction-trim`.
 
+## 4b. Bridge decks (added 2026-08-07)
+
+Two source layers merged into one `bridges` layer, both polygons — real deck
+outlines, which carry width and shape the street graph cannot:
+
+- `COP_OpenData_Transportation/79` "Bridges", 520 in bounds, unnamed at source.
+- `COP_OpenData_Transportation/80` "River Bridges", 13 features — **the only
+  bridge layer the city publishes with a `NAME`**, and the reason this layer
+  exists. River bridges are read first so a Willamette crossing keeps the
+  lower id.
+
+Clipped to the play area and simplified at 1 m. Yields 541 decks, 14 named
+across 13 distinct names: Glen Jackson is a genuine twin span and arrives as a
+MultiPolygon, so anything labelling bridges must dedupe by name.
+
+**Not yet resolved: decks have no elevation.** The source polygons are flat at
+ground level, so draped on terrain they sit *in* the river. Placing them needs
+the `STRUC_TYPE` 21/23 street spans that cross each polygon, interpolated —
+which is the "bridges are paper" job in `docs/polish.md` item 3, not part of
+this extraction.
+
 ## 5. Everything else
 
 | Layer | Simplification | Notes |

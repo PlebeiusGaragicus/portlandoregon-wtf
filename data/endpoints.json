@@ -1,5 +1,5 @@
 {
-  "resolvedAt": "2026-08-05T05:23:56.015Z",
+  "resolvedAt": "2026-08-08T04:22:23.201Z",
   "layers": {
     "streets": {
       "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/68",
@@ -62,14 +62,14 @@
       "id": 0,
       "name": "Trails",
       "maxRecordCount": 2000,
-      "citywideCount": 28753
+      "citywideCount": 28834
     },
     "lights": {
       "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/258",
       "id": 258,
       "name": "Street Lights",
       "maxRecordCount": 200,
-      "citywideCount": 65868
+      "citywideCount": 65867
     },
     "rails": {
       "url": "https://gis.oregonmetro.gov/arcgis/rest/services/OpenData/TransitDataWebMerc/MapServer/9",
@@ -104,7 +104,7 @@
       "id": 77,
       "name": "Sidewalks",
       "maxRecordCount": 200,
-      "citywideCount": 51397
+      "citywideCount": 51410
     },
     "markareas": {
       "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/200",
@@ -118,7 +118,7 @@
       "id": 201,
       "name": "Pavement Marking Lines",
       "maxRecordCount": 200,
-      "citywideCount": 64498
+      "citywideCount": 64502
     },
     "meters": {
       "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/58",
@@ -139,7 +139,7 @@
       "id": 62,
       "name": "Bicycle Parking",
       "maxRecordCount": 200,
-      "citywideCount": 8337
+      "citywideCount": 8353
     },
     "calming": {
       "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/55",
@@ -154,18 +154,60 @@
       "name": "Hydrants",
       "maxRecordCount": 2000,
       "citywideCount": 14962
+    },
+    "bridges": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/79",
+      "id": 79,
+      "name": "Bridges",
+      "maxRecordCount": 200,
+      "citywideCount": 520
+    },
+    "riverbridges": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/80",
+      "id": 80,
+      "name": "River Bridges",
+      "maxRecordCount": 200,
+      "citywideCount": 13
+    },
+    "heritagetrees": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/26",
+      "id": 26,
+      "name": "Heritage Trees",
+      "maxRecordCount": 200,
+      "citywideCount": 463
+    },
+    "fountains": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Utilities/MapServer/84",
+      "id": 84,
+      "name": "Drinking Fountains",
+      "maxRecordCount": 200,
+      "citywideCount": 137
+    },
+    "bikenetwork": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/75",
+      "id": 75,
+      "name": "Bicycle Network",
+      "maxRecordCount": 200,
+      "citywideCount": 40284
+    },
+    "speedlimits": {
+      "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Transportation/MapServer/225",
+      "id": 225,
+      "name": "Speed Limits",
+      "maxRecordCount": 200,
+      "citywideCount": 33135
     }
   },
   "trees": {
     "status": "resolved",
     "candidates": [
       {
-        "title": "Vegetation",
-        "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/31"
-      },
-      {
         "title": "Parks Tree Inventory",
         "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/220"
+      },
+      {
+        "title": "Vegetation",
+        "url": "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer/31"
       },
       {
         "title": "Heritage Trees",

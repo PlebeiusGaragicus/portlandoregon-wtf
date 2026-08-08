@@ -1167,10 +1167,10 @@ export function featureStoreBytes(s: FeatureStore): number {
 
 export type LayerName =
   | "sidewalks" | "markingAreas" | "markingLines" | "trails" | "rails"
-  | "water" | "parks" | "railYards";
+  | "water" | "parks" | "railYards" | "bridges";
 
 export const LAYER_NAMES: LayerName[] = [
-  "sidewalks", "markingAreas", "markingLines", "trails", "rails", "water", "parks", "railYards",
+  "sidewalks", "markingAreas", "markingLines", "trails", "rails", "water", "parks", "railYards", "bridges",
 ];
 
 export type LayerStores = Record<LayerName, FeatureStore>;
@@ -1192,9 +1192,20 @@ export function decodeLayers(bytes: Uint8Array): LayerStores {
     throw new Error(`layer store is version ${version}, this build reads ${FORMAT_VERSION} — re-run scripts/stage-map.sh`);
   }
   const n = r.u32();
-  if (n !== LAYER_NAMES.length) throw new Error(`layer store has ${n} layers, this build knows ${LAYER_NAMES.length}`);
+  // LAYER_NAMES is append-only and the container is positional, so a store
+  // written before a layer existed is simply short. Read what is there and
+  // leave the rest empty rather than refusing to boot: the published map is a
+  // release asset that necessarily lags a build which adds a layer, and a
+  // hard failure there takes the whole city down to gain nothing.
+  if (n > LAYER_NAMES.length) {
+    throw new Error(
+      `layer store has ${n} layers, this build knows ${LAYER_NAMES.length} — the map is newer than the client`,
+    );
+  }
   const out = {} as LayerStores;
-  for (const name of LAYER_NAMES) out[name] = readFeatures(r);
+  for (let i = 0; i < LAYER_NAMES.length; i++) {
+    out[LAYER_NAMES[i]!] = i < n ? readFeatures(r) : EMPTY_FEATURES;
+  }
   return out;
 }
 
@@ -1222,6 +1233,7 @@ export function layerInputs(map: GameMap): Partial<Record<LayerName, FeatureInpu
     water: (map.water ?? []).map((f) => ({ rings: f.rings })),
     parks: (map.parks ?? []).map((f) => ({ rings: f.rings })),
     railYards: (map.railYards ?? []).map((f) => ({ rings: f.rings })),
+    bridges: (map.bridges ?? []).map((f) => ({ rings: f.rings, attr: f.kind === "river" ? 1 : 0 })),
   };
 }
 

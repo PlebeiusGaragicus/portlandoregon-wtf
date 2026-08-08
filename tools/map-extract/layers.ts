@@ -26,7 +26,16 @@ export type LayerKey =
   | "furniture"
   | "bikeparking"
   | "calming"
-  | "hydrants";
+  | "hydrants"
+  | "bridges"
+  | "riverbridges"
+  | "heritagetrees"
+  | "fountains"
+  | "bikenetwork"
+  | "speedlimits";
+
+const ENVIRONMENT = "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Environment/MapServer";
+const UTILITIES = "https://www.portlandmaps.com/od/rest/services/COP_OpenData_Utilities/MapServer";
 
 const RLIS = "https://services2.arcgis.com/McQ0OlIABe29rJJy/arcgis/rest/services";
 // Metro regional GIS (classic MapServer, same query API as portlandmaps).
@@ -257,6 +266,62 @@ export const LAYERS: LayerSpec[] = [
     namePattern: /^hydrants$/i,
     fields: [],
     populationChecks: [],
+  },
+  {
+    key: "bridges",
+    // Deck outlines (polygons), not the street ribbon. 520 in bounds.
+    service: TRANSPORT,
+    idSeed: 79,
+    namePattern: /^bridges$/i,
+    fields: ["BridgeType", "MaterialMainSpan", "Owner", "VehClearance"],
+    populationChecks: [],
+  },
+  {
+    key: "riverbridges",
+    // The 13 Willamette crossings — the only bridge layer carrying NAME.
+    service: TRANSPORT,
+    idSeed: 80,
+    namePattern: /^river bridges$/i,
+    fields: ["NAME", "PAVED"],
+    populationChecks: ["NAME"],
+  },
+  {
+    key: "heritagetrees",
+    // 463 individually designated trees, with real measured dimensions.
+    service: ENVIRONMENT,
+    idSeed: 26,
+    namePattern: /^heritage trees$/i,
+    fields: ["COMMON", "SCIENTIFIC", "HEIGHT", "SPREAD", "DIAMETER", "STATUS", "YEAR_Designated"],
+    populationChecks: ["COMMON", "HEIGHT"],
+  },
+  {
+    key: "fountains",
+    // Benson Bubblers and friends. FOUNTAINSTYLE separates the four-bowl
+    // bronze originals from ordinary drinking fountains.
+    service: UTILITIES,
+    idSeed: 84,
+    namePattern: /^drinking fountains$/i,
+    fields: ["FOUNTAINSTYLE", "STATUS"],
+    populationChecks: [],
+  },
+  {
+    key: "bikenetwork",
+    service: TRANSPORT,
+    idSeed: 75,
+    namePattern: /^bicycle network$/i,
+    fields: ["Facility", "Status", "SegmentName"],
+    populationChecks: ["Facility"],
+    // Retired alignments are still in the layer; only draw what exists.
+    where: () => "Status = 'Active'",
+  },
+  {
+    key: "speedlimits",
+    // An attribute layer: joins onto street edges rather than rendering.
+    service: TRANSPORT,
+    idSeed: 225,
+    namePattern: /^speed limits$/i,
+    fields: ["SpeedLimit", "SchoolZone", "RoadName"],
+    populationChecks: ["SpeedLimit"],
   },
 ];
 

@@ -117,12 +117,14 @@
       "railStops": 159,
       "sidewalks": 52692,
       "markingAreas": 3394,
-      "markingLines": 57312
+      "markingLines": 57312,
+      "bridges": 541,
+      "namedBridges": 14
     }
   },
   "bakedMap": {
     "file": "data/maps/portland.json.gz",
-    "kind": "gz-asset (139.0 MB raw, 30.4 MB gz)",
+    "kind": "gz-asset (139.2 MB raw, 30.4 MB gz)",
     "meta": {
       "name": "portland",
       "sourceDate": "2026-08-04",
