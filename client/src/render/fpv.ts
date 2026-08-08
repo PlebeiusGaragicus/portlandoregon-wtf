@@ -14,7 +14,7 @@ import {
   deckLift,
   deckStations,
   DECK_SURFACE_Y,
-  RENDER_WIDTH,
+  deckWidthOf,
   DECK_THICKNESS,
   PARAPET_HEIGHT,
   PARAPET_WIDTH,
@@ -119,7 +119,7 @@ class SolidIndex {
     for (const edge of map.edges) {
       if (edge.struct !== "bridge") continue;
       const [la, lb] = deckLift(edge);
-      const width = RENDER_WIDTH[edge.class] ?? edge.width;
+      const width = deckWidthOf(edge);
       const s = deckStations(edge.polyline, width, terrain, cell, la, lb);
       if (!s) continue;
       const { lx, ly, rx, ry, h } = s;

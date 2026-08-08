@@ -209,6 +209,35 @@ Clipped to the play area and simplified at 1 m. Yields 541 decks, 14 named
 across 13 distinct names: Glen Jackson is a genuine twin span and arrives as a
 MultiPolygon, so anything labelling bridges must dedupe by name.
 
+**Deck widths are measured from these outlines** (added 2026-08-07,
+`tools/map-extract/lib/deck-width.ts`). The renderer drew every arterial
+bridge at one width, so the Hawthorne, the Marquam and a two-lane overpass
+were the same object at different lengths. For each span we sample
+perpendicular crossings of the deck polygon along its centre line and take the
+**median** — not the mean, because a bridge flares at its abutments and where
+ramps merge, and a mean drags the whole deck toward those bulges.
+
+912 of 1,465 spans land on a published outline and get a width; the rest fall
+back to the road class. Measured against reality the result is good: the
+Burnside roadway comes out at 24.0 m against a real ~24 m, Hawthorne at
+21.2 m, Tilikum at 19.2 m.
+
+| Constant | Value | Why |
+| --- | --- | --- |
+| `WIDTH_CAP_RATIO` | 2.4× the road's own width | At an interchange several carriageways share **one** deck polygon, so a ramp inside it measures the whole structure — service alleys came back at 58 m, 11× their own width. Capping beats rejecting: an over-wide alley is a bad deck, but falling back to the class default would draw the I-5 crossing as an ordinary arterial. |
+| `MIN_HITS` | 3 | Samples that must land inside a deck before the measurement is trusted. |
+
+Because the whole bridge — slab, barriers, piers and the FPV collision surface
+— derives from one deck line and one width, a measured width improves all of
+them at once. Note the consequence that looks like a bug and is not: a bridge
+carries its roadway *plus* bridgehead ramps and footpaths as separate edges,
+and those are deliberately narrower than the crossing they sit on. The width
+that describes a bridge is its main carriageway's.
+
+**Known limitation:** the cap is keyed to road class, so a wide deck carrying
+a low-class road is clipped — Tilikum Crossing measures 19.2 m against a real
+23.7 m because its edges are class `local`.
+
 **Not yet resolved: decks have no elevation.** The source polygons are flat at
 ground level, so draped on terrain they sit *in* the river. Placing them needs
 the `STRUC_TYPE` 21/23 street spans that cross each polygon, interpolated —

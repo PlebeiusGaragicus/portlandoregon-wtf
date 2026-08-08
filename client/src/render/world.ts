@@ -32,6 +32,7 @@ import { streetsFrom, type StreetAccess } from "../streets.js";
 import {
   deckLift,
   deckStations,
+  deckWidthOf,
   resample,
   RENDER_WIDTH,
   DECK_THICKNESS,
@@ -422,7 +423,7 @@ function createDetailTiles(
         if (e.struct === "tunnel") continue; // roads vanish into the hillside
         const [la, lb] = deckLift(e);
         pushRibbon(
-          soup.pos, e.polyline, RENDER_WIDTH[e.class] ?? e.width, DECAL_Y, ground, cell,
+          soup.pos, e.polyline, e.struct === "bridge" ? deckWidthOf(e) : RENDER_WIDTH[e.class] ?? e.width, DECAL_Y, ground, cell,
           e.struct === "bridge" || overWater(e.polyline), RIBBON_STEP, la, lb,
         );
       }
@@ -2197,7 +2198,8 @@ function* streetTiles(
       const edge = edges.edge(index);
       const span = edge.struct === "bridge" || overWater(edge.polyline);
       const [la, lb] = deckLift(edge);
-      pushRibbon(soup.pos, edge.polyline, RENDER_WIDTH[edge.class] ?? edge.width, DECAL_Y, ground, cell, span, step, la, lb);
+      const w = edge.struct === "bridge" ? deckWidthOf(edge) : RENDER_WIDTH[edge.class] ?? edge.width;
+      pushRibbon(soup.pos, edge.polyline, w, DECAL_Y, ground, cell, span, step, la, lb);
     }
     yield soupMesh(soup, mat);
   }
@@ -2501,7 +2503,7 @@ function* buildBridges(
     for (const index of list) {
       const edge = edges.edge(index);
       const [la, lb] = deckLift(edge);
-      pushBridge(soup, edge.polyline, RENDER_WIDTH[edge.class] ?? edge.width, ground, cell, la, lb);
+      pushBridge(soup, edge.polyline, deckWidthOf(edge), ground, cell, la, lb);
     }
     yield soup.pos.length ? soupMesh(soup, material, true, false) : null;
   }

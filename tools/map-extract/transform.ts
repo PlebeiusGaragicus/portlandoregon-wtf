@@ -28,6 +28,7 @@ import {
   MAX_SLENDERNESS,
   MIN_FOOTPRINT_M2,
 } from "./lib/building-shape.js";
+import { DeckIndex, measureDeckWidth, WIDTH_CAP_RATIO } from "./lib/deck-width.js";
 import {
   junctionsOf,
   trimMarkingsAtJunctions,
@@ -892,6 +893,29 @@ async function main(): Promise<void> {
   const railStops = transformRailStops(rect);
   const sidewalks = transformPolys("sidewalks", rect);
   const bridges = transformBridges(rect);
+  // Real deck widths, where the city publishes an outline for the span. The
+  // renderer otherwise draws every arterial bridge at one width, so the
+  // Hawthorne and a two-lane overpass are the same object at two lengths.
+  const deckIndex = new DeckIndex(bridges);
+  let measured = 0;
+  let spans = 0;
+  const widths: number[] = [];
+  for (const edge of graph.edges) {
+    if (edge.struct !== "bridge") continue;
+    spans++;
+    const width = measureDeckWidth(edge.polyline, deckIndex, ROAD_WIDTH[edge.class]);
+    if (width === null) continue;
+    edge.deckWidth = round1(width);
+    widths.push(width);
+    measured++;
+  }
+  widths.sort((a, b) => a - b);
+  console.log(
+    `  bridges: measured deck width for ${measured}/${spans} spans` +
+      (widths.length
+        ? ` (min ${widths[0]!.toFixed(1)} / median ${widths[Math.floor(widths.length / 2)]!.toFixed(1)} / max ${widths[widths.length - 1]!.toFixed(1)} m)`
+        : ""),
+  );
   const markings = transformMarkings(rect);
 
   // The source striping runs straight through every crossing; clear it out of

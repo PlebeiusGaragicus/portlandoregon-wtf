@@ -46,6 +46,12 @@ export interface StreetEdge {
    * it, so terrain alone leaves every land bridge lying flat on the ground.
    */
   zlev?: [number, number];
+  /**
+   * Deck width in metres, measured from the city's published bridge outline.
+   * Absent when the span sits on no published deck, in which case the
+   * renderer falls back to the road class's drawn width.
+   */
+  deckWidth?: number;
 }
 
 /** Normalized building category, for palette/gameplay variety. */

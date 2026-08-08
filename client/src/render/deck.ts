@@ -18,6 +18,16 @@ export const RENDER_WIDTH: Record<RoadClass, number> = {
   arterial: 17, collector: 13.5, local: 11, alley: 5, path: 2.5,
 };
 
+/**
+ * How wide to draw one edge's deck. A span sitting on a published bridge
+ * outline uses the width measured from it; everything else falls back to the
+ * class default. Slab, barriers, piers and the FPV collision surface all read
+ * this, so a real width improves every one of them at once.
+ */
+export function deckWidthOf(edge: Pick<StreetEdge, "class" | "width" | "deckWidth">): number {
+  return edge.deckWidth ?? RENDER_WIDTH[edge.class] ?? edge.width;
+}
+
 /** Max span between deck cross-sections. */
 export const RIBBON_STEP = 15;
 
